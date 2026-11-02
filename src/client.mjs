@@ -38,13 +38,18 @@ export class GameClient extends EventEmitter {
     super();
     this.url = url;
     this.login = login;
-    this.codec = createCodec(protocol);
+    // v71 lacks this unsolicited v74 update. Reward claims read their state
+    // from DailyTaskInfoResponse, so they don't need to consume its payload.
+    this.codec = createCodec(protocol, { optionalPush: 'SCTierTaskUpdate' });
+    this.promptNames = protocol.Prompt ?? {};
+    this.warnedAboutSkippedPush = false;
     this.state = 'IDLE';
     this.socket = null;
     this.sendSeqNo = Math.floor(1000 * Math.random()) + 1;
     this.recvSeqNo = null;
     this.nextAckSeqNo = null;
     this.ackTimer = null;
+    this.gapTimer = null;
     this.tickTimer = null;
     this.lastPingTimestamp = 0;
     this.lastResponseAt = 0;
@@ -203,15 +208,17 @@ export class GameClient extends EventEmitter {
     });
   }
 
-  // PromptResponse 不带我们发出去的 seq，只能按顺序认领：服务端按请求到达顺序应答，
-  // 所以一条 prompt 属于「最早那条还没被应答的发送」。若那条刚好是 sendWatch 发出的，
-  // 就归它；否则才是某个在飞的 request()。
+  // PromptResponse has no request ID. Prefer a matching guild query for
+  // NO_GUILD; otherwise attribute it to the oldest outstanding send.
   attributePrompt(body) {
-    const reason = (body?.args ?? []).join(' ') || `prompt=${body?.prompt}`;
+    const promptName = this.promptNames[body?.prompt];
+    const reason = (body?.args ?? []).join(' ') || `prompt=${body?.prompt}${promptName ? ' ' + promptName : ''}${promptName === 'NO_GUILD' ? '（未加入联盟）' : ''}`;
     const error = new Error(`server prompt: ${reason}`);
     error.prompt = body;
-    const pendingEntry = this.pending.length ? this.pending[this.pending.length - 1] : null;
-    const watcher = this.watchers.length && (!pendingEntry || this.watchers[0].order < pendingEntry.order) ? this.watchers[0] : null;
+    const guildQuery = promptName === 'NO_GUILD' && this.pending.find((entry) =>
+      entry.name === 'GuildCityInfoRequest' || entry.name === 'GuildAidListRequest');
+    const pendingEntry = guildQuery || this.pending[0];
+    const watcher = !guildQuery && this.watchers.length && (!pendingEntry || this.watchers[0].order < pendingEntry.order) ? this.watchers[0] : null;
     if (watcher) {
       this.watchers = this.watchers.filter((item) => item !== watcher);
       clearTimeout(watcher.timer);
@@ -220,7 +227,7 @@ export class GameClient extends EventEmitter {
       return;
     }
     if (pendingEntry) {
-      this.pending.splice(this.pending.length - 1, 1);
+      this.pending.splice(this.pending.indexOf(pendingEntry), 1);
       clearTimeout(pendingEntry.timer);
       error.request = pendingEntry.name;
       pendingEntry.reject(error);
@@ -252,24 +259,29 @@ export class GameClient extends EventEmitter {
     try {
       decoded = this.codec.decode(data);
     } catch (error) {
-      this.emit('error', new Error(`decode failed: ${error.message}`));
+      this.failConnection(`服务器消息解码失败：${error.message}`);
       return;
     }
     this.lastResponseAt = Date.now();
     const { seq, name, body } = decoded;
     if (name === 'PingResponse' && this.tryHandlePong(body)) return;
 
+    // The server can report a terminal failure precisely because a sequence is
+    // missing. Handle it before rejecting out-of-order business responses.
+    if (name === 'ResendFailed' || name === 'SCChannelExpired') {
+      this.emit('fatal', { reason: name, seqNo: body.seqNo, detail: body.reason });
+      this.failConnection(name === 'ResendFailed' ? '服务器无法重传缺失消息，请重新连接' : '游戏会话已失效，请重新连接');
+      return;
+    }
     if (!this.handleSeqNo(seq, name)) return;
+    if (decoded.skipped) {
+      if (!this.warnedAboutSkippedPush) {
+        this.warnedAboutSkippedPush = true;
+        this.emit('warn', `当前协议缺少 ${name}，已跳过该推送内容并继续等待业务响应`);
+      }
+      return;
+    }
     this.emit('message', { seq, name, body });
-
-    if (name === 'ResendFailed') {
-      this.emit('fatal', { reason: 'ResendFailed', seqNo: body.seqNo });
-      return;
-    }
-    if (name === 'SCChannelExpired') {
-      this.emit('fatal', { reason: 'SCChannelExpired', detail: body.reason });
-      return;
-    }
     // 业务拦截：服务端拒绝一个请求时不回 *Response，而是推一条 PromptResponse。
     // 不处理的话每次被拒都要干等满超时。
     if (name === 'PromptResponse') {
@@ -294,11 +306,20 @@ export class GameClient extends EventEmitter {
           this.ack(this.recvSeqNo);
           this.emit('drop', { reason: 'duplicate', name, seq, recvSeqNo: this.recvSeqNo });
         } else {
-          this.sendNack(this.recvSeqNo);
-          this.emit('drop', { reason: 'gap', name, seq, recvSeqNo: this.recvSeqNo });
+          if (!this.gapTimer) {
+            this.emit('drop', { reason: 'gap', name, seq, recvSeqNo: this.recvSeqNo });
+            this.sendNack(this.recvSeqNo);
+            let retries = 0;
+            this.gapTimer = setInterval(() => {
+              if (++retries < 3) this.sendNack(this.recvSeqNo);
+              else this.failConnection(`缺少服务器消息序号 ${nextSeqNo(this.recvSeqNo)}，重传未恢复，请重新连接`);
+            }, 1000);
+          }
         }
         return false;
       } else {
+        clearInterval(this.gapTimer);
+        this.gapTimer = null;
         this.recvSeqNo = seq;
         this.ack(seq);
       }
@@ -335,7 +356,7 @@ export class GameClient extends EventEmitter {
           if (now - this.lastPingTimestamp > PING_TIMEOUT_MS) {
             this.emit('warn', 'ping timeout');
             this.lastPingTimestamp = 0;
-            this.discardSocket('pingTimeout');
+            this.failConnection('心跳超时，连接已断开');
           }
         } else {
           this.sendPing(now);
@@ -374,25 +395,40 @@ export class GameClient extends EventEmitter {
   }
 
   onClose(event) {
+    this.releaseRequests(`游戏连接已断开（${event?.code ?? ''}）`);
     this.socket = null;
     this.emit('close', { code: event?.code, reason: event?.reason });
     if (!this.stopping) this.setState('CLOSED', `code=${event?.code ?? ''}`);
   }
 
-  stop() {
-    this.stopping = true;
+  releaseRequests(reason) {
+    clearInterval(this.gapTimer);
+    this.gapTimer = null;
     if (this.tickTimer !== null) clearInterval(this.tickTimer);
     if (this.ackTimer !== null) clearTimeout(this.ackTimer);
     this.tickTimer = null;
     this.ackTimer = null;
     for (const entry of this.pending.splice(0)) {
       clearTimeout(entry.timer);
-      entry.reject(new Error('client stopped'));
+      entry.reject(new Error(reason));
     }
     for (const watcher of this.watchers.splice(0)) {
       clearTimeout(watcher.timer);
-      watcher.reject(new Error('client stopped'));
+      watcher.reject(new Error(reason));
     }
+  }
+
+  failConnection(reason) {
+    this.emit('warn', reason);
+    this.releaseRequests(reason);
+    this.discardSocket('connectionLost');
+    this.emit('close', { reason });
+    this.setState('CLOSED', reason);
+  }
+
+  stop() {
+    this.stopping = true;
+    this.releaseRequests('client stopped');
     this.discardSocket('stop');
     this.setState('STOPPED');
   }

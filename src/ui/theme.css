@@ -1,0 +1,53 @@
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities) source(none);
+@source "./*.tsx";
+
+@theme {
+  --color-card: #ffffff;
+  --color-card-foreground: #163943;
+  --color-background: #ffffff;
+  --color-primary: #146976;
+  --color-primary-foreground: #ffffff;
+  --color-accent: #e5f2ee;
+  --color-accent-foreground: #174851;
+  --color-destructive: #9b4138;
+  --color-muted-foreground: #49656c;
+  --color-input: #94aeae;
+  --color-ring: #198397;
+}
+/* Components are rendered without Tailwind preflight. Reset native control chrome explicitly. */
+[data-slot=button], [data-slot=switch], [data-slot=checkbox], [data-slot=input], [data-slot=native-select] {
+  appearance:none; border:1px solid transparent; font-family:inherit;
+}
+[data-slot=button] { font-size:14px; line-height:1; font-weight:550; border-radius:8px; box-shadow:none; transition:background-color .15s,color .15s,border-color .15s }
+[data-slot=button][data-variant=outline], [data-slot=input], [data-slot=native-select], [data-slot=checkbox] { border-color:#ccd9d9 }
+[data-slot=button][data-variant=outline] { color:#2c5054; background:white }
+[data-slot=button][data-variant=outline]:hover:enabled { background:#edf5f3; border-color:#a3bcbb }
+[data-slot=button][data-variant=destructive] { color:#9a3833; background:#fbefed; border-color:#edcfca }
+[data-slot=button][data-variant=destructive]:hover:enabled { background:#f7dfda }
+[data-slot=button]:disabled { opacity:.48 }
+[data-slot=button]:focus-visible, [data-slot=switch]:focus-visible { outline:2px solid #168183; outline-offset:2px }
+[data-slot=card] { min-width:0; border:1px solid #d7e2e1; border-radius:14px; padding-block:19px; gap:13px; box-shadow:0 2px 5px #16394306 }
+[data-slot=card-title] { font-size:16px; line-height:1.35; color:#173c43 }
+[data-slot=card-header], [data-slot=card-content] { padding-inline:20px; min-width:0 }
+header [data-tab] { position:relative; height:40px; padding:0 12px; gap:7px; border:0; border-radius:0; color:#51676c; background:transparent }
+header [data-tab]:hover { color:#115f68; background:#f1f7f6 }
+header [data-tab][aria-current=page] { color:#096873; background:transparent; font-weight:700 }
+header [aria-current=page]::after { content:""; position:absolute; bottom:0; inset-inline:10px; height:3px; background:#117783; border-radius:3px 3px 0 0 }
+header [data-tab] svg { width:16px; height:16px; stroke-width:1.7 }
+header .connection select { background:white; color:#29494e; height:32px; padding-block:0 }
+header .connection #connect:disabled:has(+ #disconnect:enabled), header .connection #disconnect:disabled { display:none }
+.log-filter { width:fit-content; padding:3px; gap:2px; border-radius:9px; background:#edf3f2 }
+.log-filter [data-slot=button] { border:0; background:transparent; color:#4a6266; height:28px; font-size:12px; border-radius:6px }
+.log-filter [aria-pressed=true] { background:white; color:#155960; box-shadow:0 1px 3px #17485124 }
+@media(min-width:1000px) {
+  #tab-overview > .grid { grid-template-columns:repeat(2,minmax(0,1fr)) }
+  #tab-overview [data-slot=card]:first-child, #tab-overview [data-slot=card]:last-child { grid-column:1/-1 }
+}
+@media(max-width:640px) {
+  header [data-tab] { min-height:42px; padding-inline:9px }
+  [data-slot=card-header], [data-slot=card-content] { padding-inline:15px }
+}
+@media(prefers-reduced-motion:reduce) { [data-slot=button], [data-slot=switch-thumb] { transition:none } }
+[data-slot=table-cell] { white-space:normal }
+#m-ack[data-state=checked]::after { content:"✓"; display:block; font-size:12px; line-height:1 }

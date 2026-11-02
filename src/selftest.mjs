@@ -4,6 +4,7 @@ import { loadProtocol } from './proto.mjs';
 import { createCodec, HEADER_PREFIX } from './codec.mjs';
 import { compressBlock, decompressBlock, compressBound, makeHashTable } from './lz4.mjs';
 import { GameClient } from './client.mjs';
+import { createStageTask, runStages, stageFailureLimit } from './stages.mjs';
 
 const require = createRequire(import.meta.url);
 const minimal = require('protobufjs/minimal');
@@ -40,6 +41,192 @@ const cases = [
 ];
 
 let checked = 0;
+
+{
+  const { appointments } = await import('./appointments.mjs');
+  const config = { tables: { AppointPosCfg: { data: [
+    { posId: 1, effectId: '生产时间', playerLevel: 4 }, { posId: 2, effectId: '生产时间', playerLevel: 8 },
+    { posId: 3, effectId: '生产时间', playerLevel: 15 }, { posId: 4, effectId: '建造速度', playerLevel: 6 },
+    { posId: 5, effectId: '建造速度', playerLevel: 10 }, { posId: 6, effectId: '建造速度', playerLevel: 18 },
+  ] } } };
+  const calls = [];
+  let assigned = false;
+  const client = {
+    request: async (name, body, response) => {
+      calls.push(name);
+      assert.equal(response, 'AppointInfoResponse');
+      if (name === 'AutoAppointRequest') {
+        assert.deepEqual(body.posId, [4, 5, 6, 1, 2, 3]);
+        assigned = true;
+      }
+      return { heroes: assigned ? [{ posId: 4, heroId: '瑞文' }] : [], priorPosIds: [4, 5, 6] };
+    },
+  };
+  assert.equal((await appointments(client, config, 13)).occupied, 0);
+  assert.deepEqual(calls.splice(0), ['AppointInfoRequest']);
+  const result = await appointments(client, config, 13, { assign: true });
+  assert.deepEqual(calls.splice(0), ['AppointInfoRequest', 'AutoAppointRequest', 'AppointInfoRequest']);
+  assert.deepEqual(result.slots.map(s => s.id), [4, 5, 1, 2]);
+  assert.equal(result.changed, 1);
+  assert.equal(result.slots[0].hero, '瑞文');
+  assert.equal((await appointments(client, config, 1, { assign: true })).slots.length, 0);
+  assert.deepEqual(calls, ['AppointInfoRequest']);
+  checked++;
+}
+
+{
+  const { surveyWorld, planWorld } = await import('./world.mjs');
+  const config = { tables: {
+    GameParamCfg: { data: [{ paramName: '初始人口', paramValue: 3 }, { paramName: '初始人口上限', paramValue: 10 }] },
+    BuildingCfg: { data: ['住宅', '电站'].map(buildingType => ({ buildingType })) },
+    BuildingUpgradeCfg: { data: [
+      { buildingType: '住宅', level: 1, effect: [['人口增加', 12]] },
+      { buildingType: '电站', level: 1, effect: [['人口上限', 10]] },
+    ] },
+    BuildingUnlockCfg: { data: [
+      { buildingId: '2住宅', buildingType: '住宅', category: '民居', playerLevel: 2, condition: [['1住宅', 1]], consume: [] },
+      { buildingId: '2电站', buildingType: '电站', category: '指标', playerLevel: 2, condition: [['1电站', 1]], consume: [['木材', 5]] },
+      { buildingId: '3住宅', buildingType: '住宅', category: '民居', playerLevel: 2, condition: [['2住宅', 1]], consume: [] },
+    ] },
+  } };
+  const raw = [{ buildingId: '1住宅', level: 1 }, { buildingId: '1电站', level: 1 }];
+  const client = { request: async name => name === 'OnWaterRequest' ? { building: raw } : { items: [{ itemId: '木材', num: 5 }] } };
+  const read = () => surveyWorld(client, protocol, { config, player: { level: 2 } });
+  const first = await read();
+  assert.equal(first.population, 15);
+  assert.equal(first.maxPopulation, 20);
+  assert(!first.buildings.some(b => b.buildingId === '3住宅'));
+  const plan = planWorld(first, { config });
+  assert.deepEqual(plan.actions.map(a => a.body.buildingId), ['2电站']);
+  assert(plan.notes.some(n => n.includes('需上限 27')));
+  raw.push({ buildingId: '2电站', level: 1 });
+  assert.deepEqual(planWorld(await read(), { config }).actions.map(a => a.body.buildingId), ['2住宅']);
+  raw.push({ buildingId: '2住宅', level: 0, buildStartTime: 1, buildFinishTime: Math.ceil(Date.now()/1000) + 100 });
+  const building = await read();
+  assert.equal(building.population, 15);
+  assert.equal(building.futurePopulation, 27);
+  assert(!planWorld(building, { config }).actions.some(a => a.kind === 'build'));
+  checked++;
+}
+
+{
+  // No empty plots in OnWaterResponse: reconstruct non-housing plots and
+  // keep building even if daily probes or an unrelated first plot fail.
+  const { runLoop } = await import('./loop.mjs');
+  const ids = ['1农田', '1工厂', '1仓库', '2工厂'];
+  const config = { tables: { BuildingUnlockCfg: { data: ids.map((buildingId, i) => ({
+    buildingId, buildingType: buildingId.slice(1), category: ['农田', '工厂', '', '工厂'][i],
+    playerLevel: 1, condition: [], consume: [['木材', 2]],
+  })) } } };
+  const attempts = [];
+  const client = {
+    connected: true,
+    request: async (name) => {
+      if (name === 'MainTaskInfoRequest' || name === 'DailyTaskInfoRequest') throw new Error('fixture timeout');
+      return name === 'AllItemRequest' ? { items: [{ itemId: '木材', num: 6 }] } : {};
+    },
+    sendWatch: async (name, body) => {
+      assert.equal(name, 'BuildBuildingRequest');
+      attempts.push(body.buildingId);
+      if (attempts.length === 1) throw new Error('fixture rejection');
+    },
+  };
+  const { history } = await runLoop(client, protocol, { config, player: { level: 1 }, allowMutate: true });
+  assert.equal(history[0].world.planned, 3, 'four plots share materials for three builds');
+  assert.equal(attempts.length, 3);
+  assert.equal(new Set(attempts).size, 3);
+  assert.equal(history[0].world.results.filter(entry => entry.ok).length, 2);
+  assert(history[0].dailies.results.some(entry => entry.ok === false));
+  checked++;
+}
+
+{
+  const config = { tables: { StageCfg: { data: [
+    { stage: 41, playerLevel: 10 }, { stage: 42, playerLevel: 11 }, { stage: 43, playerLevel: 12 },
+  ] } } };
+  const player = { mainlineStage: 41, level: 11 };
+  const calls = [];
+  const delays = [];
+  let loseAt;
+  const client = {
+    async request(name, body, responseName) {
+      calls.push(body.stage);
+      assert.equal(name, 'ChallengeStageRequest');
+      assert.equal(responseName, 'ChallengeStageResponse');
+      const frame = codec.encode(responseName, 2, {
+        initialData: { mainlineStage: body.stage }, stats: { isLeftWin: body.stage !== loseAt },
+      });
+      return codec.decode(frame).body;
+    },
+  };
+  const execute = { allowMutate: true, wait: async (ms) => delays.push(ms) };
+  assert.equal((await runStages(client, player, config)).wins, 0);
+  assert.deepEqual(calls, []);
+  assert.match((await runStages(client, player, config, execute)).reason, /等级 12/);
+  assert.deepEqual(calls.splice(0), [41, 42]);
+  assert.deepEqual(delays.splice(0), [5000]);
+  const longRun = await runStages({ request: async (_, { stage }) => ({
+    initialData: { mainlineStage: stage }, stats: { isLeftWin: stage <= 105 },
+  }) }, { mainlineStage: 1, level: 1 }, { tables: { StageCfg: { data:
+    Array.from({ length: 106 }, (_, i) => ({ stage: i + 1, playerLevel: 1 })) } } },
+  { allowMutate: true, wait: async () => {}, maxFailures: 2 });
+  assert.equal(longRun.wins, 105);
+  assert.match(longRun.reason, /第 106 关连续战败 2 次/);
+  loseAt = 41;
+  assert.match((await runStages(client, player, config, { ...execute, maxFailures: 1 })).reason, /战败/);
+  assert.deepEqual(calls.splice(0), [41]);
+  const outcomes = [false, false, true, false, false, false];
+  const retried = { request: async (name, { stage }) => {
+    calls.push(stage);
+    return { initialData: { mainlineStage: stage }, stats: { isLeftWin: outcomes.shift() } };
+  } };
+  const battles = [];
+  const stopped = await runStages(retried, player, config, { ...execute, maxFailures: 3, onBattle: (battle) => battles.push(battle) });
+  assert.match(stopped.reason, /第 42 关连续战败 3 次/);
+  assert.equal(stopped.wins, 1);
+  assert.deepEqual(calls.splice(0), [41, 41, 41, 42, 42, 42]);
+  assert.deepEqual(battles.map((entry) => entry.failures), [1, 2, 0, 1, 2, 3]);
+  assert.deepEqual(delays.splice(0), Array(5).fill(5000));
+  for (const response of [{}, { initialData: { mainlineStage: 40 }, stats: { isLeftWin: true } }]) {
+    await assert.rejects(runStages({ request: async () => response }, player, config, execute), /战报/);
+  }
+  let attempts = 0;
+  await assert.rejects(runStages({ request: async () => { attempts++; throw new Error('timeout'); } }, player, config, execute), /timeout/);
+  assert.equal(attempts, 1);
+  assert.deepEqual(delays, []);
+  for (const value of [0, -1, 1.5, 'abc', Infinity]) {
+    assert.throws(() => stageFailureLimit(value));
+  }
+  assert.equal(stageFailureLimit(101), 101);
+
+  const task = createStageTask();
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
+  let finish;
+  let sent = 0;
+  const jobClient = { request: () => { sent++; return new Promise((resolve) => { finish = resolve; }); } };
+  const open = async () => ({ client: jobClient, player, config });
+  assert(task.start({}, open).running);
+  assert.throws(() => task.start({}, open), /已经开启/);
+  await flush();
+  assert(task.stop().stopping);
+  assert.throws(() => task.start({}, open), /已经开启/);
+  finish({ initialData: { mainlineStage: 41 }, stats: { isLeftWin: true } });
+  await flush();
+  assert.equal(sent, 1);
+  assert.equal(player.mainlineStage, 42);
+  assert.equal(task.view().wins, 1);
+  assert(!task.view().running);
+  task.start({}, open);
+  await flush();
+  finish({ initialData: { mainlineStage: 42 }, stats: { isLeftWin: false } });
+  await flush();
+  assert.equal(task.view().failures, 1);
+  task.stop();
+  await flush();
+  assert(!task.view().running, 'stop cancels the delay before a retry');
+  assert.equal(sent, 2);
+  checked++;
+}
 for (const [name, seq, body] of cases) {
   const mine = codec.encode(name, seq, body);
   const ref = new Uint8Array(referenceEncode(name, seq, body));
@@ -341,6 +528,84 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
   checked += 1;
 }
 
+{
+  // v74 wire fixture: field 2 contains DispTierTask { taskId: 7, progress: 3 }.
+  const name = 'SCTierTaskUpdate';
+  const push = Buffer.alloc(11 + name.length + 6);
+  push.writeInt32BE(push.length - 4);
+  push[4] = 2;
+  push.writeInt32BE(41, 5);
+  push[9] = name.length;
+  push.write(name, 10);
+  push.set([0x12, 4, 8, 7, 16, 3], 11 + name.length);
+  const legacy = { ...protocol };
+  delete legacy[name];
+  for (const table of new Set([protocol, legacy])) {
+    const client = new GameClient({ protocol: table });
+    client.recvSeqNo = 40;
+    client.send = () => 1;
+    const acknowledged = [];
+    client.ack = (seq) => acknowledged.push(seq);
+    const pushes = [];
+    client.on('message', (msg) => { if (msg.name === name) pushes.push(msg.body); });
+    const waiting = client.request('DailyTaskInfoRequest', {}, 'DailyTaskInfoResponse');
+    client.onMessage(push);
+    assert.equal(client.pending.length, 1, 'a push cannot settle the reward query');
+    client.onMessage(codec.encode('DailyTaskInfoResponse', 42, { dailyActivity: 20 }));
+    assert.equal((await waiting).dailyActivity, 20);
+    assert.deepEqual(acknowledged, [41, 42]);
+    assert.equal(pushes.length, table[name] ? 1 : 0);
+    if (table[name]) assert.equal(pushes[0].task.progress, 3);
+    client.stop();
+  }
+  checked++;
+}
+
+{
+  const client = new GameClient({ protocol });
+  let nacks = 0;
+  client.sendNack = () => { nacks++; };
+  client.ack = () => {};
+  client.recvSeqNo = 989;
+  assert(!client.handleSeqNo(991, 'DailyTaskInfoResponse'));
+  assert(!client.handleSeqNo(992, 'DailyTaskInfoResponse'));
+  assert.equal(nacks, 1, 'only one immediate retransmission per missing sequence');
+  assert(client.handleSeqNo(990, 'SCUpdateResource'));
+  assert.equal(client.gapTimer, null);
+  client.send = () => 1;
+  const waiting = client.request('DailyTaskInfoRequest', {}, 'DailyTaskInfoResponse');
+  client.onMessage(codec.encode('ResendFailed', 995, { seqNo: 991 }));
+  await assert.rejects(waiting, /重传/);
+  assert.equal(client.state, 'CLOSED');
+  assert.equal(client.pending.length, 0);
+  checked++;
+}
+
+{
+  const { claimRewards } = await import('./claim-rewards.mjs');
+  const calls = [];
+  const client = {
+    async request(name) {
+      calls.push(name);
+      if (name === 'DailyTaskInfoRequest') throw new Error('timeout waiting for DailyTaskInfoResponse (sent DailyTaskInfoRequest)');
+      if (name === 'EmailBoxRequest') return { email: [{ got: false }] };
+      if (name === 'AfkInfoRequest') return { afkInfo: { afkFinishTime: 1 } };
+      if (name === 'DailyGiftPackRequest') return { drawnPack: ['赠礼'] };
+      return {};
+    },
+    async sendWatch(name) { calls.push(name); },
+  };
+  const steps = [];
+  const results = await claimRewards(client, protocol, null, (entry) => steps.push(entry));
+  assert.deepEqual(steps, results);
+  assert(results.some((entry) => !entry.ok && entry.error.includes('DailyTaskInfoResponse')));
+  assert(results.some((entry) => entry.ok && entry.label === '闯关挂机收益已满，领取本段收益'));
+  assert(calls.includes('QuickGotReadEmailRequest'));
+  assert.equal(calls.filter((name) => name === 'DailyTaskInfoRequest').length, 1);
+  assert(!calls.some((name) => /Challenge|RecruitStart|ClickGold/.test(name)));
+  checked++;
+}
+
 // 配置表来自 CDN 的 config_cn bundle，本地是微信缓存或 work/cdn 的快照。缺了就跳过，
 // 但在快照存在时必须能解出表并完成资源名映射。
 {
@@ -452,19 +717,11 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
   assert.equal(noPirates.actions, undefined);
 
   const stage = DAILY_DRIVERS[1003].evaluate({ task: { id: 1003, progress: 0, targetProgress: 1 }, probe: () => null, items: new Map(), ruby: 0, now: 0, config, player: { mainlineStage: 41, level: 11 } });
-  assert.equal(stage.actions[0].body.stage, 41, 'mainline battle targets PlayerInfo.mainlineStage');
+  assert.equal(stage.actions, undefined, 'ordinary daily and idle runs must never challenge a stage');
+  assert.equal(stage.status, 'waiting');
 
-  // 试炼副本的阶段号来自 TrialRaidStageCfg.stageId，并且要先过 openLevel 这一关。
-  const raidConfig = { tables: { TrialRaidStageCfg: { data: [
-    { raidId: 1, stageId: 1001, stageLevel: 1, openLevel: 14 },
-    { raidId: 1, stageId: 1002, stageLevel: 2, openLevel: 14 },
-  ] } } };
-  const raidTask = { id: 1009, progress: 0, targetProgress: 1 };
-  const raidProbe = () => ({ raid: { raidId: 1, passedStage: 0 } });
-  const locked = DAILY_DRIVERS[1009].evaluate({ task: raidTask, probe: raidProbe, config: raidConfig, items: new Map(), ruby: 0, now: 0, player: { level: 11 } });
-  assert.equal(locked.status, 'blocked', 'trial raid openLevel gates the plan');
-  const open = DAILY_DRIVERS[1009].evaluate({ task: raidTask, probe: raidProbe, config: raidConfig, items: new Map(), ruby: 0, now: 0, player: { level: 14 } });
-  assert.equal(open.actions[0].body.stageId, 1001, 'the first uncleared stageId is used, not passedStage+1');
+  const trialTask = DAILY_DRIVERS[1009].evaluate({ task: { progress: 0, targetProgress: 1 } });
+  assert.equal(trialTask.actions, undefined, '日常任务不发起试炼挑战');
   checked += 1;
 }
 
@@ -490,13 +747,26 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
   assert.equal(query.state.settled, null, 'an unrelated in-flight request must not be rejected');
   assert.equal(client.pending.length, 1, 'the in-flight request stays pending');
 
-  // 没有观察者时，prompt 仍然按老办法落到最后一条在飞请求上。
+  // 没有观察者时，一般提示归给最早仍在等待的请求。
   client.pending.length = 0;
   const only = fake('ArenaChallengeRequest', 2);
-  client.pending.push(only.entry);
+  const newer = fake('AllHeroRequest', 3);
+  client.pending.push(only.entry, newer.entry);
   client.attributePrompt({ args: ['no chance left'] });
-  assert.equal(only.state.settled, 'reject', 'without a watcher the newest pending entry takes the prompt');
-  assert.equal(client.pending.length, 0);
+  assert.equal(only.state.settled, 'reject', 'without a watcher the oldest pending entry takes the prompt');
+  assert.deepEqual(client.pending, [newer.entry]);
+  for (const names of [['GuildCityInfoRequest', 'HeroStarUpRequest'], ['HeroStarUpRequest', 'GuildAidListRequest']]) {
+    client.pending.length = 0;
+    const entries = names.map((name, index) => fake(name, index));
+    client.pending.push(...entries.map(({ entry }) => entry));
+    client.onMessage(codec.encode('PromptResponse', 0, { prompt: 95, style: 1 }));
+    const guild = entries.find(({ entry }) => entry.name.startsWith('Guild'));
+    const hero = entries.find(({ entry }) => entry.name === 'HeroStarUpRequest');
+    assert.match(guild.state.error.message, /NO_GUILD/);
+    assert.deepEqual(client.pending, [hero.entry]);
+    client.onMessage(codec.encode('HeroStarUpResponse', 0, { nextStar: { heroId: '瑞文', star: 3 } }));
+    assert.equal(hero.state.settled, 'resolve');
+  }
 
   // 在飞请求比观察者发得更早时，它就比观察者更该认领这条 prompt。
   client.pending.length = 0;
@@ -566,26 +836,93 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
     };
   };
 
+  const weekly = surveyFor(60);
+  const balancing = surveyFor(60);
+  balancing.orders = [];
+  balancing.stock.set('布匹', 3);
+  const recipes = { tables: { ...config.tables, BuildingProduceCfg: { data: [
+    ...config.tables.BuildingProduceCfg.data,
+    { ...config.tables.BuildingProduceCfg.data[0], itemId: '纸', produceTime: 600 },
+  ] } } };
+  const balanced = planWorld(balancing, { config: recipes }).actions.filter(a => a.kind === 'startProduce');
+  assert.deepEqual(balanced.map(a => a.body.productId), ['纸', '纸', '纸', '布匹', '纸', '布匹']);
+  weekly.orders = [];
+  weekly.weekOrder = new Map([['布匹', 4]]);
+  weekly.stock.set('布匹', 1);
+  const firstFactory = weekly.factories[0];
+  firstFactory.factory = { factoryQ: [{ productId: '布匹' }], finishedProducts: [{ id: '布匹', num: 1 }] };
+  for (const buildingId of ['2材料厂', '3材料厂']) weekly.factories.push({ ...firstFactory, buildingId, factory: {} });
+  const weeklyPlan = planWorld(weekly, { config });
+  const weeklyJobs = weeklyPlan.actions.filter(action => action.kind === 'startProduce');
+  assert.equal(weeklyJobs.filter(a => a.label.includes('周订单缺')).length, 1, '库存、队列、待收成品、本轮新排产合计满足周订单后停止补货');
+  assert.match(weeklyJobs[0].label, /周订单缺 1/);
+  assert.equal(weeklyJobs[0].body.productId, '布匹');
+  assert.ok(!weeklyPlan.actions.some(action => action.request.includes('WeekOrder')));
+  const cargo = surveyFor(60);
+  cargo.orders = [];
+  cargo.stock.set('布匹', 2);
+  cargo.weekOrder = new Map([['布匹', 2]]);
+  cargo.cargoOrder = new Map([['布匹', 4]]);
+  cargo.factories[0].factory.factoryQ = [{ productId: '布匹' }];
+  cargo.factories[0].factory.finishedProducts = [{ id: '布匹', num: 2 }];
+  cargo.factories.push({ ...cargo.factories[0], factory: {}, buildingId: '2材料厂' });
+  const cargoJobs = () => planWorld(cargo, { config }).actions.filter(a => a.kind === 'startProduce');
+  assert.deepEqual(cargoJobs().flatMap(a => a.label.match(/贸易港缺 \d+/) ?? []), ['贸易港缺 1']);
+  cargo.stock.set('布匹', 3);
+  assert.equal(cargoJobs().filter(a => a.label.includes('贸易港缺')).length, 0, '周订单库存另计，货轮缺口已由现货、待收、在产覆盖');
+  const factorySurvey = surveyFor(50);
+  factorySurvey.orders = [];
+  factorySurvey.weekOrder = new Map([['布匹', 1]]);
+  const factoryConfig = { tables: { ...config.tables,
+    BuildingProduceCfg: { data: [{ ...config.tables.BuildingProduceCfg.data[0], unlockLevel: 2 }] },
+    BuildingUpgradeCfg: { data: [{ buildingType: '材料厂', level: 2, playerLevel: 1,
+      curPeople: 1, consume: [['木材', 50]], condition: [] }] },
+    BuildingUnlockCfg: { data: ['1民居', '1材料厂'].map(buildingId => ({
+      buildingId, playerLevel: 1, consume: [['木材', 50]], condition: [],
+    })) },
+  } };
+  const planFactory = () => planWorld(factorySurvey, { config: factoryConfig, enabled: k => ['build', 'weekFactory'].includes(k) });
+  factorySurvey.buildings.push({ buildingId: '1民居', type: '民居', level: 0, product: [] });
+  assert.deepEqual(planFactory().actions.map(a => a.kind), ['weekFactory'], '周订单升级优先预留建材，即使余料升级关闭');
+  factorySurvey.factories[0].level = 2;
+  assert.ok(!planFactory().actions.some(a => a.kind === 'weekFactory'), '达到配方等级后停止定向升级');
+  factorySurvey.factories[0].level = 0;
+  assert.deepEqual(planFactory().actions.map(a => a.body.buildingId), ['1材料厂'], '材料只够建一座时优先周订单工厂');
   const tight = planWorld(surveyFor(52), { config });
   const produce = tight.actions.find((a) => a.kind === 'startProduce');
   assert.equal(produce.body.productId, '布匹', 'the order gap decides what gets produced');
   assert.equal(tight.actions.some((a) => a.kind === 'upgrade'), false,
-    '52 wood minus the 5 reserved for production leaves too little to upgrade');
-  assert.deepEqual(tight.reserved, [['木材', 5]], 'the reservation is reported, not hidden');
+    '排满生产队列后，剩余材料不足以升级');
+  assert.equal(tight.actions.filter(a => a.kind === 'startProduce').length, 6);
+  assert.deepEqual(tight.reserved, [['木材', 30]], 'the reservation is reported, not hidden');
 
-  const loose = planWorld(surveyFor(60), { config });
+  const loose = planWorld(surveyFor(80), { config });
   const upgrade = loose.actions.find((a) => a.kind === 'upgrade');
-  assert.ok(upgrade, 'with 60 wood the leftover 55 covers the 50-wood upgrade');
+  assert.ok(upgrade, 'with 80 wood six jobs leave 50 for the upgrade');
   assert.equal(upgrade.body.buildingId, '1A民居');
-  assert.deepEqual(loose.reserved, [['木材', 55]], 'production and the upgrade both hold their share');
+  assert.deepEqual(loose.reserved, [['木材', 80]], 'production and the upgrade both hold their share');
+  const village = surveyFor(155);
+  village.buildings.push({ ...village.buildings[0], buildingId: '2A民居' }, { ...village.buildings[0], buildingId: '3A民居' });
+  const upgradesOnly = () => planWorld(village, { config, enabled: kind => kind === 'upgrade' });
+  assert.equal(upgradesOnly().actions.filter(a => a.kind === 'upgrade').length, 3);
+  village.weekOrder = new Map([['木材', 10]]);
+  assert.equal(upgradesOnly().actions.filter(a => a.kind === 'upgrade').length, 2);
 
   // 交得起的订单要排在升级前面：它只花材料不动人口，而且能立刻换来经验。
-  const payable = surveyFor(60);
+  const payable = surveyFor(80);
   payable.stock.set('布匹', 9);
   payable.orders[0].missing = [];
   const ordered = planWorld(payable, { config });
   const kinds = ordered.actions.map((a) => a.kind);
   assert.ok(kinds.indexOf('finishOrder') < kinds.indexOf('upgrade'), 'the order is submitted before the upgrade');
+  const partial = surveyFor(60);
+  partial.factories[0].factory.factoryQ.push({ productId: '布匹' });
+  const countJobs = () => planWorld(partial, { config }).actions.filter(a => a.kind === 'startProduce').length;
+  assert.equal(countJobs(), 5, '六格已有一项在产，只补五项');
+  partial.stock.set('布匹', 47);
+  assert.equal(countJobs(), 2, '库存和队列合计达到上限即停止');
+  partial.stock.set('木材', 5);
+  assert.equal(countJobs(), 1, '后一格不得重复使用前一格预留的原料');
 
   // 没开 --reroll 时材料不足的订单只写进 notes，绝不偷偷拒单。
   const held = planWorld(surveyFor(0), { config });
@@ -597,17 +934,17 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
 }
 
 // 建造：OnWaterResponse 里 level=0 的建筑是已解锁未建的空位，走 BuildBuildingRequest，
-// 判据是 BuildingUpgradeCfg 的 level 1 行（实测 49 种建筑这一行全是 costTime 0 / consume 空）。
+// 每个首建地块有独立的解锁门槛和消耗。
 {
   const { planWorld } = await import('./world.mjs');
-  const config = { tables: {
+  const config = { materialName: id => id === '木材' ? '测试木料' : null, tables: {
     BuildingCfg: { data: [{ buildingType: '日用品厂' }, { buildingType: '军工厂' }, { buildingType: '硅矿厂' }, { buildingType: '玩具厂' }] },
     BuildingProduceCfg: { data: [] },
-    BuildingUpgradeCfg: { data: [
-      { buildingType: '日用品厂', level: 1, playerLevel: 10, curPeople: 0, costTime: 0, consume: [], condition: [] },
-      { buildingType: '军工厂', level: 1, playerLevel: 51, curPeople: 0, costTime: 0, consume: [], condition: [] },
-      { buildingType: '硅矿厂', level: 1, playerLevel: 51, curPeople: 0, costTime: 0, consume: [], condition: ['先修好码头'] },
-      { buildingType: '玩具厂', level: 1, playerLevel: 18, curPeople: 0, costTime: 0, consume: [['木材', 10]], condition: [] },
+    BuildingUnlockCfg: { data: [
+      ...[1, 2, 3, 4, 5, 6, 7].map(n => ({ buildingId: n + '日用品厂', playerLevel: 10, consume: [], condition: [] })),
+      { buildingId: '1军工厂', playerLevel: 51, consume: [], condition: [] },
+      { buildingId: '1硅矿厂', playerLevel: 51, consume: [], condition: [['码头', 1]] },
+      { buildingId: '1玩具厂', playerLevel: 18, consume: [['木材', 10]], condition: [] },
     ] },
   } };
   const survey = {
@@ -634,16 +971,13 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
   assert.equal(builds[0].body.buildingId, '1日用品厂');
   assert.equal(builds[0].response, null, 'BuildBuildingRequest 没有配套 Response，必须走 sendWatch');
   assert.ok(plan.notes.some((note) => note.includes('额外条件')), '有条件的空位要说明跳过原因');
-  assert.ok(plan.notes.some((note) => note.includes('木材 0/10')), '材料不够时宁可等，也不替玩家花钻石买');
+  assert.ok(plan.notes.some((note) => note.includes('测试木料 0/10')), '材料不够时宁可等，也不替玩家花钻石买');
   assert.ok(plan.notes.some((note) => note.includes('建造要等级 51')), '等级不够也要说清楚差多少，不能静默丢掉');
 
-  // 额度：一次最多建 maxBuilds 个，剩下的写进 notes 而不是静默丢掉。
-  const many = { ...survey, buildings: ['1日用品厂', '2日用品厂', '3日用品厂', '4日用品厂'].map((buildingId) => (
+  const many = { ...survey, buildings: [1, 2, 3, 4, 5, 6, 7].map(n => n + '日用品厂').map((buildingId) => (
     { buildingId, type: '日用品厂', level: 0, product: [], buildFinishTime: 0, factory: null }
   )) };
-  const capped = planWorld(many, { config, maxBuilds: 2 });
-  assert.equal(capped.actions.filter((a) => a.kind === 'build').length, 2, 'maxBuilds 生效');
-  assert.equal(capped.notes.filter((note) => note.includes('建造额度')).length, 2, '被压住的两个要进 notes');
+  assert.equal(planWorld(many, { config }).actions.filter(a => a.kind === 'build').length, 7);
 
   // 盖完了的那一栋：这一轮只发竣工，不能再顺手发一次建造——竣工后它已经是 level 1，
   // 建造会被服务端拒，界面上就成了一条假的失败。

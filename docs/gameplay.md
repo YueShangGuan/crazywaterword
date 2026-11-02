@@ -11,7 +11,7 @@
 
 ## 1. 身份、区服与登录
 
-网关 `wss://dhyaoj-gate.khlgamen.com/ws`。首次连接直接发 `LoginRequest`，没有独立的挑战握手；`LoginResponse.result === 1` 即鉴权成功。
+网关 `wss://dhyaoj-gate.khlgamen.com/ws`。首次连接直接发 `LoginRequest`，没有独立的挑战握手；`LoginResponse.result === 0` 才是鉴权成功。2026-10-19 解包版本 71 确认枚举 `LOGIN_SUCCESS=0`、`SERVER_MAINTAIN=1`，更正此处原先将 1 写为成功的错误，详见 [微信登录分析](wechat-login.md)。
 
 网关不区分区服：一个 socket 服务整个账号，区服由 `LoginRequest.worldId` 选择，`worldId=0` 表示进入账号上次所在的区服。
 
@@ -463,7 +463,7 @@ node tools/selftest-describe.mjs    # 字段布局还原自检
 匹配类型时按**最长后缀**去比 `BuildingCfg.buildingType`（58 种），否则「海水厂」会被
 更短的「水厂」之类抢先匹配。
 
-- 人口不是协议字段，是客户端算的：`population = Σ BuildingUpgradeCfg[type][level].effect 里「人口增加」`，
+- 人口由客户端计算，`population = GameParamCfg 初始人口 + Σ 已建成民居当前等级的「人口增加」`，
   `maxPopulation = GameParamCfg 初始人口上限(10) + Σ「人口上限」`。协议里没有，计划器只能按同样口径离线复算。
 - `DispFactory{factoryQ:[{idx, productId, finishTime}], finishedProducts[], autoProductId}`。
 - 常量散在几张 param 表里：`制造位上限=6` 在 `BuildingProduceParamCfg`，
@@ -570,9 +570,7 @@ node tools/selftest-describe.mjs    # 字段布局还原自检
   「没被 prompt 打回」不等于成功。
 
 **建造与升级是两个请求。** 客户端 `_toBuildOrUpgradeRequest` 的分支是
-`0 == t.level ? BuildBuildingRequest : UpgradeBuildingRequest`，判据是
-`BuildingUpgradeCfg` 的 level 1 行（49 种建筑这一行全是 `costTime:0 / consume:[] / condition:[]`，
-只卡 `playerLevel`）。计划器里的两个陷阱：
+`0 == t.level ? BuildBuildingRequest : UpgradeBuildingRequest`。首建按具体地块的 `BuildingUnlockCfg` 检查等级、前置建筑、当前人口与材料，民居还需给施工中的人口预留上限。建成后的升级使用 `BuildingUpgradeCfg`。计划器处理两种施工状态：
 
 1. `level === 0` 且 `buildFinishTime` 在**将来** = 正在盖，重发只会被拒，跳过；
 2. `level === 0` 且 `buildFinishTime` **已过** = 本轮要先发 `FinishUpgradeBuildingRequest`，
@@ -595,19 +593,18 @@ node tools/selftest-describe.mjs    # 字段布局还原自检
   第二条会话登录会把第一条顶掉（`SCChannelExpired`），所以自动循环要按账号各开一份，不能两个号共用一个会话。
 - 凭证是本机明文文件。网页默认打码（头尾各 4 位），必须显式点一次「显示凭证」才返回全文。
 
-### 13.2 抓包搬进控制台（含扫码）
+### 13.2 从电脑微信采集登录
 
 - `tools/mitm-proxy.mjs` 改成工厂 `createProxy({port,onLogin,log})`，CLI 与网页共用一份实现；
   默认端口 **17322**（`CW_PROXY_PORT` 可覆盖）——原来的 17321 与控制台撞车，这是必须修掉的一处。
-- `src/capture.mjs` 是网页侧的编排：装 CA → 设 HKCU 代理 → 监听 → 抓到 `LoginRequest` → 入库 → 立刻回滚。
+- `src/capture.mjs` 是网页与 CLI 共用的编排：准备 CA → 监听成功 → 设 HKCU 代理 → 抓到 `LoginRequest` → 入库 → 回滚。
 - 系统改动全部限定在当前用户（`certutil -user`、HKCU），只绑 `127.0.0.1`，`stop()` 幂等，
   进程退出钩子兜底；回滚后逐项比对注册表是否真的还原，结果写进页面日志。
   装 CA 与开代理这两步都必须先在页面上确认（勾选 + 3 秒倒计时）。
-- 扫码的物理限制：凭证由微信 SDK 在真实游戏会话里生成，外部程序造不出来。所以二维码只负责
-  「让微信把游戏在电脑上打开」，凭证仍然靠本机代理抓。优先级：
-  `data/qrcode.png`（用户自己放的码）→ 用 `src/vendor/qrcode.mjs` 把官方跳转链接画成二维码 →
-  只留手动步骤。`qrInfo()` 返回 `kind: image | svg | link`，三种页面都能显示。
-  跳转链接是 `https://servicewechat.com/wxascheme/jump_wxa?url=<encoded weixin://dl/business/?appid=…>`。
+- 版本 71 的实际登录链未发现独立二维码授权接口。原先将自行拼接的启动链接当作扫码登录没有实现依据，已移除。
+  `data/qrcode.png` 可作为用户提供的游戏入口码展示，但不与捕获会话关联。
+  必须在电脑版微信中打开游戏；手机扫码启动手机游戏不能向本机代理传回凭证。
+  捕获请求后仍须观察 `LoginResponse.result === 0` 才能确认登录成功。
 
 ### 13.3 素材：用游戏自己的图标
 
@@ -636,5 +633,5 @@ node tools/selftest-describe.mjs    # 字段布局还原自检
 - 五个页签：总览 / 挂机 / 英雄 / 日常 / 账号。删掉了五张协议指标卡片、原始 JSON 视图、
   手动发送页签与 `POST /api/send`、常驻的原始协议日志栏；日志只剩中文业务句
   （「领取主线 62 · 拥有指定资源 1200/20」「排产 1切鱼厂 → 生鱼片」这种）。
-- 账号页：账号列表（切换/删除/当前标记）、添加账号（二维码 + 一键抓包）、凭证查看。
+- 账号页：账号列表（切换/删除/当前标记）、从电脑微信添加账号、凭证查看。
 - 写操作一律要求请求体带 `confirm: true`，页面上表现为「先勾选、再等 3 秒倒计时」两样都满足才能点确认。

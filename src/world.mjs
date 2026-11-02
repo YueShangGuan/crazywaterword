@@ -3,7 +3,7 @@
 // 所有事实都来自客户端自身的调用点与配置表，没有推测：
 // - buildingId 形如 "1食品厂" / "1A民居" / "1指标楼A"，即 <序号><可选字母><建筑类型>，
 //   类型按最长后缀去比 BuildingCfg.buildingType（58 种）。
-// - 人口不是协议字段，是客户端算出来的：Σ BuildingUpgradeCfg[建筑类型][当前等级].effect 里的
+// - 人口不是协议字段，是客户端算出来的：初始人口 + Σ BuildingUpgradeCfg[建筑类型][当前等级].effect 里的
 //   「人口增加」；人口上限 = GameParamCfg 初始人口上限 + Σ「人口上限」。所以升级前的人口校验
 //   可以离线复算（WaterModel._refreshPopulation 同款规则）。
 // - 工厂队列上限 = BuildingProduceParamCfg 制造位上限（6），成品存量上限 = GameParamCfg 产品存量初始上限（50）。
@@ -15,17 +15,17 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { SERVER, assetUrl } from '../tools/sync-art.mjs';
+import { randomUUID } from 'node:crypto';
 import { normalize } from './worlds.mjs';
+import { readWeekOrder } from './activities.mjs';
+import { RESOURCE, displayMaterial } from './config.mjs';
 
 export const SPEED_UP_ITEM = '加速器';
 export const SPEED_UP_ITEM_TYPE = 2;
 const STOCK_PARAM = '产品存量初始上限';
 const SLOTS_PARAM = '制造位上限';
 const POPULATION_PARAM = '初始人口上限';
-
-// 客户端 Resource 枚举：1=EXP 3=GOLD 4=RUBY 5=ARENA_POINT 6=LEAGUE_POINT。
-// AllResourceResponse.list[].res 是数字，配置表的消耗项写的是名字，两边靠这张表对齐。
-const RESOURCE_NAMES = { 1: 'EXP', 3: 'GOLD', 4: 'RUBY', 5: 'ARENA_POINT', 6: 'LEAGUE_POINT' };
 
 function rowsOf(config, name) {
   return config?.tables?.[name]?.data ?? [];
@@ -63,6 +63,20 @@ export function makeTypeResolver(config) {
   return (buildingId) => types.find((type) => buildingId.endsWith(type)) ?? null;
 }
 
+// 活动页和挂机共用游戏配方；同类工厂优先使用等级最高的一座。
+export function weekFactoryInfo(config, itemId, buildings) {
+  const recipe = rowsOf(config, 'BuildingProduceCfg').find(row => row.itemId === itemId);
+  if (!recipe) return null;
+  const type = recipe.buildType;
+  const best = buildings?.filter(b => b.type === type).sort((a, b) => b.level - a.level
+    || Number(b.buildFinishTime > 0) - Number(a.buildFinishTime > 0))[0];
+  return {
+    type, name: rowsOf(config, 'BuildingCfg').find(row => row.buildingType === type)?.name || type,
+    required: recipe.unlockLevel, level: buildings ? (best?.level ?? 0) : null,
+    buildingId: best?.buildingId, constructing: best?.buildFinishTime > 0,
+  };
+}
+
 export function upgradeRow(config, buildingType, level) {
   return rowsOf(config, 'BuildingUpgradeCfg').find((r) => r.buildingType === buildingType && r.level === level) ?? null;
 }
@@ -74,7 +88,7 @@ export function topLevel(config, buildingType) {
 }
 
 // 只读探测：一次拉齐海面状态、库存、资源田、舰队。
-export async function surveyWorld(client, protocol, { config = null, player = null, timeout = 8000 } = {}) {
+export async function surveyWorld(client, protocol, { config = null, player = null, includeWeekOrder = true, includeCargo = false, timeout = 8000 } = {}) {
   const get = async (name) => {
     const responseName = `${name.slice(0, -7)}Response`;
     if (!protocol[name] || !protocol[responseName]) return null;
@@ -98,13 +112,14 @@ export async function surveyWorld(client, protocol, { config = null, player = nu
   const stock = new Map();
   const addStock = (id, num) => stock.set(id, (stock.get(id) ?? 0) + Number(num ?? 0));
   for (const item of itemList?.items ?? []) addStock(item.itemId ?? item.id, item.num ?? item.count);
-  for (const entry of resourceList?.list ?? []) addStock(RESOURCE_NAMES[entry.res] ?? String(entry.res), entry.amount);
+  for (const entry of resourceList?.list ?? []) addStock(RESOURCE[entry.res] ?? String(entry.res), entry.amount);
 
   const resolveType = makeTypeResolver(config);
   const notes = [];
 
   // 人口 / 人口上限：客户端同款累加，只算已建成的（level > 0）。
-  let population = 0;
+  let population = paramOf(config, '初始人口');
+  let futurePopulation = population;
   let maxPopulation = paramOf(config, POPULATION_PARAM);
   const buildings = [];
   for (const raw of water.building ?? []) {
@@ -113,12 +128,15 @@ export async function surveyWorld(client, protocol, { config = null, player = nu
     const level = raw.level ?? 0;
     const current = upgradeRow(config, type, level);
     population += sumEffect(current?.effect, '人口增加');
+    const future = raw.buildStartTime > 0 ? upgradeRow(config, type, level + 1) : current;
+    futurePopulation += sumEffect(future?.effect, '人口增加');
     maxPopulation += sumEffect(current?.effect, '人口上限');
     if (!type) notes.push(`建筑 ${buildingId} 的类型没在 BuildingCfg 里匹配上，跳过`);
     buildings.push({
       buildingId,
       type,
       level,
+      farm: raw.farm ?? null,
       factory: raw.factory ?? null,
       product: (raw.product?.asset ?? []).map((a) => ({ id: a.id, num: Number(a.num ?? 0) })),
       buildStartTime: raw.buildStartTime ?? 0,
@@ -126,6 +144,16 @@ export async function surveyWorld(client, protocol, { config = null, player = nu
       auto: raw.auto === true,
       population: sumEffect(current?.effect, '人口增加'),
     });
+  }
+
+  // WaterModel creates level-0 building models locally after the level and
+  // prerequisite checks. Unbuilt plots of any category can be absent from the reply.
+  const levels = new Map(buildings.map(b => [b.buildingId, b.level]));
+  for (const row of rowsOf(config, 'BuildingUnlockCfg')) {
+    if (levels.has(row.buildingId) || row.playerLevel > (player?.level ?? 1)) continue;
+    if (!(row.condition ?? []).every(([id, lv]) => (levels.get(id) ?? 0) >= lv)) continue;
+    buildings.push({ buildingId: row.buildingId, type: row.buildingType, level: 0,
+      factory: null, product: [], buildStartTime: 0, buildFinishTime: 0, population: 0 });
   }
 
   const orderCfg = indexBy(config, 'WorkerOrderCfg', 'itemId');
@@ -165,27 +193,54 @@ export async function surveyWorld(client, protocol, { config = null, player = nu
     };
   });
 
+  let weekOrder = new Map();
+  const cargoOrder = new Map();
+  if (includeWeekOrder && itemList && protocol.WeekInfoRequest && protocol.WeekOrderInfoRequest) {
+    try {
+      const { needed, finished } = await readWeekOrder(client);
+      if (!finished) weekOrder = needed;
+      if (includeCargo && player?.level >= (config?.tables?.CargoUnlockCfg?.data[0]?.playerLevel ?? 9)) {
+        const ships = await get('CargoShipsRequest');
+        if (!ships) notes.push('本轮未能读取贸易港货单');
+        for (const ship of ships?.ship ?? []) {
+          if ((ship.status ?? 0) !== 0) continue;
+          for (const { filled, asset } of ship.orderItem ?? []) {
+            if (!filled && asset?.num > 0) cargoOrder.set(asset.id, (cargoOrder.get(asset.id) ?? 0) + Number(asset.num));
+          }
+        }
+      }
+    } catch (error) {
+      notes.push('本轮未能读取周订单：' + error.message);
+    }
+  }
   const factories = buildings.filter((b) => b.factory);
   const resFieldInfo = resFields?.info ?? null;
 
   return {
     now: Math.floor(Date.now() / 1000),
+    serverNow: Math.floor((Date.now() + (client.serverClockOffsetMs || 0)) / 1000),
     player,
     stock,
     have,
     buildings,
     factories,
     orders,
+    weekOrder,
+    cargoOrder,
     orderOfTheDay: water.orderOfTheDay ?? { orderNum: 0, rewardedNum: 0 },
     autoProduceEndTime: water.autoProduceEndTime ?? 0,
     autoProduceForever: water.autoProduceForever === true,
+    floaters: water.floater ?? [],
     floaterCount: (water.floater ?? []).length,
     population,
+    futurePopulation,
     maxPopulation,
+    autoFarming: water.autoFarming === true,
     stockCap: paramOf(config, STOCK_PARAM),
     factorySlots: paramOf(config, SLOTS_PARAM),
     resFields: resFieldInfo ? normalize(resFieldInfo) : null,
-    fleets: normalize(fleets?.fleets ?? []),
+    fleets: fleets ? normalize(fleets.fleets ?? []) : null,
+    worldOpenLevel: rowsOf(config, 'ModuleOpenCfg').find(r => r.moduleId === '世界')?.playerLevel,
     notes,
   };
 }
@@ -196,19 +251,54 @@ export function planWorld(survey, {
   allowSpeedUp = false,
   allowReroll = false,
   minOrderExp = 0,
-  maxUpgrades = 2,
-  maxBuilds = 5,
+  maxUpgrades = Infinity,
+  enabled = () => true,
 } = {}) {
   const { now, have } = survey;
+  const name = id => displayMaterial(config, id);
   const actions = [];
   const notes = [];
   const reserved = new Map();
   const reserve = (id, num) => reserved.set(id, (reserved.get(id) ?? 0) + Number(num ?? 0));
   const free = (id) => have(id) - (reserved.get(id) ?? 0);
 
+  // 给手动交周订单留出已有库存，在产和待收的成品也计入缺口。
+  const weeklyGap = new Map();
+  if (enabled('startProduce') || enabled('weekFactory') || enabled('farm') || enabled('upgrade')) {
+    for (const [id, required] of survey.weekOrder ?? []) {
+      const held = Math.min(required, have(id));
+      if (held > 0) reserve(id, held);
+      weeklyGap.set(id, required - held);
+    }
+  }
+  const cargoGap = new Map();
+  for (const [id, required] of survey.cargoOrder ?? []) {
+    const held = Math.min(required, free(id));
+    reserve(id, held);
+    cargoGap.set(id, required - held);
+  }
+  const credit = (id, num) => {
+    const weekly = Math.min(weeklyGap.get(id) ?? 0, num);
+    if (weekly) weeklyGap.set(id, weeklyGap.get(id) - weekly);
+    if (cargoGap.has(id)) cargoGap.set(id, Math.max(0, cargoGap.get(id) - (num - weekly)));
+  };
+  for (const { factory } of survey.factories) {
+    for (const item of factory.finishedProducts ?? []) credit(item.id, item.num);
+    for (const job of factory.factoryQ ?? []) credit(job.productId, 1);
+  }
+
+  const factoryTargets = new Map();
+  if (enabled('weekFactory')) {
+    for (const [id, gap] of weeklyGap) {
+      if (gap <= 0) continue;
+      const target = weekFactoryInfo(config, id, survey.buildings);
+      if (!target || target.level >= target.required) continue;
+      if ((factoryTargets.get(target.type)?.required ?? 0) < target.required) factoryTargets.set(target.type, target);
+    }
+  }
   // 1. 收成品：工厂走 GainFactoryProduce，非工厂建筑的囤积产物一次性批量收。
   for (const b of survey.factories) {
-    if ((b.factory.finishedProducts ?? []).length > 0) {
+    if (enabled('gainFactory') && (b.factory.finishedProducts ?? []).length > 0) {
       actions.push({
         kind: 'gainFactory',
         request: 'GainFactoryProduceRequest',
@@ -219,7 +309,7 @@ export function planWorld(survey, {
     }
   }
   const collectible = survey.buildings.filter((b) => !b.factory && b.product.length > 0).map((b) => b.buildingId);
-  if (collectible.length > 0) {
+  if (enabled('collectProduct') && collectible.length > 0) {
     actions.push({
       kind: 'collectProduct',
       request: 'CollectBuildingProductRequest',
@@ -232,7 +322,7 @@ export function planWorld(survey, {
   // 2. 竣工：建造时间已过的建筑先收尾，收尾后它才能继续升级。
   const finishing = new Set();
   for (const b of survey.buildings) {
-    if (b.buildFinishTime > 0 && b.buildFinishTime <= now) {
+    if (enabled('finishUpgrade') && b.buildFinishTime > 0 && b.buildFinishTime <= now) {
       finishing.add(b.buildingId);
       actions.push({
         kind: 'finishUpgrade',
@@ -247,19 +337,26 @@ export function planWorld(survey, {
   // 3. 建造：OnWaterResponse 里 level=0 的建筑是空位——要么「已解锁但没盖」，要么正在盖。
   //    客户端的分支很明确（subpackages/main/game.js 的 _toBuildOrUpgradeRequest）：
   //    `0 == t.level ? BuildBuildingRequest : UpgradeBuildingRequest`，所以建造这一条与升级不是同一个请求。
-  //    判据是 BuildingUpgradeCfg 的 level 1 行（实测 49 种建筑这一行全是 costTime 0 / consume 空，
-  //    只卡 playerLevel）。材料不齐时客户端会先用钻石买，本工具不这么做，直接跳过等下一轮。
+  //    首建门槛、前置建筑和材料取自每个具体地块的 BuildingUnlockCfg。
   const builds = [];
+  const unlocks = indexBy(config, 'BuildingUnlockCfg', 'buildingId');
+  const levels = new Map(survey.buildings.map(b => [b.buildingId, b.level]));
+  let plannedPopulation = survey.futurePopulation ?? survey.population;
   for (const b of survey.buildings) {
+    if (!enabled('build')) break;
     if (!b.type || b.level !== 0) continue;
     // buildFinishTime 在将来 = 正在盖，重复发只会被拒；等它到了由上面的竣工步骤收尾。
-    if (b.buildFinishTime > now) continue;
+    if (b.buildStartTime > 0 || b.buildFinishTime > now) continue;
     // 本轮刚排了竣工的，收尾后它就是 level 1 了，同一轮再发建造必被拒。
     if (finishing.has(b.buildingId)) continue;
-    const row = upgradeRow(config, b.type, 1);
+    const row = unlocks.get(b.buildingId);
     if (!row) continue;
-    if ((row.condition ?? []).length > 0) {
+    if (!(row.condition ?? []).every(([id, lv]) => (levels.get(id) ?? 0) >= lv)) {
       notes.push(`${b.buildingId} 建造有额外条件 ${JSON.stringify(row.condition)}，跳过`);
+      continue;
+    }
+    if (row.curPeople > survey.population) {
+      notes.push(`${b.buildingId} 需要人口 ${row.curPeople}，当前 ${survey.population}`);
       continue;
     }
     if (row.playerLevel > (survey.player?.level ?? 1)) {
@@ -268,29 +365,56 @@ export function planWorld(survey, {
     }
     const consume = (row.consume ?? []).map(([id, n]) => ({ id, num: Number(n) }));
     if (!consume.every((c) => free(c.id) >= c.num)) {
-      const short = consume.filter((c) => free(c.id) < c.num).map((c) => `${c.id} ${free(c.id)}/${c.num}`).join(' ');
+      const short = consume.filter((c) => free(c.id) < c.num).map((c) => `${name(c.id)} ${free(c.id)}/${c.num}` + (config?.materialSources?.(c.id)?.length ? `（来源：${config.materialSources(c.id).join("、")}）` : "")).join(' ');
       notes.push(`${b.buildingId} 建造材料不足（${short}），不买材料，等下一轮`);
       continue;
     }
-    builds.push({ building: b, row, consume });
+    const effect = upgradeRow(config, b.type, 1)?.effect;
+    builds.push({ building: b, row, consume, gain: sumEffect(effect, '人口增加'), capacity: sumEffect(effect, '人口上限') });
   }
-  builds.sort((a, b) => a.row.playerLevel - b.row.playerLevel || a.building.buildingId.localeCompare(b.building.buildingId));
-  for (const u of builds.slice(0, maxBuilds)) {
+  const upgradeReasons = [];
+  const typeLevels = new Map();
+  for (const b of survey.buildings) typeLevels.set(b.type, Math.max(typeLevels.get(b.type) ?? 0, b.level));
+  let upgradeCount = 0;
+  planUpgrades(true);
+  builds.sort((a, b) => Number(b.row.category === '指标') - Number(a.row.category === '指标')
+    || Number(b.gain > 0) - Number(a.gain > 0)
+    || a.row.playerLevel - b.row.playerLevel || a.building.buildingId.localeCompare(b.building.buildingId));
+  const priorityPlots = new Set();
+  for (const target of factoryTargets.values()) {
+    if (target.level || target.constructing) continue;
+    const plot = builds.find(u => u.building.type === target.type);
+    if (plot) priorityPlots.add(plot.building.buildingId);
+  }
+  builds.sort((a, b) => Number(priorityPlots.has(b.building.buildingId)) - Number(priorityPlots.has(a.building.buildingId)));
+  for (const u of builds) {
+    if (u.gain && plannedPopulation + u.gain > survey.maxPopulation) {
+      notes.push(`${u.building.buildingId} 增加 ${u.gain} 人，需上限 ${plannedPopulation + u.gain}，当前上限 ${survey.maxPopulation}；先建指标建筑`);
+      continue;
+    }
+    if (!u.consume.every(c => free(c.id) >= c.num)) {
+      notes.push(`${u.building.buildingId} 建材已预留给本轮其他地块，下一轮重新检查`);
+      continue;
+    }
+    plannedPopulation += u.gain;
     for (const c of u.consume) reserve(c.id, c.num);
     actions.push({
       kind: 'build',
       request: 'BuildBuildingRequest',
       response: null,
       body: { buildingId: u.building.buildingId },
-      label: `建造 ${u.building.buildingId}（需等级 ${u.row.playerLevel}）`,
+      label: `建造 ${u.building.buildingId}（需等级 ${u.row.playerLevel}）`
+        + (priorityPlots.has(u.building.buildingId) ? `，周订单需要 ${factoryTargets.get(u.building.type).required} 级` : '')
+        + (u.capacity ? `，竣工后人口上限 +${u.capacity}` : '')
+        + (u.gain ? `，竣工后人口 +${u.gain}` : ''),
     });
   }
-  for (const u of builds.slice(maxBuilds)) notes.push(`${u.building.buildingId} 本轮建造额度用完，下一轮再建`);
 
   // 4. 交居民订单：材料齐就交；不齐时按开关决定要不要拒绝重刷。
   for (const order of survey.orders) {
-    const buildable = order.missing.every((m) => free(m.id) >= m.num);
+    const buildable = order.requirements.every((r) => free(r.id) >= r.num);
     if (buildable) {
+      if (!enabled('finishOrder')) continue;
       for (const r of order.requirements) reserve(r.id, r.num);
       actions.push({
         kind: 'finishOrder',
@@ -301,16 +425,18 @@ export function planWorld(survey, {
       });
       continue;
     }
-    const short = order.missing.map((m) => `${m.id} ${free(m.id)}/${m.num}`).join(' ');
-    if (!allowReroll) {
+    const short = order.requirements.filter(m => free(m.id) < m.num).map(m => `${name(m.id)} ${free(m.id)}/${m.num}`).join(' ');
+    if (order.requirements.some(m => weeklyGap.has(m.id) || cargoGap.has(m.id)) && order.requirements.every(m => have(m.id) >= m.num)) {
+      notes.push(`订单 #${order.index} 材料已预留，等待补货`);
+    } else if (!allowReroll) {
       notes.push(`订单 #${order.index} 材料不足（${short}），未开 --reroll，保留`);
-    } else if ((order.rewardExp ?? 0) < minOrderExp) {
+    } else if (minOrderExp === null || (order.rewardExp ?? 0) < minOrderExp) {
       actions.push({
         kind: 'denyOrder',
         request: 'DenyOrderRequest',
         response: null,
         body: { index: order.index },
-        label: `拒绝低价值订单 #${order.index}（经验 ${order.rewardExp ?? '?'} < ${minOrderExp}）`,
+        label: `拒绝材料不足的订单 #${order.index}（${short}）`,
       });
     } else {
       notes.push(`订单 #${order.index} 材料不足（${short}），保留等待生产`);
@@ -321,68 +447,166 @@ export function planWorld(survey, {
   const demand = new Map();
   for (const order of survey.orders) {
     for (const m of order.missing) demand.set(m.id, (demand.get(m.id) ?? 0) + m.num);
+    // 周订单预留的库存不能同时用于居民订单。
+    for (const m of order.requirements) {
+      if (!weeklyGap.has(m.id)) continue;
+      const held = Math.min(have(m.id), survey.weekOrder.get(m.id));
+      const extra = Math.min(m.num, have(m.id)) - Math.min(m.num, have(m.id) - held);
+      if (extra > 0) demand.set(m.id, (demand.get(m.id) ?? 0) + extra);
+    }
   }
+  if (enabled('farm') && !survey.autoFarming) {
+    const crops = rowsOf(config, 'FarmlandPlantCfg');
+    const planted = new Map();
+    const plots = survey.buildings.filter(b => b.type === '农田' && b.level > 0 && !b.buildStartTime && !b.buildFinishTime);
+    const serverNow = survey.serverNow ?? now;
+    for (const b of plots) {
+      const crop = crops.find(r => r.id === b.farm?.productId);
+      if (!crop) continue;
+      planted.set(crop.id, (planted.get(crop.id) ?? 0) + crop.produceNum);
+      if (b.farm.ripeTime > 0 && b.farm.ripeTime < serverNow) actions.push({
+        kind: 'farm', request: 'FarmHarvestRequest', response: 'FarmHarvestResponse',
+        body: { buildingId: [b.buildingId] }, label: '农田收获 ' + name(crop.id),
+      });
+    }
+    const shortage = id => Math.max(0, (weeklyGap.get(id) ?? 0) + (demand.get(id) ?? 0) - (planted.get(id) ?? 0));
+    const projected = id => have(id) + (planted.get(id) ?? 0);
+    for (const crop of crops) {
+      if (shortage(crop.id) > 0 && free(crop.material[0]) < crop.material[1])
+        notes.push(name(crop.id) + ' 订单缺 ' + shortage(crop.id) + '，种植需要' + name(crop.material[0]));
+    }
+    for (const b of plots.filter(b => !b.farm?.productId)) {
+      const choices = crops.filter(r => free(r.material[0]) >= r.material[1]
+        && projected(r.id) < survey.stockCap * 5 && (!weeklyGap.has(r.id) || shortage(r.id) > 0));
+      choices.sort((a, b) => shortage(b.id) - shortage(a.id) || projected(a.id) - projected(b.id) || a.time - b.time);
+      const crop = choices[0];
+      if (!crop) continue;
+      reserve(crop.material[0], crop.material[1]);
+      const need = shortage(crop.id);
+      planted.set(crop.id, (planted.get(crop.id) ?? 0) + crop.produceNum);
+      actions.push({ kind: 'farm', request: 'FarmPlantRequest', response: null,
+        body: { args: [{ buildingId: b.buildingId, productId: crop.id }] },
+        label: '农田播种 ' + name(crop.id) + (need ? '（订单缺 ' + need + '）' : ''),
+      });
+    }
+  }
+  const incoming = new Map();
+  const addIncoming = (id, num) => incoming.set(id, (incoming.get(id) ?? 0) + num);
+  const projectedStock = id => have(id) + (incoming.get(id) ?? 0);
+  for (const { factory } of survey.factories) {
+    for (const job of factory.factoryQ ?? []) addIncoming(job.productId, 1);
+    for (const item of factory.finishedProducts ?? []) addIncoming(item.id, Number(item.num));
+  }
+  const factoryReasons = new Map();
   const produceRows = rowsOf(config, 'BuildingProduceCfg');
   for (const b of survey.factories) {
-    if (b.factory.autoProductId) {
-      notes.push(`${b.buildingId} 已设自动生产 ${b.factory.autoProductId}，不覆盖`);
+    if (!enabled('startProduce')) break;
+    if (b.factory.autoProductId && survey.autoProduceEndTime > (survey.serverNow ?? now)) {
+      factoryReasons.set(b.buildingId, `游戏自动生产 ${name(b.factory.autoProductId)} 已开启`);
+      notes.push(`${b.buildingId} 已设自动生产 ${name(b.factory.autoProductId)}，不覆盖`);
       continue;
     }
     const queue = b.factory.factoryQ ?? [];
     if (queue.length >= survey.factorySlots) continue;
-    const cand = produceRows
-      .filter((row) => row.buildType === b.type && row.unlockLevel <= b.level)
-      .filter((row) => !queue.some((job) => job.productId === row.itemId))
-      .filter((row) => have(row.itemId) < survey.stockCap)
-      .filter((row) => (row.costItem ?? []).every(([id, n]) => free(id) >= n));
-    if (cand.length === 0) continue;
-    // 订单缺口的先产，其余按产出时间短的先产（早点回本）。
-    const score = (row) => (demand.get(row.itemId) ?? 0) * 1e6 - row.produceTime;
-    const best = cand.sort((a, b2) => score(b2) - score(a))[0];
-    for (const [id, n] of best.costItem ?? []) reserve(id, n);
-    const need = demand.get(best.itemId) ?? 0;
-    actions.push({
-      kind: 'startProduce',
-      request: 'StartFactoryProduceRequest',
-      response: null,
-      body: { buildingId: b.buildingId, productId: best.itemId },
-      label: `排产 ${b.buildingId} -> ${best.itemId}（${best.produceTime}s${need ? `，订单缺 ${need}` : ''}）`,
-    });
+    for (let slot = queue.length; slot < survey.factorySlots; slot++) {
+      const reasons = [];
+      const cand = produceRows.filter(row => {
+        if (row.buildType !== b.type || row.unlockLevel > b.level) return false;
+        const id = row.itemId;
+        let reason;
+        if (projectedStock(id) >= survey.stockCap)
+          reason = '库存、待收和在产合计已达 ' + survey.stockCap;
+        else {
+          const missing = (row.costItem ?? []).filter(([item, n]) => free(item) < n);
+          if (missing.length) reason = missing.map(([item, n]) => name(item) + '可用 ' + free(item) + '/' + n).join('、');
+        }
+        if (reason) reasons.push(name(id) + '：' + reason);
+        return !reason;
+      });
+      if (!cand.length) {
+        factoryReasons.set(b.buildingId, reasons.join('；') || '当前等级没有已解锁的生产配方');
+        break;
+      }
+      const best = cand.sort((a, b2) => (weeklyGap.get(b2.itemId) ?? 0) - (weeklyGap.get(a.itemId) ?? 0)
+        || (cargoGap.get(b2.itemId) ?? 0) - (cargoGap.get(a.itemId) ?? 0)
+        || (demand.get(b2.itemId) ?? 0) - (demand.get(a.itemId) ?? 0)
+        || projectedStock(a.itemId) - projectedStock(b2.itemId)
+        || a.produceTime - b2.produceTime)[0];
+      for (const [id, n] of best.costItem ?? []) reserve(id, n);
+      const need = demand.get(best.itemId) ?? 0;
+      const weeklyNeed = weeklyGap.get(best.itemId) ?? 0;
+      const cargoNeed = cargoGap.get(best.itemId) ?? 0;
+      const projected = projectedStock(best.itemId);
+      addIncoming(best.itemId, 1);
+      if (need > 0 && !weeklyNeed && !cargoNeed) demand.set(best.itemId, need - 1);
+      credit(best.itemId, 1);
+      actions.push({
+        kind: 'startProduce',
+        request: 'StartFactoryProduceRequest',
+        response: null,
+        body: { buildingId: b.buildingId, productId: best.itemId },
+        label: `排产 ${b.buildingId} → ${name(best.itemId)}（${best.produceTime}s${weeklyNeed ? `，周订单缺 ${weeklyNeed}` : cargoNeed ? `，贸易港缺 ${cargoNeed}` : need ? `，居民订单缺 ${need}` : `，补库存，预计已有 ${projected}`}）`,
+      });
+    }
   }
 
   // 6. 余料升级建筑：把订单与排产占用的材料扣掉之后再比升级消耗，按人口需求升序（便宜的先生效）。
-  const upgrades = [];
-  for (const b of survey.buildings) {
-    if (!b.type || b.level <= 0) continue;
-    if (b.buildFinishTime > 0) continue;
-    const next = b.level + 1;
-    if (next > topLevel(config, b.type)) continue;
-    const row = upgradeRow(config, b.type, next);
-    if (!row) continue;
-    if ((row.condition ?? []).length > 0) {
-      notes.push(`${b.buildingId} 升级有额外条件 ${JSON.stringify(row.condition)}，跳过`);
-      continue;
+  planUpgrades(false);
+
+  function planUpgrades(priority) {
+    const upgrades = [];
+    for (const b of survey.buildings) {
+      const target = factoryTargets.get(b.type);
+      const forOrder = target?.buildingId === b.buildingId && b.level < target.required;
+      if (forOrder !== priority || (!priority && !enabled('upgrade'))) continue;
+      if (b.level <= 0) continue;
+      if (!b.type) { upgradeReasons.push(b.buildingId + '未找到建筑类型'); continue; }
+      if (b.buildStartTime > 0 || b.buildFinishTime > 0) {
+        upgradeReasons.push(b.buildingId + '已有施工任务，本轮先检查竣工'); continue;
+      }
+      const next = b.level + 1;
+      const row = upgradeRow(config, b.type, next);
+      if (!row) {
+        const max = topLevel(config, b.type);
+        upgradeReasons.push(b.buildingId + (max && b.level >= max ? '已达最高 ' + max + ' 级' : '缺少下一级配置'));
+        continue;
+      }
+      const unmet = (row.condition ?? []).find(([type, lv]) => (typeLevels.get(type) ?? 0) < lv);
+      if (unmet) { upgradeReasons.push(b.buildingId + '需要' + unmet[0] + ' ' + unmet[1] + '级'); continue; }
+      if (row.playerLevel > (survey.player?.level ?? 1)) { upgradeReasons.push(b.buildingId + '需要角色 ' + row.playerLevel + ' 级'); continue; }
+      if (row.curPeople > survey.population) { upgradeReasons.push(b.buildingId + '需要人口 ' + row.curPeople + '，当前 ' + survey.population); continue; }
+      const consume = (row.consume ?? []).map(([id, num]) => ({ id, num: Number(num) }));
+      const gain = Math.max(0, sumEffect(row.effect, '人口增加') - (b.population ?? 0));
+      upgrades.push({ building: b, row, consume, gain, costTime: row.costTime ?? 0 });
     }
-    if (row.playerLevel > (survey.player?.level ?? 1)) continue;
-    if (row.curPeople > survey.population) continue;
-    const consume = (row.consume ?? []).map(([id, n]) => ({ id, num: Number(n) }));
-    if (!consume.every((c) => free(c.id) >= c.num)) continue;
-    upgrades.push({ building: b, row, consume, costTime: row.costTime ?? 0 });
+    upgrades.sort((a, b) => a.row.curPeople - b.row.curPeople || a.costTime - b.costTime);
+    for (const u of upgrades) {
+      if (upgradeCount >= maxUpgrades) {
+        notes.push(`${u.building.buildingId} 本轮升级额度用完，下一轮再升`);
+        continue;
+      }
+      if (u.gain && plannedPopulation + u.gain > survey.maxPopulation) {
+        upgradeReasons.push(u.building.buildingId + '升级后人口超过上限 ' + survey.maxPopulation);
+        continue;
+      }
+      const short = u.consume.filter(c => free(c.id) < c.num);
+      if (short.length) {
+        upgradeReasons.push(u.building.buildingId + '缺' + short.map(c => name(c.id) + ' ×' + (c.num - free(c.id))).join('、'));
+        continue;
+      }
+      upgradeCount++;
+      plannedPopulation += u.gain;
+      for (const c of u.consume) reserve(c.id, c.num);
+      actions.push({
+        kind: priority ? 'weekFactory' : 'upgrade',
+        request: 'UpgradeBuildingRequest',
+        response: null,
+        body: { buildingId: u.building.buildingId },
+        label: `升级 ${u.building.buildingId} ${u.building.level}->${u.building.level + 1}（${u.costTime}s，人口 ${u.row.curPeople}）`
+          + (priority ? `，周订单需要 ${factoryTargets.get(u.building.type).required} 级` : ''),
+      });
+    }
   }
-  upgrades.sort((a, b) => a.row.curPeople - b.row.curPeople || a.costTime - b.costTime);
-  const picked = upgrades.slice(0, maxUpgrades);
-  for (const u of picked) {
-    for (const c of u.consume) reserve(c.id, c.num);
-    actions.push({
-      kind: 'upgrade',
-      request: 'UpgradeBuildingRequest',
-      response: null,
-      body: { buildingId: u.building.buildingId },
-      label: `升级 ${u.building.buildingId} ${u.building.level}->${u.building.level + 1}（${u.costTime}s，人口 ${u.row.curPeople}）`,
-    });
-  }
-  const held = upgrades.slice(maxUpgrades);
-  for (const u of held) notes.push(`${u.building.buildingId} 本轮升级额度用完，下一轮再升`);
 
   // 7. 加速：只花「加速器」，而且只对真的在等的建造/生产用。
   if (allowSpeedUp) {
@@ -399,7 +623,7 @@ export function planWorld(survey, {
         request: 'SpeedUpUpgradeBuildingRequest',
         response: null,
         body: { buildingId: b.buildingId, speedUp: { type: SPEED_UP_ITEM_TYPE, useNum } },
-        label: `加速建造 ${b.buildingId} 用 ${useNum} 个${SPEED_UP_ITEM}`,
+        label: `加速建造 ${b.buildingId} 用 ${useNum} 个${name(SPEED_UP_ITEM)}`,
       });
     }
     for (const b of survey.factories) {
@@ -414,14 +638,14 @@ export function planWorld(survey, {
           request: 'SpeedUpFactoryProduceRequest',
           response: null,
           body: { buildingId: b.buildingId, index: job.idx, speedUp: { type: SPEED_UP_ITEM_TYPE, useNum } },
-          label: `加速生产 ${b.buildingId} 用 ${useNum} 个${SPEED_UP_ITEM}`,
+          label: `加速生产 ${b.buildingId} 用 ${useNum} 个${name(SPEED_UP_ITEM)}`,
         });
       }
     }
     if (left === speeders) notes.push(`${SPEED_UP_ITEM} 有 ${speeders} 个，但没有等待中的建造或生产`);
   }
 
-  return { actions, notes, reserved: [...reserved].filter(([, n]) => n > 0) };
+  return { actions, notes, factoryReasons, upgradeReasons, reserved: [...reserved].filter(([, n]) => n > 0) };
 }
 
 export function stepKey(step) {
@@ -437,12 +661,17 @@ export async function runWorld(client, protocol, plan, {
   timeout = 15000,
   rejected = new Set(),
   onStep,
+  enabled = () => true,
 } = {}) {
   if (!allowMutate) throw new Error('海面自动化会改变账号状态，需要 --yes');
   const results = [];
   const blocked = new Set();
+  const failedRecipes = new Set();
   for (const step of plan.actions) {
+    if (!enabled(step.kind)) continue;
     const key = stepKey(step);
+    const recipe = step.kind === 'startProduce' ? JSON.stringify(step.body) : null;
+    if (recipe && failedRecipes.has(recipe)) continue;
     let entry;
     if (rejected.has(key)) entry = { step, ok: false, skipped: true, error: '刚被服务端拒过，跳过' };
     else if (blocked.has(step.kind)) entry = { step, ok: false, skipped: true, error: `同类动作已失败，本轮不再尝试` };
@@ -458,8 +687,13 @@ export async function runWorld(client, protocol, plan, {
           entry = { step, ok: true, sent };
         }
       } catch (error) {
-        rejected.add(key);
-        blocked.add(step.kind);
+        if (recipe) failedRecipes.add(recipe);
+        // Each plot has independent prerequisites. A failed build must not
+        // suppress other plots, or prevent a later fresh survey from retrying it.
+        if (!['build', 'farm', 'upgrade', 'weekFactory', 'startProduce'].includes(step.kind)) {
+          rejected.add(key);
+          blocked.add(step.kind);
+        }
         entry = { step, ok: false, error: error.message };
       }
     }
@@ -473,7 +707,7 @@ export async function runWorld(client, protocol, plan, {
 // --- 资源田 ------------------------------------------------------------------
 //
 // 「哪些 gridIdx 是田、是什么类型」不在协议里也不在 591 张配置表里，只在 CDN bundle world_map 的
-// JsonAsset 里。地图资源用 work/tmp/fetch-map.mjs 下到 work/cdn/，编码是 resType * 10000 + cityId。
+// JsonAsset 里。地图首次读取时自动缓存到 work/cdn/，编码是 resType * 10000 + cityId。
 // 占田（ChallengeResFieldRequest）要求「该田所属城是我方城 + 有闲置且 durability > 0 的舰队」，
 // 账号没有舰队时这一步必然失败，所以本模块只做只读报告 + 显式手动占田/放弃，不做无人值守的自动占田。
 
@@ -483,13 +717,47 @@ export function mapPath(scenarioId) {
   return path.join(MAP_DIR, `world_map.world_map${scenarioId > 0 ? scenarioId : 1}.json`);
 }
 
-// 读地图 JsonAsset。没有下载过就返回 null（调用方降级成「不知道这块田在哪」）。
-export function loadMapAsset(scenarioId) {
-  const file = mapPath(scenarioId);
-  if (!fs.existsSync(file)) return null;
-  const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+const mapLoads = new Map();
+
+// 版本来自游戏包 src/settings.0afbd.json 的 assets.bundleVers.world_map。
+async function fetchMap(file, scenarioId) {
+  const getJson = async url => {
+    const reply = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    if (!reply.ok) throw new Error('地图下载失败（HTTP ' + reply.status + '）');
+    return reply.json();
+  };
+  const cfg = await getJson(SERVER + 'remote/world_map/config.2ca75.json');
+  const entry = Object.entries(cfg.paths).find(([, row]) => row[0] === 'world_map' + scenarioId && cfg.types[row[1]] === 'cc.JsonAsset');
+  if (!entry) throw new Error('游戏资源中没有场景 ' + scenarioId + ' 的地图');
+  const raw = await getJson(assetUrl('world_map', cfg, Number(entry[0]), 'cc.JsonAsset'));
+  const map = parseMap(raw, file, scenarioId);
+  fs.mkdirSync(MAP_DIR, { recursive: true });
+  const temp = file + '.' + randomUUID() + '.tmp';
+  try {
+    fs.writeFileSync(temp, JSON.stringify(raw));
+    fs.renameSync(temp, file);
+  } finally { fs.rmSync(temp, { force: true }); }
+  return map;
+}
+
+export function loadMapAsset(id) {
+  const scenarioId = id > 0 ? id : 1;
+  if (!Number.isSafeInteger(scenarioId)) throw new Error('地图场景编号无效');
+  if (!mapLoads.has(scenarioId)) {
+    const file = mapPath(scenarioId);
+    const job = (async () => {
+      try { return parseMap(JSON.parse(fs.readFileSync(file, 'utf8')), file, scenarioId); }
+      catch { return fetchMap(file, scenarioId); }
+    })().catch(error => { mapLoads.delete(scenarioId); throw error; });
+    mapLoads.set(scenarioId, job);
+  }
+  return mapLoads.get(scenarioId);
+}
+
+function parseMap(raw, file, scenarioId) {
   const data = raw?.[5]?.[0]?.[2];
-  if (!data?.mapData) return null;
+  if (!Array.isArray(data?.mapData) || !data.mapInfo?.width || data.mapData.length !== data.mapInfo.width * data.mapInfo.height)
+    throw new Error('地图格子数据不完整');
   const { mapInfo, cityInfo, mapData } = data;
   return {
     file,
@@ -513,29 +781,31 @@ export function idleFleets(survey) {
   return (survey.fleets ?? []).filter((f) => Number(f.state) === 1 && Number(f.durability) > 0);
 }
 
-export function formatFieldReport(survey, map) {
+export function formatFieldReport(survey, map, mapError) {
   const lines = [];
   const info = survey.resFields;
   const fields = info?.fields ?? [];
-  lines.push(`已占资源田 ${fields.length}/${info?.maxNum ?? '?'}`);
+  const locked = survey.player?.level > 0 && survey.player.level < survey.worldOpenLevel;
+  if (locked) lines.push(`世界玩法 ${survey.worldOpenLevel} 级开放，当前角色 ${survey.player.level} 级`);
+  lines.push(info ? `已占资源田 ${fields.length}/${info.maxNum ?? '?'}` : '未取得资源田信息');
   for (const f of fields) {
     const at = map?.fieldAt(f.gridIdx);
     lines.push(`  gridIdx=${f.gridIdx} cityId=${f.cityId} type=${f.type}${at ? ` (地图: 城 ${at.cityId} 类型 ${at.resType})` : ''}`);
   }
   const idle = idleFleets(survey);
-  lines.push(`舰队 ${survey.fleets.length} 支，其中闲置可用 ${idle.length} 支${idle.length ? ` (${idle.map((f) => f.buildingId).join(',')})` : ''}`);
-  if (map) {
-    lines.push(`地图 ${path.basename(map.file)} ${map.width}x${map.height}，资源田 ${map.fieldCount} 块，城池 ${Object.keys(map.cityInfo ?? {}).length} 座`);
-  } else {
-    lines.push(`没有本地地图资源（${mapPath(1)}），先跑 node work/tmp/fetch-map.mjs 才有 gridIdx → 城池/类型 的对照`);
-  }
-  if (survey.fleets.length === 0) lines.push('没有舰队，占田的前置条件（闲置且耐久>0 的舰队）不满足，只能放弃已占的田');
+  if (!survey.fleets) lines.push('未取得舰队信息，可稍后刷新');
+  else if (survey.fleets.length) lines.push(`舰队 ${survey.fleets.length} 支，其中闲置可用 ${idle.length} 支${idle.length ? `（${idle.map(f => f.buildingId).join('、')}）` : ''}`);
+  else if (!locked) lines.push('当前账号暂无舰队');
+  if (map) lines.push(`场景 ${map.scenarioId} · 地图 ${map.width}×${map.height}，资源田 ${map.fieldCount} 块，城池 ${Object.keys(map.cityInfo ?? {}).length} 座`);
+  else lines.push('本次未取得场景地图' + (mapError ? '：' + mapError : ''));
   return lines.join('\n');
 }
 
 // 手动占田：显式给 gridIdx，舰队要么点名要么自动挑闲置的；条件不满足就直接拒绝，不发请求。
 export function planFieldOccupy(survey, gridIdx, { fleetBuildingIds = [] } = {}) {
   const info = survey.resFields;
+  if (survey.player?.level < survey.worldOpenLevel) return { error: `世界玩法 ${survey.worldOpenLevel} 级开放` };
+  if (!info || !survey.fleets) return { error: '未取得资源田或舰队状态，请刷新后重试' };
   if (info && (info.fields ?? []).length >= (info.maxNum ?? 0)) {
     return { error: `已占 ${info.fields.length}/${info.maxNum} 块田，达到上限` };
   }
@@ -575,6 +845,7 @@ export function planFieldGiveUp(survey, gridIdx) {
 export function formatWorldPlan(survey, plan) {
   const lines = [];
   lines.push(`人口 ${survey.population}/${survey.maxPopulation}  库存 ${survey.stock.size} 种  工厂 ${survey.factories.length} 栋  订单 ${survey.orders.length} 条`);
+  if (survey.futurePopulation > survey.population) lines.push(`民居施工完成后人口 ${survey.futurePopulation}`);
   if (survey.resFields) {
     const fields = survey.resFields.fields ?? [];
     lines.push(`资源田 ${fields.length}/${survey.resFields.maxNum ?? '?'}${fields.length ? `  已占 ${fields.map((f) => f.gridIdx).join(',')}` : ''}`);

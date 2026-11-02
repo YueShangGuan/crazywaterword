@@ -1,157 +1,142 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
-import { CA_CRT, CA_CN, caFingerprint, initCa, installCa, isInstalled, uninstallCa } from './mitm-ca.mjs';
-import { isProxyOn, readCurrent, restore, setProxy } from './proxy-settings.mjs';
-import { createProxy, DEFAULT_PROXY_PORT } from './mitm-proxy.mjs';
+import { randomUUID } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
+import { startCapture, stopCapture, DEFAULT_PROXY_PORT } from '../src/capture.mjs';
 
-const PORT = DEFAULT_PROXY_PORT;
-const HOST = '127.0.0.1';
-const OUT = path.resolve(import.meta.dirname, '../data/credentials.json');
-const POLL_MS = 1000;
-const WAIT_MS = Number(process.env.CW_WAIT_MS ?? 300000);
+const DEFAULT_OUT = path.resolve(import.meta.dirname, '../data/credentials.json');
+const DEFAULT_WAIT_MS = 300000;
+const CLEANUP_MESSAGES = [
+  '本次代理改动已清理。',
+  '本次安装的测试 CA 已移除。',
+  '系统代理还原失败，请停止其他采集任务后重试停止，并检查 Windows 代理设置。',
+  '本次测试 CA 移除失败，请重试停止或运行 node tools/mitm-ca.mjs uninstall。',
+  '本地采集代理关闭失败，请重试停止。',
+];
 
-let proxy = null;
-let proxied = false;
-let installed = false;
-let rolledBack = false;
-
-function rollback(reason) {
-  if (rolledBack) return;
-  rolledBack = true;
-  if (!proxied && !installed) return;
-  console.log(`\n回滚（${reason}）...`);
-  try {
-    proxy?.stop();
-  } catch {
-    /* 没什么可关的 */
+export function captureWaitMs(value = DEFAULT_WAIT_MS) {
+  const waitMs = Number(value);
+  if (!Number.isInteger(waitMs) || waitMs < 1000 || waitMs > 1800000) {
+    throw new Error('CW_WAIT_MS 必须是 1000 到 1800000 之间的整数毫秒数');
   }
-  if (proxied) {
-    try {
-      restore();
-      console.log('  代理注册表已还原:', JSON.stringify(readCurrent()));
-    } catch (error) {
-      console.error('  代理注册表还原失败，请手动执行 node tools/proxy-settings.mjs restore :', error.message);
-    }
-  }
-  if (installed) {
-    try {
-      uninstallCa();
-      console.log(`  根证书已移除，仍存在本次 CA: ${isInstalled()}`);
-    } catch (error) {
-      console.error(`  根证书移除失败，请手动执行 certutil -user -delstore Root "${CA_CN}" :`, error.message);
-    }
-  }
+  return waitMs;
 }
 
-for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
-  process.on(signal, () => {
-    rollback(signal);
-    process.exit(130);
-  });
-}
-process.on('uncaughtException', (error) => {
-  console.error(error);
-  rollback('未捕获异常');
-  process.exit(1);
-});
-
-function confirm(question) {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+export async function requestConfirmation({ input = process.stdin, output = process.stdout } = {}) {
+  // Piped input must not silently approve installing a certificate or changing a proxy.
+  if (!input.isTTY || !output.isTTY) return false;
+  const rl = readline.createInterface({ input, output });
   return new Promise((resolve) => {
-    rl.question(question, (answer) => {
+    rl.question('确认开始电脑微信抓包？[y/N] ', (answer) => {
       rl.close();
       resolve(/^y(es)?$/i.test(answer.trim()));
     });
   });
 }
 
-async function main() {
-  initCa();
-
-  const before = readCurrent();
-  console.log('本次将做两处「仅当前用户」的改动，两者都会在结束时自动还原：\n');
-  console.log('  1. 安装本地测试根证书到「当前用户」根存储（不是机器级）');
-  console.log(`     证书: ${CA_CRT}`);
-  console.log(`     主体: CN=${CA_CN}`);
-  console.log(`     ${caFingerprint()}`);
-  console.log('     命令: certutil -user -addstore Root <ca.crt>');
-  console.log(`     还原: certutil -user -delstore Root "${CA_CN}"\n`);
-  console.log(`  2. 打开「当前用户」的 WinINET 代理，指向本机 ${HOST}:${PORT}`);
-  console.log('     注册表: HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings');
-  console.log(`     原值备份: ProxyEnable=${before.ProxyEnable ?? '(无)'}`);
-  console.log(`               ProxyServer=${before.ProxyServer ?? '(无)'}`);
-  console.log(`               ProxyOverride=${before.ProxyOverride ?? '(无)'}`);
-  console.log(`     写入: ProxyEnable=1 ProxyServer=${HOST}:${PORT} ProxyOverride=<local>`);
-  console.log('     还原: 逐项写回上面的原值，原本不存在的项会被删除\n');
-  console.log('  结束时校验：代理三项注册表与备份一致、根存储中已无本次 CA。');
-  console.log('  Ctrl+C 同样会触发回滚。\n');
-
-  if (!(await confirm('确认执行？[y/N] '))) {
-    console.log('已取消，未做任何改动。');
-    return;
+export function writeCredentialAtomically(outPath, record, { filesystem = fs, now = () => new Date().toISOString() } = {}) {
+  if (!record?.body?.eworldParams?.openId || !record.url) {
+    throw new Error('登录包缺少网关地址或账号标识，原有凭证已保留');
   }
-
-  installCa();
-  installed = isInstalled();
-  if (!installed) throw new Error('证书安装后未能在当前用户根存储中找到，中止');
-  console.log('\n[1/3] 证书已安装（当前用户）。');
-
-  setProxy(HOST, PORT);
-  proxied = isProxyOn();
-  if (!proxied) throw new Error('代理未能打开，中止');
-  console.log(`[2/3] 代理已打开 -> ${HOST}:${PORT}`);
-
-  fs.rmSync(OUT, { force: true });
-  proxy = createProxy({
-    port: PORT,
-    log: (kind, message) => console.log(`${new Date().toISOString()} [${kind}] ${message}`),
-    onLogin: ({ url, body, rawFrameHex }) => {
-      fs.writeFileSync(OUT, JSON.stringify({
-        url,
-        login: body,
-        loginFrameHex: rawFrameHex,
-        source: 'mitm',
-        capturedAt: new Date().toISOString(),
-      }, null, 2));
-      console.log(`\n已保存登录凭证 -> ${OUT}`);
-    },
-  });
-  await proxy.listen();
-  console.log('[3/3] 抓包代理已就绪。\n');
-  console.log('请现在启动《疯狂水世界》小游戏。');
-  console.log('游戏若已在运行，需要完全退出后重新进入，否则不会重新发送登录包。');
-  console.log(`等待捕获 LoginRequest，最长 ${Math.round(WAIT_MS / 1000)} 秒...\n`);
-
-  const deadline = Date.now() + WAIT_MS;
-  while (Date.now() < deadline && !fs.existsSync(OUT)) {
-    await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+  const output = path.resolve(outPath);
+  const directory = path.dirname(output);
+  const temporary = path.join(directory, `.${path.basename(output)}.${process.pid}.${randomUUID()}.tmp`);
+  const capturedAt = now();
+  const credential = {
+    url: record.url,
+    login: record.body,
+    loginFrameHex: record.rawFrameHex,
+    source: 'mitm',
+    capturedAt,
+  };
+  filesystem.mkdirSync(directory, { recursive: true });
+  try {
+    filesystem.writeFileSync(temporary, `${JSON.stringify(credential, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
+    filesystem.renameSync(temporary, output);
+  } finally {
+    try { filesystem.rmSync(temporary, { force: true }); } catch { /* Preserve the original write error. */ }
   }
-
-  if (!fs.existsSync(OUT)) {
-    console.log('\n超时，没有捕获到 LoginRequest。');
-    console.log('常见原因：游戏未重新启动、TLS 证书固定、或游戏未走系统代理。');
-    console.log('排查线索见 data/capture.log。');
-    return;
-  }
-
-  const captured = JSON.parse(fs.readFileSync(OUT, 'utf8'));
-  const params = captured.login?.eworldParams ?? {};
-  const mask = (value) => (typeof value === 'string' && value.length > 8
-    ? `${value.slice(0, 4)}...${value.slice(-4)} (len=${value.length})`
-    : String(value));
-  console.log('\n已捕获登录凭证：');
-  console.log(`  url:       ${captured.url}`);
-  console.log(`  openId:    ${mask(params.openId)}`);
-  console.log(`  token:     ${mask(params.token)}`);
-  console.log(`  timestamp: ${params.timestamp?.low ?? params.timestamp}`);
-  console.log(`  sign:      ${mask(params.sign)}`);
-  console.log(`  保存于:    ${OUT}`);
+  return { path: output, capturedAt };
 }
 
-main()
-  .catch((error) => {
-    console.error(error);
+// Dependency injection keeps the CLI's lifecycle and file handling testable offline.
+export async function main(options = {}, dependencies = {}) {
+  const env = dependencies.env ?? process.env;
+  const waitMs = captureWaitMs(options.waitMs ?? env.CW_WAIT_MS ?? DEFAULT_WAIT_MS);
+  const defaultOutput = env.CW_DATA_DIR ? path.join(path.resolve(env.CW_DATA_DIR), 'credentials.json') : DEFAULT_OUT;
+  const output = path.resolve(options.outPath ?? defaultOutput);
+  const confirm = dependencies.confirm ?? requestConfirmation;
+  const start = dependencies.startCapture ?? startCapture;
+  const stop = dependencies.stopCapture ?? stopCapture;
+  const filesystem = dependencies.filesystem ?? fs;
+  const log = dependencies.log ?? console.log;
+  const setTimer = dependencies.setTimeout ?? setTimeout;
+  const clearTimer = dependencies.clearTimeout ?? clearTimeout;
+
+  log('本次将在当前用户范围安装本地测试证书，并临时启用系统代理，结束后还原。');
+  log('请让电脑微信与手机使用同一微信账号，再在电脑微信中打开《疯狂水世界》。');
+  log('此流程捕获并保存真实游戏登录请求；是否登录成功仍需由游戏网关验证。');
+  if (!(await confirm())) {
+    log('已取消，未启动抓包。非交互终端默认取消。');
+    return { status: 'cancelled' };
+  }
+
+  let timer = null;
+  let saved = null;
+  let startAttempted = false;
+  let result;
+  let complete;
+  const completion = new Promise((resolve) => { complete = resolve; });
+  try {
+    filesystem.mkdirSync(path.dirname(output), { recursive: true });
+    startAttempted = true;
+    const state = await start({
+      port: options.port ?? DEFAULT_PROXY_PORT,
+      timeoutMs: waitMs,
+      // Only known cleanup messages are safe to forward: never print transport URLs or records.
+      onLog: (message) => {
+        if (CLEANUP_MESSAGES.includes(message)) log(message);
+      },
+      onLogin: async (record) => {
+        try {
+          saved = writeCredentialAtomically(output, record, { filesystem, now: dependencies.now });
+          complete({ status: 'captured', ...saved });
+          return { id: record.body.eworldParams.openId };
+        } catch (error) {
+          complete({ status: 'failed', error });
+          throw error;
+        }
+      },
+    });
+    if (state?.error) throw new Error(state.error);
+    if (state?.running === false && !saved) throw new Error('抓包未启动，原有凭证已保留');
+    log(`等待电脑游戏发送登录请求，最多 ${Math.round(waitMs / 1000)} 秒；游戏已运行时请先完全退出再打开。`);
+    timer = setTimer(() => complete({ status: 'timeout' }), waitMs);
+    result = await completion;
+    if (result.status === 'failed') throw result.error;
+  } finally {
+    if (timer !== null) clearTimer(timer);
+    if (startAttempted) {
+      const stopped = await stop(saved ? 'CLI 已保存登录请求' : 'CLI 捕获结束');
+      if (stopped?.phase === 'error') {
+        throw new Error(`系统清理尚未完成：${stopped.error || '请检查系统代理及本次安装的测试 CA'}`);
+      }
+      if (saved && stopped?.error) {
+        throw new Error(`登录请求已保存，但采集未正常结束：${stopped.error}`);
+      }
+    }
+  }
+  if (result.status === 'captured') log(`登录请求已保存，采集清理已完成：${result.path}`);
+  else log('等待超时，未捕获登录请求；原有凭证已保留，采集清理已完成。');
+  return result;
+}
+
+if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
+  main().then((result) => {
+    if (result.status === 'timeout') process.exitCode = 1;
+  }).catch((error) => {
+    console.error(`抓包失败：${error.message}`);
     process.exitCode = 1;
-  })
-  .finally(() => rollback('完成'));
+  });
+}

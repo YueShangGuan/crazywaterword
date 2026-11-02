@@ -10,6 +10,52 @@ export const BACKUP = process.env.CW_PROXY_BACKUP
   ?? path.join(os.homedir(), '.cw-ca', 'proxy-backup.json');
 const VALUES = ['ProxyEnable', 'ProxyServer', 'ProxyOverride'];
 
+export function pointsToCapture(values, port) {
+  if (Number(values.ProxyEnable) !== 1) return false;
+  return String(values.ProxyServer ?? '').split(';').some((part) => {
+    const address = part.split('=').at(-1).trim().replace(/^https?:\/\//i, '').toLowerCase();
+    return [`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`].includes(address);
+  });
+}
+
+function equals(name, left, right) {
+  if (name === 'ProxyEnable' && left !== undefined && right !== undefined) return Number(left) === Number(right);
+  return left === right;
+}
+
+export function prepareCaptureProxy(settings, port) {
+  const original = settings.readCurrent();
+  if (pointsToCapture(original, port)) throw new Error('系统代理已指向本机采集端口，请先恢复上次的代理设置，避免覆盖原始备份');
+  const target = { ProxyEnable: '0x1', ProxyServer: `127.0.0.1:${port}`, ProxyOverride: '<local>' };
+  let ready = false;
+  let pending = [];
+  return {
+    original,
+    enable() {
+      settings.backup(original);
+      pending = VALUES.filter((name) => !equals(name, original[name], target[name]));
+      settings.setProxy('127.0.0.1', port, { backedUp: true });
+      const active = settings.readCurrent();
+      if (!VALUES.every((name) => equals(name, active[name], target[name]))) throw new Error('代理设置写入后校验失败');
+      ready = true;
+    },
+    restore() {
+      if (!pending.length) return;
+      // Restore the enable flag first. If that write fails, leave the server
+      // untouched so a retry can still establish which session owns the route.
+      for (const name of [...pending]) {
+        const active = settings.readCurrent();
+        const switchedServer = ready && active.ProxyServer !== target.ProxyServer;
+        if (equals(name, active[name], target[name]) && !(switchedServer && name === 'ProxyEnable')) {
+          settings.restore(original, [name]);
+          if (!equals(name, settings.readCurrent()[name], original[name])) throw new Error('代理还原校验失败');
+        }
+        pending = pending.filter((field) => field !== name);
+      }
+    },
+  };
+}
+
 function reg(args) {
   try {
     return execFileSync('reg', args, { stdio: ['ignore', 'pipe', 'pipe'] }).toString();
@@ -19,7 +65,7 @@ function reg(args) {
 }
 
 export function readCurrent() {
-  const out = reg(['query', KEY]);
+  const out = execFileSync('reg', ['query', KEY], { stdio: ['ignore', 'pipe', 'pipe'] }).toString();
   const values = {};
   for (const line of out.split(/\r?\n/)) {
     const match = line.match(/^\s*(ProxyEnable|ProxyServer|ProxyOverride)\s+REG_\w+\s+(.*)$/);
@@ -28,26 +74,27 @@ export function readCurrent() {
   return values;
 }
 
-export function backup() {
+export function backup(values = readCurrent()) {
   fs.mkdirSync(path.dirname(BACKUP), { recursive: true });
-  const values = readCurrent();
   fs.writeFileSync(BACKUP, JSON.stringify({ key: KEY, values, savedAt: new Date().toISOString() }, null, 2));
   return values;
 }
 
-export function setProxy(host, port) {
-  backup();
+export function setProxy(host, port, { backedUp = false } = {}) {
+  if (!backedUp) backup();
   reg(['add', KEY, '/v', 'ProxyEnable', '/t', 'REG_DWORD', '/d', '1', '/f']);
   reg(['add', KEY, '/v', 'ProxyServer', '/t', 'REG_SZ', '/d', `${host}:${port}`, '/f']);
   reg(['add', KEY, '/v', 'ProxyOverride', '/t', 'REG_SZ', '/d', '<local>', '/f']);
   return readCurrent();
 }
 
-export function restore() {
-  if (!fs.existsSync(BACKUP)) throw new Error(`no backup at ${BACKUP}`);
-  const saved = JSON.parse(fs.readFileSync(BACKUP, 'utf8'));
-  for (const name of VALUES) {
-    const original = saved.values[name];
+export function restore(values, names = VALUES) {
+  if (values === undefined) {
+    if (!fs.existsSync(BACKUP)) throw new Error(`no backup at ${BACKUP}`);
+    values = JSON.parse(fs.readFileSync(BACKUP, 'utf8')).values;
+  }
+  for (const name of names) {
+    const original = values[name];
     if (original === undefined) {
       reg(['delete', KEY, '/v', name, '/f']);
     } else {

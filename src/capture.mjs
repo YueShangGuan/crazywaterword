@@ -1,169 +1,278 @@
-// 网页控制台里的「一键扫码抓包」。
-//
-// 这是 tools/capture-credentials.mjs 那套流程的库化版本：装 CA、开 WinINET 代理、起代理、抓登录包。
-// 区别只在两个地方：
-//   1. 进度通过回调报给页面，不再只打终端；
-//   2. 系统改动全部记在 module 级的 state 里，stop() 幂等，进程退出钩子会把没回滚的补上。
-// 安全边界不变：只改当前用户（certutil -user 与 HKCU），只绑 127.0.0.1，随时可完整回滚。
-import { initCa, installCa, isInstalled, uninstallCa, CA_CN, CA_CRT, caFingerprint } from '../tools/mitm-ca.mjs';
-import { isProxyOn, readCurrent, restore, setProxy } from '../tools/proxy-settings.mjs';
-import { createProxy, DEFAULT_PROXY_PORT } from '../tools/mitm-proxy.mjs';
+// Current-user capture lifecycle. Creating/importing a controller changes no system settings.
+import * as defaultCa from '../tools/mitm-ca.mjs';
+import * as defaultSettings from '../tools/proxy-settings.mjs';
+import { createProxy as defaultCreateProxy, DEFAULT_PROXY_PORT } from '../tools/mitm-proxy.mjs';
+import { pointsToCapture, prepareCaptureProxy } from '../tools/proxy-settings.mjs';
+import { acquireCaptureLock } from '../tools/capture-lock.mjs';
+import { DEFAULT_GATEWAY } from './client.mjs';
 
-const state = {
-  running: false,
-  phase: 'idle',
-  error: null,
-  port: DEFAULT_PROXY_PORT,
-  caInstalled: false,
-  proxy: null,
-  capturedAt: null,
-  accountId: null,
-  startedAt: null,
-  log: [],
-};
-
-let proxy = null;
-let hookInstalled = false;
-
-function note(line) {
-  state.log.push({ t: new Date().toISOString(), line });
-  if (state.log.length > 200) state.log.shift();
-  state.onLog?.(line);
-}
-
-export function captureState() {
-  return {
-    running: state.running,
-    phase: state.phase,
-    error: state.error,
-    port: state.port,
-    caInstalled: isInstalled(),
-    proxy: readCurrent(),
-    proxyOn: isProxyOn(),
-    accountId: state.accountId,
-    capturedAt: state.capturedAt,
-    startedAt: state.startedAt,
-    log: state.log.slice(-40).map((entry) => entry.line),
-    ca: { cn: CA_CN, crt: CA_CRT, fingerprint: caFingerprint() },
+export const DEFAULT_CAPTURE_TIMEOUT_MS = 5 * 60 * 1000;
+const GATEWAY = new URL(DEFAULT_GATEWAY);
+export function createCaptureController(dependencies = {}) {
+  const acquireLock = dependencies.acquireLock ?? acquireCaptureLock;
+  const ca = dependencies.ca ?? defaultCa;
+  const settings = dependencies.proxySettings ?? defaultSettings;
+  const createProxy = dependencies.createProxy ?? defaultCreateProxy;
+  const runtime = dependencies.process ?? process;
+  const later = dependencies.setTimeout ?? setTimeout;
+  const cancelTimer = dependencies.clearTimeout ?? clearTimeout;
+  const now = dependencies.now ?? (() => new Date());
+  const defaultPort = dependencies.port ?? DEFAULT_PROXY_PORT;
+  const state = {
+    running: false, phase: 'idle', error: null, port: defaultPort,
+    originalProxy: null, caAddedByCapture: false, caInstalledBefore: false,
+    capturedAt: null, accountId: null, startedAt: null, log: [],
   };
-}
+  let current = null;
+  let latest = null;
 
-// 回滚：关代理进程 -> 还原注册表 -> 移除本次 CA。每一步都容错，尽力做完。
-export async function stopCapture(reason = '停止') {
-  if (!state.running && !proxy) {
-    state.phase = 'idle';
+  function note(line, run = latest) {
+    if (run && run !== latest) return;
+    state.log.push({ t: now().toISOString(), line });
+    if (state.log.length > 200) state.log.shift();
+    // UI logging cannot prevent rollback or turn a captured credential into an exception.
+    try { run?.onLog?.(line); } catch {}
+  }
+
+  function captureState() {
+    let proxy = null;
+    let fingerprint = null;
+    let thumbprint = null;
+    let caInstalled = false;
+    let caQueryError = null;
+    try { proxy = { ...settings.readCurrent() }; } catch {}
+    try { caInstalled = ca.isInstalled(); } catch (error) { caQueryError = error.message; }
+    try { fingerprint = ca.caFingerprint(); } catch {}
+    try { thumbprint = ca.caThumbprint(); } catch {}
+    return {
+      running: state.running, phase: state.phase, error: state.error, port: state.port,
+      caInstalled, caQueryError, caInstalledBefore: state.caInstalledBefore,
+      caAddedByCapture: state.caAddedByCapture,
+      proxy, proxyOn: Number(proxy?.ProxyEnable) === 1,
+      originalProxy: state.originalProxy ? { ...state.originalProxy } : null,
+      accountId: state.accountId, capturedAt: state.capturedAt, startedAt: state.startedAt,
+      log: state.log.slice(-40).map((entry) => entry.line),
+      ca: { cn: ca.CA_CN, crt: ca.CA_CRT, fingerprint, thumbprint },
+    };
+  }
+
+  function cleanupError(run, message) {
+    if (latest === run) state.error = state.error ? `${state.error} ${message}` : message;
+    note(message, run);
+  }
+
+  function restoreProxy(run) {
+    if (!run.proxySettings) return;
+    try {
+      run.proxySettings.restore();
+      run.proxySettings = null;
+      note('本次代理改动已清理。', run);
+    } catch {
+      cleanupError(run, '系统代理还原失败，请停止其他采集任务后重试停止，并检查 Windows 代理设置。');
+    }
+  }
+
+  function restoreCa(run) {
+    if (!run.caAdded) return;
+    if (run.keepCa && run.ready) {
+      run.caAdded = false;
+      if (latest === run) state.caAddedByCapture = false;
+      note('已按选项保留本次安装的测试 CA。', run);
+      return;
+    }
+    try {
+      // A failed install may have stopped before writing anything to the trust store.
+      const present = ca.isInstalled();
+      if (present) ca.uninstallCa();
+      if (ca.isInstalled()) throw new Error('CA removal verification');
+      run.caAdded = false;
+      if (latest === run) state.caAddedByCapture = false;
+      note(present ? '本次安装的测试 CA 已移除。' : '本进程未查到测试 CA，未执行删除。', run);
+    } catch {
+      cleanupError(run, '本次测试 CA 移除失败，请重试停止或运行 node tools/mitm-ca.mjs uninstall。');
+    }
+  }
+
+  function removeHooks(run) {
+    for (const [event, handler] of run.handlers) runtime.removeListener(event, handler);
+    run.handlers.clear();
+  }
+
+  function stopRun(run, reason) {
+    if (!run || run.finished) return Promise.resolve(captureState());
+    run.cancelled = true;
+    run.installAbort.abort(new Error('采集已停止'));
+    if (run.timer !== undefined) { cancelTimer(run.timer); run.timer = undefined; }
+    if (run.cleanupPromise) return run.cleanupPromise;
+    if (latest === run) state.phase = 'stopping';
+    note(`停止抓包（${reason}）`, run);
+    run.cleanupPromise = (async () => {
+      // Setup may be awaiting listen(); it must observe cancelled before setting the proxy.
+      await run.setupFinished;
+      restoreProxy(run);
+      try {
+        await run.proxy?.stop();
+        run.proxy = null;
+      } catch {
+        cleanupError(run, '本地采集代理关闭失败，请重试停止。');
+      }
+      restoreCa(run);
+      const clean = !run.proxySettings && !run.caAdded && !run.proxy;
+      if (clean && run.releaseLock) await run.releaseLock();
+      if (latest === run) {
+        state.running = false;
+        state.phase = clean ? 'idle' : 'error';
+      }
+      if (clean) {
+        run.finished = true;
+        removeHooks(run);
+        if (current === run) current = null;
+      } else {
+        // Keep both the original snapshot and exit hooks available for another cleanup attempt.
+        run.cleanupPromise = null;
+      }
+      return captureState();
+    })();
+    return run.cleanupPromise;
+  }
+
+  function stopCapture(reason = '停止') {
+    return stopRun(current, reason);
+  }
+
+  function installHooks(run) {
+    const onExit = () => {
+      run.cancelled = true;
+      // Node's exit event cannot await; registry and CA changes are synchronous.
+      restoreProxy(run);
+      if (!run.installPending) restoreCa(run);
+    };
+    run.handlers.set('exit', onExit);
+    for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143], ['SIGHUP', 129]]) {
+      run.handlers.set(signal, () => {
+        // Restore immediately even if closing a socket later fails or stalls.
+        onExit();
+        void stopRun(run, signal).finally(() => runtime.exit(code));
+      });
+    }
+    for (const [event, handler] of run.handlers) runtime.on(event, handler);
+  }
+
+  async function startCapture({
+    onLogin, onLog, port = defaultPort, keepCa = false, timeoutMs = DEFAULT_CAPTURE_TIMEOUT_MS,
+  } = {}) {
+    if (current) return captureState();
+    let finishSetup;
+    const run = {
+      onLog, keepCa, proxy: null, proxySettings: null, releaseLock: null, caAdded: false,
+      cancelled: false, finished: false, ready: false, captured: false, timer: undefined,
+      handlers: new Map(), cleanupPromise: null,
+      installAbort: new AbortController(),
+      setupFinished: new Promise((resolve) => { finishSetup = resolve; }),
+    };
+    current = run;
+    latest = run;
+    Object.assign(state, {
+      running: true, phase: 'starting', error: null, port, originalProxy: null,
+      caAddedByCapture: false, caInstalledBefore: false,
+      accountId: null, capturedAt: null, startedAt: now().toISOString(), log: [],
+    });
+    let stage = '检查采集设置';
+    let failed = false;
+    try {
+      if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('代理端口必须是 1–65535 的整数');
+      if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 86400000) throw new Error('采集超时必须在 1–86400000 毫秒之间');
+      run.releaseLock = await acquireLock();
+      if (run.cancelled) throw new Error('启动已取消');
+      state.originalProxy = { ...settings.readCurrent() };
+      if (pointsToCapture(state.originalProxy, port)) {
+        throw new Error('系统代理已指向本机采集端口；请先恢复上次的代理设置，避免覆盖原始备份');
+      }
+      state.caInstalledBefore = ca.isInstalled();
+      installHooks(run);
+      run.timer = later(() => {
+        if (run.finished || run.cancelled) return;
+        if (latest === run) state.error = '采集超时，未完成登录报文采集与处理；已停止并还原设置。';
+        void stopRun(run, '等待超时');
+      }, timeoutMs);
+
+      // Constructing decoded-mode proxy checks the extracted game protocol before trust changes.
+      stage = '加载游戏协议';
+      run.proxy = createProxy({
+        port, interceptHosts: [GATEWAY.hostname], interceptPorts: [Number(GATEWAY.port || 443)],
+        log: (kind) => {
+          if (kind === 'upgrade') note('正在检查游戏网关的 WebSocket 登录报文。', run);
+        },
+        onLogin: async (record) => {
+          if (run.cancelled || run.captured || current !== run) return;
+          let target;
+          try { target = new URL(record.url); } catch { return; }
+          if (target.protocol !== GATEWAY.protocol || target.hostname !== GATEWAY.hostname
+            || Number(target.port || 443) !== Number(GATEWAY.port || 443) || record.name !== 'LoginRequest') return;
+          run.captured = true;
+          state.capturedAt = now().toISOString();
+          state.phase = 'captured';
+          note('已采集登录报文，正在处理；实际登录结果需由游戏服务器确认。', run);
+          try {
+            const result = await onLogin?.(record);
+            if (latest === run) state.accountId = result?.id ?? null;
+          } catch {
+            if (latest === run) state.error = '登录报文保存或处理失败。';
+            note('登录报文保存或处理失败。', run);
+          } finally {
+            // Do not await this callback from stopRun: existing server callbacks themselves stop.
+            await stopRun(run, '登录报文处理结束');
+          }
+        },
+      });
+      state.phase = 'ca';
+      stage = '准备当前用户测试 CA';
+      ca.initCa();
+      ca.prepareLeaf(GATEWAY.hostname);
+      if (!state.caInstalledBefore) {
+        await ca.verifyRootView?.();
+        if (run.cancelled) throw new Error('采集启动已取消');
+        // certutil can install a certificate and subsequently fail; always own that rollback.
+        run.caAdded = true;
+        state.caAddedByCapture = true;
+        run.installPending = true;
+        try {
+          await ca.installCa({ signal: run.installAbort.signal });
+        } finally {
+          run.installPending = false;
+        }
+        if (!ca.isInstalled()) throw new Error('安装后未能确认当前测试 CA');
+      }
+      if (run.cancelled) throw new Error('采集启动已取消');
+      stage = '启动本地采集代理';
+      state.phase = 'listening';
+      await run.proxy.listen();
+      if (!run.cancelled) {
+        stage = '设置当前用户系统代理';
+        state.phase = 'proxy';
+        run.proxySettings = prepareCaptureProxy(settings, port);
+        state.originalProxy = { ...run.proxySettings.original };
+        run.proxySettings.enable();
+        run.ready = true;
+        state.phase = 'waiting';
+        note('采集已就绪，请在电脑微信中重新打开《疯狂水世界》。', run);
+      }
+    } catch (error) {
+      failed = true;
+      state.error = `${stage}失败：${error.message}`;
+      note(state.error, run);
+    } finally {
+      finishSetup();
+    }
+    if (failed || run.cancelled) await stopRun(run, failed ? '启动失败' : '启动已取消');
     return captureState();
   }
-  state.phase = 'stopping';
-  note(`停止抓包（${reason}）`);
-  try {
-    await proxy?.stop();
-  } catch (error) {
-    note(`代理关闭失败: ${error.message}`);
-  }
-  proxy = null;
 
-  if (state.proxy) {
-    try {
-      const after = restore();
-      const clean = ['ProxyEnable', 'ProxyServer', 'ProxyOverride'].every((name) => (after[name] ?? '') === (state.proxy[name] ?? ''));
-      note(clean ? '系统代理已还原' : `系统代理还原后与备份不一致: ${JSON.stringify(after)}`);
-    } catch (error) {
-      note(`系统代理还原失败，请手动执行 node tools/proxy-settings.mjs restore（${error.message}）`);
-    }
-  }
-  if (state.caInstalled && !state.keepCa) {
-    try {
-      uninstallCa();
-      note(isInstalled() ? '根证书移除后仍能查到，请手动执行 certutil -user -delstore Root' : '根证书已移除');
-    } catch (error) {
-      note(`根证书移除失败，请手动执行 certutil -user -delstore Root "${CA_CN}"（${error.message}）`);
-    }
-  }
-  state.running = false;
-  state.caInstalled = false;
-  state.proxy = null;
-  state.phase = 'idle';
-  return captureState();
+  return { captureState, startCapture, stopCapture };
 }
 
-// 起抓包。调用方（网页）必须先做那套「勾选 + 倒计时」确认。
-export async function startCapture({ onLogin, onLog, port = DEFAULT_PROXY_PORT, keepCa = false } = {}) {
-  if (state.running) return captureState();
-  state.onLog = onLog;
-  state.keepCa = keepCa;
-  state.error = null;
-  state.port = port;
-  state.accountId = null;
-  state.capturedAt = null;
-  state.log = [];
-  state.startedAt = new Date().toISOString();
-  state.running = true;
-
-  try {
-    state.phase = 'ca';
-    initCa();
-    installCa();
-    state.caInstalled = isInstalled();
-    if (!state.caInstalled) throw new Error('证书安装后未能在当前用户根存储中找到');
-    note(`本地 CA 已装进当前用户根存储（${caFingerprint()}）`);
-
-    state.phase = 'proxy';
-    setProxy('127.0.0.1', port);
-    if (!isProxyOn()) throw new Error('系统代理未能打开');
-    state.proxy = readCurrent();
-    note(`系统代理已指向 127.0.0.1:${port}`);
-
-    state.phase = 'listening';
-    proxy = createProxy({
-      port,
-      log: (kind, message) => {
-        if (kind === 'upgrade' || kind === 'capture') note(message);
-      },
-      onLogin: async (record) => {
-        state.capturedAt = new Date().toISOString();
-        state.phase = 'captured';
-        note('抓到登录包');
-        try {
-          const result = await onLogin?.(record);
-          state.accountId = result?.id ?? null;
-        } catch (error) {
-          state.error = error.message;
-          note(`入库失败: ${error.message}`);
-        }
-      },
-    });
-    await proxy.listen();
-    state.phase = 'waiting';
-    note(`等待游戏登录，请现在在电脑上打开《疯狂水世界》`);
-
-    if (!hookInstalled) {
-      hookInstalled = true;
-      const cleanup = () => {
-        if (state.running) {
-          try {
-            restore();
-          } catch { /* 备份可能已不存在 */ }
-          try {
-            if (state.caInstalled) uninstallCa();
-          } catch { /* 同上 */ }
-        }
-      };
-      process.on('exit', cleanup);
-      for (const signal of ['SIGINT', 'SIGTERM']) {
-        process.on(signal, () => {
-          cleanup();
-          process.exit(130);
-        });
-      }
-    }
-  } catch (error) {
-    state.error = error.message;
-    note(`启动失败: ${error.message}`);
-    await stopCapture('启动失败');
-    state.error = error.message;
-  }
-  return captureState();
-}
-
+const controller = createCaptureController();
+export const captureState = controller.captureState;
+export const startCapture = controller.startCapture;
+export const stopCapture = controller.stopCapture;
 export { DEFAULT_PROXY_PORT };

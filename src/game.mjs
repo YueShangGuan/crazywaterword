@@ -66,16 +66,16 @@ function responseNameOf(name) {
 // Fires the whole entry set in one burst, exactly as the client does, then waits for the
 // responses. Nothing is sent sequentially: the server tolerates the burst and answering
 // one at a time would take a minute of wall clock.
-export async function collectState(client, protocol, { timeout = 15000, onResult = null } = {}) {
+export async function collectState(client, protocol, { timeout = 15000, onResult = null, queries = ENTRY_QUERIES, signals = ENTRY_SIGNALS } = {}) {
   const ok = {};
   const failed = {};
   const waiting = [];
 
-  for (const signal of ENTRY_SIGNALS) {
+  for (const signal of signals) {
     if (protocol[signal.name]) client.send(signal.name, signal.body || {});
   }
 
-  for (const query of ENTRY_QUERIES) {
+  for (const query of queries) {
     const response = responseNameOf(query.name);
     if (!protocol[query.name] || !protocol[response]) {
       failed[query.name] = `no protocol type for ${protocol[query.name] ? response : query.name}`;

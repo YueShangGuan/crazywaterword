@@ -14,8 +14,8 @@ function directories(root) {
   }
 }
 
-function cachedPackage() {
-  if (!process.env.APPDATA) return;
+function cachedPackages() {
+  if (!process.env.APPDATA) return [];
   const users = path.join(process.env.APPDATA, 'Tencent/xwechat/radium/users');
   const candidates = [];
   for (const user of directories(users)) {
@@ -25,17 +25,29 @@ function cachedPackage() {
       if (fs.existsSync(file)) candidates.push({ version: Number(version), file });
     }
   }
-  return candidates.sort((a, b) => b.version - a.version)[0]?.file;
+  return candidates.sort((a, b) => b.version - a.version).map(entry => entry.file);
 }
 
-export function readProtocolSource(bundlePath) {
-  const file = bundlePath || process.env.CW_PROTO_BUNDLE ||
-    (fs.existsSync(PROTO_BUNDLE) ? PROTO_BUNDLE : cachedPackage());
-  if (!file) throw new Error('缺少协议文件。请在电脑版微信打开《疯狂水世界》并进入游戏，或设置 CW_PROTO_BUNDLE 指向自己的 _src_chunks_.wxapkg 或解包后的 src/chunks/game.js。');
+function readBundle(file) {
   const input = fs.readFileSync(file);
   if (!/\.wxapkg$/i.test(file)) return input.toString('utf8');
   const { data } = decrypt(APPID, input);
   const entry = inspectArchive(data).files.find(item => item.relativePath === 'src/chunks/game.js');
   if (!entry) throw new Error(file + ' 中缺少 src/chunks/game.js，请使用 _src_chunks_.wxapkg');
   return data.toString('utf8', entry.off, entry.off + entry.size);
+}
+
+export function readProtocolSource(bundlePath) {
+  const explicit = bundlePath || process.env.CW_PROTO_BUNDLE;
+  if (explicit) return readBundle(explicit);
+  let cacheError;
+  try {
+    for (const file of cachedPackages()) {
+      try { return readBundle(file); }
+      catch (error) { cacheError ??= error; }
+    }
+  } catch (error) { cacheError = error; }
+  if (fs.existsSync(PROTO_BUNDLE)) return readBundle(PROTO_BUNDLE);
+  if (cacheError) throw cacheError;
+  throw new Error('缺少协议文件。请在电脑版微信打开《疯狂水世界》并进入游戏，或设置 CW_PROTO_BUNDLE 指向自己的 _src_chunks_.wxapkg 或解包后的 src/chunks/game.js。');
 }

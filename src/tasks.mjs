@@ -177,11 +177,12 @@ export async function surveyTasks(client, protocol, { config = null, water = nul
 }
 
 // 逐条领取。同一条被服务端拒过就记下来，本轮之后不再重发——否则循环模式里会每轮骚扰一次。
-export async function runTasks(client, protocol, survey, { allowMutate = false, window = 400, onStep } = {}) {
+export async function runTasks(client, protocol, survey, { allowMutate = false, window = 400, onStep, enabled = () => true } = {}) {
   if (!allowMutate) throw new Error('领取任务奖励会改变账号状态，需要 --yes');
   const results = [];
   const rejected = new Set();
   for (const step of survey.plan) {
+    if (!enabled()) break;
     const key = `${step.kind}:${step.id}`;
     if (rejected.has(key)) {
       const entry = { step, ok: false, skipped: true, error: '刚被服务端拒过，跳过' };

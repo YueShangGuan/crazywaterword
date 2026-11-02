@@ -3,23 +3,35 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { GameClient } from './client.mjs';
+import { challengeTrial } from './trials.mjs';
 import { loadProtocol } from './proto.mjs';
 import { PAGE } from './page.mjs';
 import { listWorlds, enterWorld, describeRole } from './worlds.mjs';
-import { collectState, summarize, formatState } from './game.mjs';
-import { getConfig, APPID } from './config.mjs';
-import { qrSvg } from './vendor/qrcode.mjs';
+import { collectState, summarize, formatState, ENTRY_QUERIES } from './game.mjs';
+import { claimRewards } from './claim-rewards.mjs';
+import { fishView, newbieView } from './collections.mjs';
+import { normalize } from './worlds.mjs';
+import { pirateTracker } from './pirates.mjs';
+import { activityView } from './activities.mjs';
+import { displayMaterial, getConfig } from './config.mjs';
 import { planHeroes, runHeroPlan, formatHeroPlan } from './heroes.mjs';
+import { appointments } from './appointments.mjs';
 import { surveyDailies, runDailies, formatSurvey } from './dailies.mjs';
 import { surveyTasks, runTasks, formatTaskPlan } from './tasks.mjs';
-import { surveyWorld, planWorld, runWorld, formatWorldPlan, formatFieldReport, loadMapAsset } from './world.mjs';
+import { makeTypeResolver, weekFactoryInfo, surveyWorld, planWorld, runWorld, formatWorldPlan, formatFieldReport, loadMapAsset } from './world.mjs';
 import { runLoop, formatLoopRound } from './loop.mjs';
+import { automationTasks, taskSettings } from './automation.mjs';
+import { createStageTask } from './stages.mjs';
 import { runAction } from './actions.mjs';
 import { loadStore, saveStore, upsertAccount, removeAccount, setActive, pickAccount, describeAccount, revealAccount, DATA_DIR } from './accounts.mjs';
 import { startCapture, stopCapture, captureState, DEFAULT_PROXY_PORT } from './capture.mjs';
 import { iconIndex, atlasFile, itemIcon, resourceIcon, materialIcon, heroIcon, heroCard, buildingIcon } from './art.mjs';
 
 const LOG_LIMIT = 400;
+const overviewQueries = ENTRY_QUERIES.filter(({ name }) => [
+  'AllResourceRequest', 'AllItemRequest', 'AllHeroRequest', 'MainTaskInfoRequest', 'DailyTaskInfoRequest',
+  'AchievementInfoRequest', 'EmailBoxRequest', 'AfkInfoRequest', 'OnWaterRequest', 'MyResFieldsRequest', 'MonthCardRequest',
+].includes(name));
 // 协议帧不再进界面，但仍然要能事后查。默认只写文件，CW_DEBUG=1 时才同时打到终端。
 const TRACE_PATH = path.resolve(import.meta.dirname, '../data/protocol.log');
 
@@ -38,19 +50,20 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
   const globalLog = [];
   const streams = new Set();
   const sessions = new Map();
+  let logId = 0;
 
   const logLimit = (list) => {
     while (list.length > LOG_LIMIT) list.shift();
   };
 
   function emit(session, level, message, extra) {
-    const entry = { t: Date.now(), level, message, extra, account: session?.id ?? null };
+    const entry = { id: ++logId, t: Date.now(), level, message, extra, account: session?.id ?? null };
     const list = session ? session.log : globalLog;
     list.push(entry);
     logLimit(list);
-    const payload = `data: ${JSON.stringify(entry)}\n\n`;
+    const payload = `id: ${entry.id}\ndata: ${JSON.stringify(entry)}\n\n`;
     for (const res of streams) {
-      if (res.account && res.account !== entry.account && entry.account !== null) continue;
+      if (entry.account !== null && res.account !== entry.account) continue;
       res.write(payload);
     }
     return entry;
@@ -72,19 +85,44 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     }
   }
 
+  function enqueue(session, work, label) {
+    if (session.queueTail && label) emit(session, 'info', label + '已排队，当前操作结束后执行');
+    const generation = session.generation;
+    const run = () => {
+      if (session.paused || generation !== session.generation) throw new Error('账号已暂停，已取消排队操作');
+      return work();
+    };
+    const job = (session.queueTail ?? Promise.resolve()).then(run, run);
+    session.queueTail = job;
+    const clear = () => { if (session.queueTail === job) session.queueTail = null; };
+    job.then(clear, clear);
+    return job;
+  }
+
   function newSession(id) {
+    const saved = loadStore().accounts.find(account => account.id === id)?.automation;
     return {
       id,
+      paused: saved?.paused === true,
+      generation: 0,
       client: null,
+      connecting: null,
       player: null,
+      stages: createStageTask(),
       busy: null,
+      overviewRead: null,
+      claiming: null,
+      heroJob: null,
+      queueTail: null,
+      appointmentJob: null,
       log: [],
       loop: {
         running: false,
         rounds: 0,
         completed: 0,
-        everyMs: 60_000,
-        stop: { aborted: false },
+        everyMs: (saved?.everySeconds ?? 60) * 1000,
+        tasks: taskSettings(saved?.tasks),
+        controller: null, job: null,
         history: [],
         error: null,
       },
@@ -92,20 +130,48 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
   }
 
   function sessionFor(id) {
-    if (!sessions.has(id)) sessions.set(id, newSession(id));
+    if (!sessions.has(id)) {
+      const session = newSession(id);
+      sessions.set(id, session);
+      try {
+        const audit = JSON.parse(fs.readFileSync(factoryReportFile(id), 'utf8'));
+        for (const line of audit.lines) emit(session, 'info', '上次工厂核对（' + audit.time + '） ' + line);
+      } catch { /* 新账号没有历史核对记录 */ }
+    }
     return sessions.get(id);
   }
 
+  function factoryReportFile(id) {
+    return path.join(DATA_DIR, 'factory-report-' + encodeURIComponent(id) + '.json');
+  }
+
   function wire(session, instance) {
-    instance.on('state', ({ state, detail }) => emit(session, 'state', STATE_TEXT[state] ?? state, detail ? { detail } : undefined));
+    instance.on('message', ({ name, body }) => {
+      if (name === 'SCAllActivity' || name === 'SCNewbieActivityUpdate') instance.newbieActivity = normalize(body.newbieActivity);
+      if (name === 'SCAllActivity') {
+        instance.festivals = body.festivalActivities ?? [];
+        trace(session, '节日活动目录 ' + JSON.stringify(instance.festivals.map(row => ({
+          type: row.type, start: row.startTime, end: row.endTime, open: row.openTime, close: row.closeTime,
+          subs: row.subActivity.map(sub => sub.subActivityType),
+        }))));
+      }
+    });
+    instance.on('state', ({ state }) => emit(session, 'state', STATE_TEXT[state] ?? state));
     instance.on('frame', ({ dir, name, seq, bytes }) => trace(session, `${dir === 'out' ? '->' : '<-'} [${name}] seq=${seq} ${bytes.byteLength}B`));
     instance.on('message', ({ seq, name, body }) => trace(session, `[${name}] seq=${seq} ${JSON.stringify(body).slice(0, 400)}`));
     instance.on('pong', ({ latencyMs, offsetMs }) => trace(session, `pong ${latencyMs}ms offset=${offsetMs}ms`));
     instance.on('drop', ({ name, reason }) => emit(session, 'warn', `漏收了一条 ${name} 的应答（${reason}），本轮跳过`));
     instance.on('warn', (message) => emit(session, 'warn', message === 'ping timeout' ? '服务器心跳超时，连接可能已经断了' : message));
-    instance.on('fatal', ({ reason }) => emit(session, 'error', reason === 'SCChannelExpired' ? '这个账号在别处登录了，本条连接被顶掉' : `连接被服务器中断（${reason}）`));
+    instance.on('fatal', ({ reason }) => {
+      const message = reason === 'SCChannelExpired' ? '这个账号在别处登录了，本条连接被顶掉' : `连接被服务器中断（${reason}）`;
+      if (session.client === instance) { session.stages.stop(message); stopLoop(session, message); }
+      emit(session, 'error', message);
+    });
     instance.on('error', (error) => emit(session, 'error', error.message));
-    instance.on('close', () => emit(session, 'state', '连接已断开'));
+    instance.on('close', () => {
+      if (session.client === instance) { session.stages.stop('连接已断开'); stopLoop(session, '连接已断开'); }
+      emit(session, 'state', '连接已断开');
+    });
   }
 
   // 每次连接把服务端给的昵称/等级/区服写回账号文件，账号列表里就能看到人话标记。
@@ -123,22 +189,40 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     }
   }
 
-  async function connect(session, account) {
+  async function loginSession(session, account) {
     if (session.client?.connected) throw new Error('这个账号已经连上了');
     const client = new GameClient({ url: account.url, protocol });
     wire(session, client);
     session.client = client;
     session.player = null;
     const response = await client.connect(account.login);
+    if (session.client !== client) {
+      client.stop();
+      throw new Error('连接已取消');
+    }
     session.player = response.playerInfo || null;
+    client.send('LoginFinishRequest', {});
     persistIdentity(account, session.player);
     const role = describeRole(session.player);
     emit(session, 'info', `已进入游戏：${role?.nickname ?? '未知'} lv${role?.level ?? '?'}`);
     return { url: account.url, result: response.result, initSeqNo: response.initSeqNo, playerInfo: session.player };
   }
 
+  async function connect(session, account) {
+    if (session.paused) throw new Error('账号已暂停，请先恢复托管');
+    if (session.connecting) return session.connecting;
+    const connecting = loginSession(session, account);
+    session.connecting = connecting;
+    try {
+      return await connecting;
+    } finally {
+      if (session.connecting === connecting) session.connecting = null;
+    }
+  }
+
   async function ensureConnected(session, account) {
-    if (session.client?.connected) return session.client;
+    if (session.paused) throw new Error('账号已暂停，请先恢复托管');
+    if (!session.connecting && session.client?.connected && session.player) return session.client;
     await connect(session, account);
     return session.client;
   }
@@ -153,6 +237,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
 
   function accountStatus(session) {
     return {
+      paused: session.paused,
       connected: Boolean(session.client?.connected),
       state: session.client?.snapshot?.().state ?? 'IDLE',
       busy: session.busy,
@@ -172,7 +257,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
 
   async function overview(session, account) {
     const instance = await ensureConnected(session, account);
-    const { ok, failed } = await collectState(instance, protocol, { timeout: 15000 });
+    const { ok, failed } = await collectState(instance, protocol, { queries: overviewQueries, signals: [], timeout: 8000 });
+    for (const [name, error] of Object.entries(failed)) emit(session, 'warn', `总览查询 ${name} 失败：${error}`);
     const config = loadConfigSafe();
     const view = summarize({ ok }, { config });
     const daily = view.daily;
@@ -180,10 +266,10 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       account: describeAccount(account, { active: account.id === loadStore().activeId }),
       status: accountStatus(session),
       player: describeRole(session.player),
-      resources: view.resources.map((entry) => ({ ...entry, icon: resourceIcon(entry.res) })),
+      resources: view.resources.map((entry) => ({ ...entry, sources: config?.materialSources(entry.res), icon: resourceIcon(entry.res) })),
       items: {
         ...view.items,
-        top: view.items.top.map((item) => ({ itemId: item.itemId, num: item.num, icon: itemIcon(item.itemId) })),
+        top: view.items.top.map((item) => ({ itemId: item.itemId, name: displayMaterial(config, item.itemId), num: item.num, sources: config?.materialSources(item.itemId), icon: itemIcon(item.itemId) })),
       },
       claimable: {
         mainTask: view.mainTask ? 1 : 0,
@@ -215,30 +301,39 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
   async function world(session, account) {
     const instance = await ensureConnected(session, account);
     const config = loadConfigSafe();
-    const survey = await surveyWorld(instance, protocol, { config, player: session.player });
+    const survey = await surveyWorld(instance, protocol, { config, player: session.player, includeCargo: session.loop.tasks.cargo });
     const plan = planWorld(survey, { config });
-    let map = null;
+    let map = null, mapError;
     try {
-      map = loadMapAsset(Number(session.player?.scenarioId ?? 0));
-    } catch {
-      map = null;
+      map = await loadMapAsset(Number(session.player?.scenarioId ?? 0));
+    } catch (error) {
+      mapError = error.message;
     }
-    const fields = { ...survey.resFields, text: formatFieldReport(survey, map) };
+    const fields = { ...survey.resFields, text: formatFieldReport(survey, map, mapError) };
+    const typeNames = new Map(config?.tables?.BuildingCfg?.data.map(row => [row.buildingType, row.name]));
+    const now = Date.now() / 1000;
     return {
       population: `${survey.population}/${survey.maxPopulation}`,
-      factories: survey.factories.map((b) => ({ buildingId: b.buildingId, type: b.type, level: b.level, queue: (b.factory.factoryQ ?? []).length, auto: b.factory.autoProductId ?? null, icon: buildingIcon(b.type) })),
+      farms: survey.buildings.filter(b => b.type === '农田').map(b => ({
+        plot: b.buildingId,
+        status: !b.level ? (b.buildFinishTime ? '建造中' : '未建成') : !b.farm?.productId ? '空闲'
+          : displayMaterial(config, b.farm.productId) + (b.farm.ripeTime < survey.serverNow ? ' · 已成熟' : ' · 生长中'),
+      })),
+      factories: survey.factories.map((b) => ({ buildingId: b.buildingId, type: b.type, typeName: typeNames.get(b.type), level: b.level, queue: (b.factory.factoryQ ?? []).length, auto: b.factory.autoProductId ? displayMaterial(config, b.factory.autoProductId) : null, icon: buildingIcon(b.type) })),
       orders: survey.orders.map((order) => ({
         ...order,
-        requirements: order.requirements.map((need) => ({ ...need, icon: materialIcon(need.id) })),
-        missing: (order.missing ?? []).map((need) => ({ ...need, icon: materialIcon(need.id) })),
+        requirements: order.requirements.map((need) => ({ ...need, name: displayMaterial(config, need.id), sources: config?.materialSources(need.id), icon: materialIcon(need.id) })),
+        missing: (order.missing ?? []).map((need) => ({ ...need, name: displayMaterial(config, need.id), sources: config?.materialSources(need.id), icon: materialIcon(need.id) })),
       })),
       // 建筑全表：level=0 的是空位（正在盖或还没盖），界面靠它解释「为什么没在建造」。
       buildings: survey.buildings.map((b) => ({
         buildingId: b.buildingId, type: b.type ?? null, level: b.level,
-        building: b.buildFinishTime > 0 && b.buildFinishTime > Date.now() / 1000,
+        typeName: typeNames.get(b.type),
+        building: b.buildFinishTime > now,
+        awaitingFinish: b.buildFinishTime > 0 && b.buildFinishTime <= now,
         icon: buildingIcon(b.type),
       })),
-      stock: [...survey.stock].sort((a, b) => b[1] - a[1]).slice(0, 40).map(([id, num_]) => ({ id, num: num_, icon: materialIcon(id) })),
+      stock: [...survey.stock].sort((a, b) => b[1] - a[1]).slice(0, 40).map(([id, num_]) => ({ id, name: displayMaterial(config, id), num: num_, sources: config?.materialSources(id), icon: materialIcon(id) })),
       resFields: fields,
       plan: plan.actions,
       notes: [...survey.notes, ...plan.notes],
@@ -274,22 +369,14 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     return { tasks: survey.tasks.map((entry) => ({ ...entry, task: { ...entry.task } })), chests: survey.chests, gift: survey.gift, ruby: survey.ruby, text: formatSurvey(survey) };
   }
 
-  // ---- 抓包与扫码 -----------------------------------------------------------
+  // ---- 从电脑微信采集登录 ---------------------------------------------------
 
-  // 二维码只负责把游戏在电脑上拉起来，凭证还是靠本机代理抓。
-  // 优先级：用户自己放的 data/qrcode.png → 微信官方的跳转链接画成码 → 页面上只留手动步骤。
+  // 用户提供的小程序码仅作为游戏入口展示；它没有与本机捕获会话关联。
   function qrInfo() {
     if (fs.existsSync(path.join(DATA_DIR, 'qrcode.png'))) {
-      return { kind: 'image', url: '/api/capture/qrcode', note: '用的是你放在 data/qrcode.png 的小程序码' };
+      return { kind: 'image', url: '/api/capture/qrcode', note: '你提供的游戏入口码：请在电脑微信中识别。手机扫码不会把登录凭证传到本工具。' };
     }
-    const scheme = `weixin://dl/business/?appid=${APPID}&env_version=release`;
-    const content = `https://servicewechat.com/wxascheme/jump_wxa?url=${encodeURIComponent(scheme)}`;
-    const note = '手机扫一下，让微信把游戏在电脑上打开；扫不动就复制链接，或按下面的步骤手动开';
-    try {
-      return { kind: 'svg', svg: qrSvg(content, { scale: 4 }), content, note };
-    } catch (error) {
-      return { kind: 'link', content, note: `二维码画不出来（${error.message}），复制链接或按下面的步骤手动开游戏` };
-    }
+    return { kind: 'none', note: '请直接在电脑版微信中打开《疯狂水世界》。此游戏包未发现独立扫码授权接口。' };
   }
 
   // 抓到登录包就落库；顺手连一次把昵称/等级/区服回填，账号列表才看得到人话。
@@ -297,21 +384,26 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     const credential = { url, login: body, loginFrameHex: rawFrameHex, source: 'mitm', capturedAt: new Date().toISOString() };
     const store = loadStore();
     const { account, created } = upsertAccount(store, credential);
+    if (created) account.automation = { enabled: true, everySeconds: 60 };
     saveStore(store);
     const title = describeAccount(account).title;
     emit(null, 'info', created ? `新账号已入库：${title}` : `账号凭证已刷新：${title}`);
 
     const session = sessionFor(account.id);
+    if (session.paused) return { id: account.id };
     try {
-      await connect(session, account);
+      await ensureConnected(session, account);
       emit(null, 'info', `${title} 的角色信息已读取（游戏那边会被顶下线一次，重进即可）`);
-      session.client?.stop();
-      session.client = null;
-      session.player = null;
+      if (created && account.automation.enabled) startLoop(session, account, { rounds: 0 });
+      else if (!session.loop.running && !session.stages.view().running) {
+        session.client?.stop();
+        session.client = null;
+        session.player = null;
+      }
     } catch (error) {
+      if (created) saveAutomation(account.id, { enabled: false });
       emit(null, 'warn', `读取角色信息失败，账号本身已经存好了：${error.message}`);
     }
-    await stopCapture('已抓到账号');
     return { id: account.id };
   }
 
@@ -330,6 +422,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     };
     const longRunning = /^(GET|POST) \/api\/(heroes|dailies|tasks|world|overview|loop)(\/|$)/.test(route);
     let scoped = null;
+    let releaseWrite;
     // 所有账号相关的路由都先过这里：拿到账号、对应会话，长请求再挂个忙碌标记。
     const scoped_ = (url) => {
       const found = resolve(url);
@@ -338,6 +431,13 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       return found;
     };
     try {
+      if (['POST /api/dailies/run', 'POST /api/tasks/run', 'POST /api/world/run', 'POST /api/worlds/enter'].includes(route)) {
+        const { session } = resolve(parsed);
+        parsed.searchParams.set('account', session.id);
+        await new Promise((acquired, reject) => {
+          enqueue(session, () => new Promise(release => { releaseWrite = release; acquired(); })).catch(reject);
+        });
+      }
       if (route === 'GET /') {
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
         res.end(PAGE);
@@ -366,8 +466,15 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
           connection: 'keep-alive',
         });
         res.account = parsed.searchParams.get('account');
+        const since = Number(req.headers['last-event-id'] ?? 0);
+        const entries = [...globalLog, ...(sessions.get(res.account)?.log ?? [])]
+          .sort((a, b) => a.id - b.id).slice(-LOG_LIMIT);
+        for (const entry of entries) {
+          if (entry.id > since) res.write(`id: ${entry.id}\ndata: ${JSON.stringify(entry)}\n\n`);
+        }
+        res.flushHeaders();
         streams.add(res);
-        req.on('close', () => streams.delete(res));
+        res.on('close', () => streams.delete(res));
         return;
       }
 
@@ -381,6 +488,17 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
             status: accountStatus(sessionFor(account.id)),
           })),
         });
+        return;
+      }
+      if (route === 'POST /api/accounts/export') {
+        const { id, all } = jsonBody();
+        const store = loadStore();
+        const selected = all === true ? store.accounts : store.accounts.filter(a => a.id === id);
+        if (!selected.length) throw new Error('没有可导出的账号');
+        const backup = { version: store.version, activeId: selected.some(a => a.id === store.activeId) ? store.activeId : selected[0].id, accounts: selected };
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store',
+          'content-disposition': 'attachment; filename="accounts.json"' });
+        res.end(JSON.stringify(backup, null, 2));
         return;
       }
       if (route === 'GET /api/accounts/credential') {
@@ -421,6 +539,10 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         if (!account) throw new Error('没有这个账号');
         removeAccount(store, account.id);
         saveStore(store);
+        const removed = sessions.get(account.id);
+        removed?.loop.controller?.abort();
+        removed?.stages.stop('账号已删除');
+        removed?.client?.stop();
         sessions.delete(account.id);
         emit(null, 'info', `已删除账号 ${describeAccount(account).title}`);
         json({ ok: true });
@@ -428,6 +550,32 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       }
 
       // ---- 连接 ----
+      if (route === 'POST /api/accounts/pause') {
+        const { account, session } = scoped_(parsed);
+        const { paused } = jsonBody();
+        if (typeof paused !== 'boolean') throw new Error('请选择暂停或恢复');
+        if (session.paused !== paused) {
+          saveAutomation(account.id, { paused });
+          session.paused = paused;
+          const generation = ++session.generation;
+          if (paused) {
+            stopLoop(session, '账号暂停，结束挂机');
+            session.stages.stop('账号已暂停');
+            session.client?.stop();
+            session.worldClient?.stop();
+            session.connecting = session.client = session.player = null;
+            emit(session, 'state', '账号已暂停，可以自行上号', { pauseChanged: true });
+          } else {
+            emit(session, 'state', '账号已恢复托管', { pauseChanged: true });
+            if (account.automation?.enabled) {
+              await session.loop.job;
+              if (generation === session.generation && !session.loop.running) startLoop(session, account);
+            }
+          }
+        }
+        json(accountStatus(session));
+        return;
+      }
       if (route === 'POST /api/connect') {
         const payload = jsonBody();
         const { account, session } = scoped_(parsed);
@@ -436,16 +584,17 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       }
       if (route === 'POST /api/disconnect') {
         const { session } = scoped_(parsed);
+        stopLoop(session, '账号已断开');
+        session.stages.stop('账号已断开');
         session.client?.stop();
+        session.connecting = null;
         session.client = null;
         session.player = null;
         json({ ok: true });
         return;
       }
 
-      // ---- 抓包与扫码 ----
-      // 二维码只负责把游戏在电脑上拉起来，凭证还是靠本机代理抓。
-      // 优先用游戏自己的小程序码（data/qrcode.png），没有就退回微信的跳转链接。
+      // ---- 从电脑微信采集登录 ----
       if (route === 'GET /api/capture') {
         json({ ...captureState(), qr: qrInfo() });
         return;
@@ -467,7 +616,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         emit(null, 'info', `开始抓包：本地 CA 与系统代理（127.0.0.1:${DEFAULT_PROXY_PORT}）都是当前用户范围，抓到即自动还原`);
         await startCapture({
           port: DEFAULT_PROXY_PORT,
-          onLog: (line) => emit(null, 'info', line),
+          onLog: (line) => emit(null, /失败|超时/.test(line) ? 'error' : 'info', line),
           onLogin: async ({ url, body, rawFrameHex }) => addCapturedAccount({ url, body, rawFrameHex }),
         });
         json({ ...captureState(), qr: qrInfo() });
@@ -483,12 +632,60 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       // ---- 只读视图 ----
       if (route === 'GET /api/overview') {
         const { account, session } = scoped_(parsed);
-        json(await overview(session, account));
+        if (session.claiming) await session.claiming;
+        session.overviewRead ??= overview(session, account).finally(() => { session.overviewRead = null; });
+        json(await session.overviewRead);
         return;
       }
       if (route === 'GET /api/heroes') {
         const { account, session } = scoped_(parsed);
         json(await heroes(session, account));
+        return;
+      }
+      if (route === 'GET /api/material-sources') {
+        const config = loadConfigSafe();
+        if (!config) throw new Error('缺少游戏材料配置');
+        json(config.tables.ItemJumpCfg.data.map(r => ({ name: displayMaterial(config, r.id), sources: config.materialSources(r.id) }))
+          .filter(r => r.name !== '未知材料' && r.sources.length));
+        return;
+      }
+      if (route === 'GET /api/pirates') {
+        const { account, session } = scoped_(parsed);
+        const client = await ensureConnected(session, account);
+        const result = await pirateTracker(client, loadConfigSafe(), session.player);
+        for (const message of result.errors) emit(session, 'warn', '海盗首杀查询：' + message);
+        json(result);
+        return;
+      }
+      if (route === 'GET /api/activities') {
+        const { account, session } = scoped_(parsed);
+        const client = await ensureConnected(session, account);
+        const view = await activityView(client, client.festivals, loadConfigSafe());
+        view.newbie = newbieView(client);
+        try { view.fish = await fishView(client, loadConfigSafe()); }
+        catch (error) { emit(session, 'error', '读取钓鱼图鉴失败：' + error.message); }
+        if (view.order?.materials.length && !view.order.finished) {
+          const config = loadConfigSafe();
+          const typeOf = makeTypeResolver(config);
+          let buildings;
+          try {
+            const water = await client.request('OnWaterRequest', {}, 'OnWaterResponse');
+            buildings = (water.building ?? []).map(b => ({ ...b, type: typeOf(b.buildingId) }));
+          } catch (error) {
+            emit(session, 'error', '读取周订单工厂等级失败：' + error.message);
+          }
+          for (const row of view.order.materials) {
+            row.factory = weekFactoryInfo(config, row.id, buildings);
+            if (!row.seed) continue;
+            const plots = buildings?.filter(b => b.type === '农田' && b.level > 0);
+            const growing = plots?.find(b => b.farm?.productId === row.id);
+            row.farmStatus = !plots ? '状态未知' : !plots.length ? '农田未建成' : growing ? '已种植，等待收获'
+              : row.seed.count ? '种子库存 ' + row.seed.count : '缺' + row.seed.name;
+          }
+        }
+        if (view.lotteryError) emit(session, 'error', '读取周抽奖进度失败：' + view.lotteryError);
+        if (view.orderError) emit(session, 'error', '读取周订单失败：' + view.orderError);
+        json(view);
         return;
       }
       if (route === 'GET /api/dailies') {
@@ -518,34 +715,101 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         needConfirm(payload);
         const { account, session } = scoped_(parsed);
         if (!payload.worldId) throw new Error('要指定 worldId');
-        const entered = await enterWorld({ url: account.url, login: account.login, protocol }, Number(payload.worldId));
-        const player = describeRole(entered.player);
-        entered.client.stop();
-        json({ player });
+        if (session.paused) throw new Error('账号已暂停，请先恢复托管');
+        const client = new GameClient({ url: account.url, protocol });
+        session.worldClient = client;
+        try {
+          const entered = await enterWorld({ client, login: account.login }, Number(payload.worldId));
+          json({ player: describeRole(entered.player) });
+        } finally {
+          client.stop();
+          session.worldClient = null;
+        }
         return;
       }
 
       // ---- 写操作 ----
+      if (route === 'POST /api/trials/challenge') {
+        const { session, account } = scoped_(parsed);
+        const { raidId } = jsonBody();
+        const message = await enqueue(session, async () => {
+          const client = await ensureConnected(session, account);
+          return challengeTrial(client, loadConfigSafe(), session.player?.level ?? 0, raidId);
+        }, '试炼挑战');
+        emit(session, 'info', message);
+        json({ message });
+        return;
+      }
+      if (route === 'GET /api/appointments' || route === 'POST /api/appointments/run') {
+        const assign = req.method === 'POST';
+        if (assign) needConfirm(jsonBody());
+        const { session, account } = scoped_(parsed);
+        const previous = session.appointmentJob;
+        // 查看可复用任命的最终状态；任命遇到在途查询则等它结束再写。
+        if (previous && (!assign || previous.assign)) {
+          json(await previous.promise);
+          return;
+        }
+        const job = { assign };
+        job.promise = enqueue(session, async () => {
+          const client = await ensureConnected(session, account);
+          const result = await appointments(client, loadConfigSafe(), session.player?.level, { assign });
+          if (assign) emit(session, 'info', `英雄任命 · ${result.occupied}/${result.slots.length} 个开放职位有人，${result.changed} 个职位有变化`);
+          return result;
+        }).finally(() => {
+          if (session.appointmentJob === job) session.appointmentJob = null;
+        });
+        session.appointmentJob = job;
+        json(await job.promise);
+        return;
+      }
+      if (route === 'POST /api/loot/run') {
+        needConfirm(jsonBody());
+        const { account, session } = scoped_(parsed);
+        session.claiming ??= enqueue(session, async () => {
+          if (session.overviewRead) await session.overviewRead;
+          const instance = await ensureConnected(session, account);
+          emit(session, 'info', '开始一键领取');
+          const results = await claimRewards(instance, protocol, loadConfigSafe(), ({ label, ok, error }) =>
+            emit(session, ok ? 'info' : 'error', ok ? `领取 · ${label}` : `领取 · ${label}失败：${error}`));
+          const failed = results.filter((entry) => !entry.ok).length;
+          const summary = `本轮完成 ${results.length - failed} 项，失败 ${failed} 项`;
+          emit(session, failed ? 'warn' : 'info', summary);
+          return { results, summary };
+        }, '一键领取').finally(() => { session.claiming = null; });
+        json(await session.claiming);
+        return;
+      }
       if (route === 'POST /api/heroes/run') {
         const payload = jsonBody();
         needConfirm(payload);
         const { account, session } = scoped_(parsed);
-        const instance = await ensureConnected(session, account);
-        const plan = await heroes(session, account);
-        const started = Date.now();
-        const steps = [];
-        const results = await runHeroPlan(instance, protocol, plan, {
-          allowMutate: true,
-          timeout: 8000,
-          onStep: (entry) => {
-            const step = entry.step;
-            const label = step.kind === 'level' ? `${step.heroId} 升到 ${step.to} 级` : step.kind === 'star' ? `${step.heroId} 升到 ${step.to} 星` : `${step.heroId} 技能 ${step.slot + 1}`;
-            steps.push({ label, ok: entry.ok, error: entry.error });
-            emit(session, entry.ok ? 'info' : 'error', entry.ok ? `英雄 ${label}` : `英雄 ${label} 失败：${entry.error}`);
-          },
-        });
-        const after = await instance.request('AllHeroRequest', {}, 'AllHeroResponse', 15000);
-        json({ sent: results.length, failed: results.filter((r) => !r.ok).length, ms: Date.now() - started, steps, heroes: after.heroes ?? [] });
+        session.heroJob ??= enqueue(session, async () => {
+          const instance = await ensureConnected(session, account);
+          const plan = await heroes(session, account);
+          const started = Date.now();
+          const steps = [];
+          const results = await runHeroPlan(instance, protocol, plan, {
+            allowMutate: true,
+            timeout: 8000,
+            onStep: (entry) => {
+              const step = entry.step;
+              const label = step.kind === 'level' ? `${step.heroId} 升级请求 · 目标 ${entry.targetLevel} 级` : step.kind === 'star' ? `${step.heroId} 升到 ${step.to} 星` : `${step.heroId} 技能 ${step.slot + 1}`;
+              steps.push({ label, ok: entry.ok, skipped: entry.skipped === true, error: entry.error });
+              if (entry.skipped) emit(session, 'warn', `英雄 ${label} 已跳过：${entry.error}`);
+              else emit(session, entry.ok ? 'info' : 'error', entry.ok ? `英雄 ${label}` : `英雄 ${label} 失败：${entry.error}`);
+            },
+          });
+          const after = await instance.request('AllHeroRequest', {}, 'AllHeroResponse', 15000);
+          const upgraded = new Set(results.filter((r) => r.targetLevel != null).map((r) => r.step.heroId));
+          for (const hero of after.heroes ?? []) {
+            if (upgraded.has(hero.heroId)) emit(session, 'info', `养成后 · ${hero.heroId} 当前 ${hero.level} 级`);
+          }
+          const skipped = results.filter((r) => r.skipped).length;
+          return { sent: results.length - skipped, failed: results.filter((r) => !r.ok && !r.skipped).length,
+            skipped, ms: Date.now() - started, steps, heroes: after.heroes ?? [] };
+        }, '英雄养成').finally(() => { session.heroJob = null; });
+        json(await session.heroJob);
         return;
       }
       if (route === 'POST /api/dailies/run') {
@@ -597,7 +861,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         const { account, session } = scoped_(parsed);
         const instance = await ensureConnected(session, account);
         const config = loadConfigSafe();
-        const survey = await surveyWorld(instance, protocol, { config, player: session.player });
+        const survey = await surveyWorld(instance, protocol, { config, player: session.player, includeCargo: session.loop.tasks.cargo });
         const plan = planWorld(survey, { config, allowSpeedUp: payload.speedUp === true, allowReroll: payload.reroll === true });
         const { results } = await runWorld(instance, protocol, plan, {
           allowMutate: true,
@@ -608,7 +872,36 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         });
         await new Promise((resolve) => setTimeout(resolve, 1200));
         const after = await world(session, account);
-        json({ results: results.map((r) => ({ label: r.step.label, ok: r.ok, skipped: r.skipped, error: r.error })), plan: after.plan, text: after.text, population: after.population });
+        json({ ...after, results: results.map((r) => ({ label: r.step.label, ok: r.ok, skipped: r.skipped, error: r.error })) });
+        return;
+      }
+      if (route === 'GET /api/stages') {
+        json(scoped_(parsed).session.stages.view());
+        return;
+      }
+      if (route === 'POST /api/stages/start') {
+        const payload = jsonBody();
+        needConfirm(payload);
+        const { session, account } = scoped_(parsed);
+        if (session.paused) throw new Error('账号已暂停，请先恢复托管');
+        json(session.stages.start(payload, async () => {
+          const client = await ensureConnected(session, account);
+          const config = loadConfigSafe();
+          let nextCheck = 0;
+          return { client, player: session.player, config, schedule: work => enqueue(session, work), async beforeBattle(signal) {
+            const enabled = key => key === 'afk' && session.loop.tasks.afk && !session.loop.running && !signal.aborted;
+            if (!enabled('afk') || Date.now() < nextCheck) return;
+            nextCheck = Date.now() + 60_000;
+            await claimRewards(client, protocol, config, ({ label, ok, error }) =>
+              emit(session, ok ? 'info' : 'error', ok ? label : label + '：' + error),
+              enabled, time => { nextCheck = time; });
+          } };
+        }, (error) => emit(session, 'error', `主线推关失败：${error.message}`)));
+        return;
+      }
+      if (route === 'POST /api/stages/stop') {
+        needConfirm(jsonBody());
+        json(scoped_(parsed).session.stages.stop());
         return;
       }
       // 循环：开启后立刻返回，进度走 /api/loop 与事件流。
@@ -621,73 +914,122 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         const payload = jsonBody();
         needConfirm(payload);
         const { account, session } = scoped_(parsed);
-        const loop = session.loop;
-        if (loop.running) throw new Error('这个账号的循环已经在跑了');
-        const instance = await ensureConnected(session, account);
-        const config = loadConfigSafe();
-        loop.running = true;
-        loop.rounds = Number(payload.rounds ?? 1);
-        loop.completed = 0;
-        loop.everyMs = Number(payload.everySeconds ?? 60) * 1000;
-        loop.history = [];
-        loop.error = null;
-        loop.stop = { aborted: false };
-        emit(session, 'info', `自动挂机开始：${loop.rounds} 轮，每轮间隔 ${payload.everySeconds ?? 60} 秒`);
-        runLoop(instance, protocol, {
-          config,
-          player: session.player,
-          rounds: loop.rounds,
-          everyMs: loop.everyMs,
-          allowMutate: true,
-          allowPaid: payload.paid === true,
-          allowSpeedUp: payload.speedUp === true,
-          allowReroll: payload.reroll === true,
-          stop: loop.stop,
-          onRound: (summary) => {
-            loop.completed = summary.round;
-            loop.history.push(summary);
-            if (loop.history.length > 50) loop.history.shift();
-            emit(session, 'info', formatLoopRound(summary));
-          },
-          onStep: (entry) => {
-            const label = entry.step?.label ?? entry.title ?? entry.id;
-            if (entry.skipped) return;
-            emit(session, entry.ok ? 'info' : 'error', entry.ok ? `循环[${entry.phase}] ${label}` : `循环[${entry.phase}] ${label} 失败：${entry.error}`);
-          },
-        })
-          .then(() => emit(session, 'info', '自动挂机结束'))
-          .catch((error) => {
-            loop.error = error.message;
-            emit(session, 'error', `自动挂机中止：${error.message}`);
-          })
-          .finally(() => {
-            loop.running = false;
-          });
-        json({ ok: true, running: true });
+        startLoop(session, account, { rounds: payload.rounds ?? 0, everySeconds: payload.everySeconds });
+        json(loopView(session));
         return;
       }
       if (route === 'POST /api/loop/stop') {
         const payload = jsonBody();
         needConfirm(payload);
         const { session } = scoped_(parsed);
-        session.loop.stop.aborted = true;
+        stopLoop(session, '已暂停挂机');
         json({ ok: true, running: session.loop.running });
+        return;
+      }
+
+      if (route === 'POST /api/loop/task') {
+        const payload = jsonBody();
+        needConfirm(payload);
+        const { session } = scoped_(parsed);
+        const task = automationTasks.find(item => item.key === payload.key);
+        if (!task || typeof payload.enabled !== 'boolean') throw new Error('无效的自动任务设置');
+        const tasks = { ...session.loop.tasks, [task.key]: payload.enabled };
+        saveAutomation(session.id, { tasks });
+        session.loop.tasks = tasks;
+        if (!Object.values(tasks).some(Boolean)) stopLoop(session, '全部自动项目已暂停');
+        emit(session, 'info', task.label + (payload.enabled ? '已启用' : '已暂停'));
+        json(loopView(session));
         return;
       }
 
       json({ error: 'not found' }, 404);
     } catch (error) {
-      emit(scoped, 'error', error.message);
-      json({ error: error.message }, 400);
+      const entry = emit(scoped, 'error', `${route} · ${error.message}`);
+      json({ error: error.message, log: entry }, 400);
     } finally {
+      releaseWrite?.();
       if (scoped && scoped.busy === route) scoped.busy = null;
     }
+  }
+
+  function saveAutomation(id, change) {
+    const store = loadStore();
+    const account = store.accounts.find(item => item.id === id);
+    if (!account) return;
+    account.automation = { ...account.automation, ...change };
+    saveStore(store);
+  }
+
+  function stopLoop(session, reason) {
+    const loop = session.loop;
+    if (!loop.running || loop.controller.signal.aborted) return;
+    if (!session.paused) saveAutomation(session.id, { enabled: false });
+    loop.controller.abort();
+    emit(session, 'info', reason);
+  }
+
+  function startLoop(session, account, { rounds = 0, everySeconds = session.loop.everyMs / 1000 } = {}) {
+    if (session.paused) throw new Error('账号已暂停，请先恢复托管');
+    const loop = session.loop;
+    if (loop.running) throw new Error('这个账号的挂机已在运行');
+    if (!Number.isSafeInteger(rounds) || rounds < 0) throw new Error('轮数必须是非负整数');
+    if (!Number.isSafeInteger(everySeconds) || everySeconds < 1 || everySeconds > 86400) throw new Error('间隔秒数需要为 1–86400 的整数');
+    if (!Object.values(loop.tasks).some(Boolean)) throw new Error('请至少启用一个自动项目');
+    // Persist only continuous runs for restart. Reserve this account before login awaits.
+    saveAutomation(account.id, { enabled: rounds === 0, everySeconds });
+    Object.assign(loop, { running: true, rounds, completed: 0, everyMs: everySeconds * 1000,
+      history: [], error: null, controller: new AbortController() });
+    const { signal } = loop.controller;
+    emit(session, 'info', `自动挂机开始，每 ${everySeconds} 秒检查一次`);
+    loop.job = (async () => {
+      try {
+        const client = await ensureConnected(session, account);
+        if (signal.aborted) return;
+        await runLoop(client, protocol, { config: loadConfigSafe(), player: session.player,
+          rounds, everyMs: loop.everyMs, allowMutate: true, stop: signal,
+          schedule: work => enqueue(session, work),
+          isEnabled: key => loop.tasks[key] === true,
+          onRound(summary) {
+            if (summary.world.factories?.length) {
+              try {
+                fs.writeFileSync(factoryReportFile(session.id), JSON.stringify({ time: new Date().toLocaleString('zh-CN'), lines: summary.world.factories }));
+              } catch (error) { emit(session, 'warn', '保存工厂核对记录失败：' + error.message); }
+            }
+            loop.completed = summary.round;
+            loop.history.push(summary);
+            if (loop.history.length > 50) loop.history.shift();
+            emit(session, 'info', formatLoopRound(summary));
+          },
+          onStep(entry) {
+            if (entry.skipped) {
+              if (entry.phase === 'tasks' && entry.label && entry.reason) emit(session, 'info', entry.label + '：' + entry.reason);
+              return;
+            }
+            const label = entry.step?.label ?? entry.title ?? entry.id;
+            emit(session, entry.ok ? 'info' : 'error', entry.ok ? `循环[${entry.phase}] ${label}` : `循环[${entry.phase}] ${label} 失败：${entry.error}`);
+          },
+        });
+      } catch (error) {
+        if (!signal.aborted) {
+          loop.error = error.message;
+          saveAutomation(account.id, { enabled: false });
+          emit(session, 'error', `自动挂机中止：${error.message}`);
+        }
+      } finally {
+        loop.running = false;
+        loop.controller = null;
+        loop.job = null;
+        emit(session, 'info', '自动挂机结束');
+      }
+    })();
   }
 
   function loopView(session) {
     const loop = session.loop;
     return {
       running: loop.running,
+      stopping: !!loop.controller?.signal.aborted,
+      tasks: automationTasks.map(({ key, label, group }) => ({ key, label, group, enabled: loop.tasks[key] })),
       rounds: loop.rounds,
       completed: loop.completed,
       everyMs: loop.everyMs,
@@ -710,13 +1052,26 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       new Promise((resolve) => {
         server.listen(port, host, () => {
           emit(null, 'info', `控制台已启动 http://${host}:${port}`);
+          for (const account of loadStore().accounts) {
+            if (!account.automation?.enabled || account.automation.paused) continue;
+            const session = sessionFor(account.id);
+            try { startLoop(session, account); }
+            catch (error) { emit(session, 'error', `无法恢复挂机：${error.message}`); }
+          }
           resolve(`http://${host}:${port}`);
         });
       }),
-    close: () => new Promise((resolve) => server.close(resolve)),
+    close: () => {
+      for (const session of sessions.values()) {
+        session.loop.controller?.abort();
+        session.stages.stop('控制台已关闭');
+        session.client?.stop();
+      }
+      return new Promise((resolve) => server.close(resolve));
+    },
     emit,
     sessions,
-    captureState: () => capture,
+    captureState,
   };
 }
 

@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { decrypt, inspectArchive, main, unpack } from './wxapkg.mjs';
+import { readProtocolSource } from '../src/protocol-source.mjs';
 
 function archive(entries) {
   const files = entries.map(([name, data]) => ({ name: Buffer.from(name), data: Buffer.from(data) }));
@@ -53,6 +54,26 @@ function encryptedFixture(appid, plain) {
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-wxapkg-test-'));
 let rejected = 0;
 try {
+  const savedEnv = { APPDATA: process.env.APPDATA, CW_PROTO_BUNDLE: process.env.CW_PROTO_BUNDLE };
+  try {
+    process.env.APPDATA = temp;
+    delete process.env.CW_PROTO_BUNDLE;
+    const root = path.join(temp, 'Tencent/xwechat/radium/users/fixture/applet/packages/wx2ea52a972ea18e5e');
+    for (const version of ['71', '74']) {
+      const dir = path.join(root, version);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, '_src_chunks_.wxapkg'), archive([['/src/chunks/game.js', version]]));
+    }
+    assert.equal(readProtocolSource(), '74');
+    process.env.CW_PROTO_BUNDLE = path.join(root, '71', '_src_chunks_.wxapkg');
+    assert.equal(readProtocolSource(), '71');
+    assert.equal(readProtocolSource(path.join(root, '74', '_src_chunks_.wxapkg')), '74');
+  } finally {
+    for (const [key, value] of Object.entries(savedEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
   const moduleUrl = new URL('./wxapkg.mjs', import.meta.url).href;
   const imported = execFileSync(process.execPath, ['--input-type=module', '-e',
     `process.argv = ['node', 'unrelated-entry', 'invalid']; await import(${JSON.stringify(moduleUrl)}); console.log('import-ok');`,

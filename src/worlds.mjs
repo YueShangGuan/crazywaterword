@@ -65,8 +65,7 @@ export async function listGroup(client, groupId, timeout = 10000) {
 // Entering a world is just a login that names it. `newRole` in the returned PlayerInfo
 // means the server created a fresh role there, so callers must not treat an arbitrary
 // worldId as a read.
-export async function enterWorld({ url, login, protocol }, worldId, timeout = 15000) {
-  const client = new GameClient({ url, protocol });
+export async function enterWorld({ url, login, protocol, client = new GameClient({ url, protocol }) }, worldId, timeout = 15000) {
   try {
     const response = await client.connect({ ...login, worldId });
     return { client, player: normalize(response.playerInfo), initSeqNo: response.initSeqNo };

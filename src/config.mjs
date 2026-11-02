@@ -9,7 +9,7 @@ export const APPID = 'wx2ea52a972ea18e5e';
 export const CONFIG_PACK_PATH = path.resolve(import.meta.dirname, '../work/cdn/config_cn_pack.json');
 
 // 资源是服务端数字枚举，数字到字符串 id 的映射只存在于客户端的生成代码里。
-export const RESOURCE = { 1: 'EXP', 3: 'GOLD', 4: 'RUBY', 5: 'ARENA_POINT', 6: 'LEAGUE_POINT' };
+export const RESOURCE = { 1: 'EXP', 3: 'GOLD', 4: 'RUBY', 5: 'ARENA_POINT', 6: 'LEAGUE_POINT', 7: 'SNOWBALL_STAMINA' };
 
 function cachedPackCandidates() {
   const users = path.join(os.homedir(), 'AppData', 'Roaming', 'Tencent', 'xwechat', 'radium', 'users');
@@ -62,17 +62,31 @@ export function loadTables(file = findConfigPack()) {
 
 const rows = (tables, name) => (Array.isArray(tables[name]?.data) ? tables[name].data : []);
 
+export function displayMaterial(config, id) {
+  return config?.materialName?.(id) || '未知材料';
+}
+
 export function loadConfig({ file } = {}) {
   const tables = loadTables(file);
   const resourceCfg = new Map(rows(tables, 'ResourceCfg').map((row) => [row.id, row]));
+  const itemCfg = new Map(rows(tables, 'ItemCfg').map(row => [row.id, row]));
 
+  const access = new Map(rows(tables, 'ItemAccessCfg').map(row => [row.id, row.name]));
+  const sources = new Map(rows(tables, 'ItemJumpCfg').map(row => [row.id,
+    [...new Set((row.accessList ?? []).map(key => access.get(key)).filter(Boolean))]]));
   return {
+    materialSources(id) { return sources.get(RESOURCE[id] ?? id) ?? []; },
     tables,
     names: Object.keys(tables).sort(),
+    materialName(id) {
+      const key = RESOURCE[id] ?? id;
+      return resourceCfg.get(key)?.show_name || itemCfg.get(key)?.show_name
+        || (key === 'SNOWBALL_STAMINA' ? '雪球体力' : '未知材料');
+    },
     // 数字枚举先转字符串 id，再从 ResourceCfg 取展示名。
     resourceName(res) {
       const id = typeof res === 'number' ? RESOURCE[res] ?? String(res) : res;
-      return resourceCfg.get(id)?.show_name ?? id;
+      return resourceCfg.get(id)?.show_name ?? (id === 'SNOWBALL_STAMINA' ? '雪球体力' : `资源 #${res}`);
     },
     resourceId(res) {
       return typeof res === 'number' ? RESOURCE[res] ?? String(res) : res;

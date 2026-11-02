@@ -12,7 +12,7 @@ export const MAX_NAME_LENGTH = 127;
 export const FLAG_PLAIN = 0;
 export const FLAG_LZ4 = 1;
 
-export function createCodec(protocol) {
+export function createCodec(protocol, { optionalPush } = {}) {
   function typeOf(name) {
     const type = protocol[name];
     if (!type || typeof type.encode !== 'function') {
@@ -72,6 +72,7 @@ export function createCodec(protocol) {
       const payloadOffset = flagOffset + 1;
       payload = new Uint8Array(view.buffer, view.byteOffset + payloadOffset, view.byteLength - payloadOffset);
     }
+    if (name === optionalPush && !protocol[name]) return { seq, name, skipped: true };
     const body = typeOf(name).decode(Reader.create(payload));
     return { seq, name, body };
   }

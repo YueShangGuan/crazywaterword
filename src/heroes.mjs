@@ -215,7 +215,8 @@ export async function runHeroPlan(client, protocol, plan, { allowMutate = false,
   for (const step of plan.steps) {
     const key = `${step.kind}|${step.heroId}`;
     if (blocked.has(key)) {
-      const entry = { step, ok: false, skipped: true, error: '同类操作已被服务端拒绝，跳过' };
+      const entry = { step, targetLevel: step.kind === 'level' ? step.from + 1 : undefined,
+        ok: false, skipped: true, error: '同类操作已被服务端拒绝，跳过' };
       results.push(entry);
       onStep?.(entry);
       continue;
@@ -223,14 +224,15 @@ export async function runHeroPlan(client, protocol, plan, { allowMutate = false,
     const calls = step.kind === 'level' ? step.count : 1;
     for (let i = 0; i < calls; i += 1) {
       const body = buildHeroBody(step);
+      const targetLevel = step.kind === 'level' ? step.from + i + 1 : undefined;
       try {
         const outcome = await sendHero(client, protocol, step, body, timeout);
-        const entry = { step, ok: true, ...outcome };
+        const entry = { step, targetLevel, ok: true, ...outcome };
         results.push(entry);
         onStep?.(entry);
       } catch (error) {
         blocked.add(key);
-        const entry = { step, ok: false, error: error.message };
+        const entry = { step, targetLevel, ok: false, error: error.message };
         results.push(entry);
         onStep?.(entry);
         break;
@@ -273,6 +275,5 @@ export function formatHeroPlan(plan) {
     else if (step.kind === 'star') lines.push(`升星 ${step.heroId} ${step.from} -> ${step.to} 星 (${step.fragments} 碎片${step.universal ? '，含万能' : ''})`);
     else lines.push(`技能 ${step.heroId} 第${step.slot + 1}技能 ${step.from} -> ${step.to} (${step.item} x${step.num})`);
   }
-  for (const note of plan.notes) lines.push(`跳过 ${note}`);
-  return lines.join('\n');
+  return lines.length ? lines.join('\n') : '当前没有可升级、升星或提升技能的英雄。';
 }

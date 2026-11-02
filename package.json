@@ -5,9 +5,14 @@
   "type": "module",
   "main": "src/app.mjs",
   "scripts": {
+    "build:ui": "esbuild src/ui/console.tsx --bundle --platform=node --format=esm --packages=external --outfile=src/ui/dist/console.mjs && tailwindcss -i src/ui/theme.css -o src/ui/dist/theme.css --minify",
     "start": "node src/app.mjs",
-    "test": "node src/selftest.mjs",
+    "test": "node src/selftest.mjs && node tools/selftest-automation.mjs",
+    "test:capture": "node tools/selftest-raw-capture.mjs && node tools/selftest-douyin-cli.mjs",
+    "test:wxapkg": "node tools/selftest-wxapkg.mjs",
+    "test:wechat": "node tools/selftest-wechat-capture.mjs && node tools/selftest-wechat-cli.mjs",
     "capture": "node tools/capture-credentials.mjs",
+    "capture:douyin": "node tools/capture-douyin-login.mjs",
     "sync-config": "node tools/sync-config.mjs",
     "sync-art": "node tools/sync-art.mjs"
   },
@@ -24,6 +29,20 @@
     "node": ">=20.11"
   },
   "dependencies": {
-    "protobufjs": "^7.6.6"
+    "@radix-ui/react-checkbox": "^1.4.1",
+    "@radix-ui/react-slot": "^1.5.0",
+    "@radix-ui/react-switch": "^1.4.1",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^1.66.0",
+    "protobufjs": "^7.6.6",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "tailwind-merge": "^3.7.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.3.3",
+    "esbuild": "^0.28.2",
+    "tailwindcss": "^4.3.3"
   }
 }

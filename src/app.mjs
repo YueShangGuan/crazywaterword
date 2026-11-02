@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { parseArgs } from 'node:util';
 import { GameClient } from './client.mjs';
 import { loadProtocol } from './proto.mjs';
 import { createConsole, openBrowser } from './server.mjs';
@@ -13,6 +14,7 @@ import { surveyDailies, runDailies, formatSurvey, planChests, planDailyGift } fr
 import { surveyTasks, runTasks, formatTaskPlan } from './tasks.mjs';
 import { surveyWorld, planWorld, runWorld, formatWorldPlan, formatFieldReport, loadMapAsset, planFieldOccupy, planFieldGiveUp, SPEED_UP_ITEM, makeTypeResolver as resolveBuildingType, upgradeRow } from './world.mjs';
 import { runLoop, formatLoopRound } from './loop.mjs';
+import { runStages, stageFailureLimit } from './stages.mjs';
 
 const READ_ONLY_PROBES = [
   'AllResourceRequest',
@@ -30,15 +32,15 @@ function accountSelector() {
   return process.env.CW_ACCOUNT ?? null;
 }
 
-function loadCredentials() {
+function loadCredentials(selector = accountSelector()) {
   const store = loadStore();
   if (!store.accounts.length) {
     throw new Error(`还没有任何账号。先跑 node tools/capture-credentials.mjs 抓一份凭证，或在网页控制台里扫码添加`);
   }
-  const account = pickAccount(store, accountSelector());
+  const account = pickAccount(store, selector);
   if (!account) throw new Error('选不出账号，用 --account <id|昵称|序号> 指定一个');
   // 有多个号、或用户明确指定了账号时才提示，免得单账号时每行输出都多一句。
-  if (store.accounts.length > 1 || accountSelector()) {
+  if (store.accounts.length > 1 || selector) {
     console.log(`账号: ${describeAccount(account).title} (${account.id.slice(0, 8)}…)`);
   }
   return { url: account.url, login: account.login, account };
@@ -366,8 +368,9 @@ async function heroes({ allowMutate, dryRun, allowUniversal }) {
       timeout: 8000,
       onStep: (entry) => {
         const step = entry.step;
-        const label = step.kind === 'level' ? `${step.heroId} lv${step.to}` : step.kind === 'star' ? `${step.heroId} ${step.to}星` : `${step.heroId} 技能${step.slot + 1}`;
-        console.log(entry.ok ? `  . ${label}` : `  x ${label} 失败: ${entry.error}`);
+        const label = step.kind === 'level' ? `${step.heroId} 目标 lv${entry.targetLevel}` : step.kind === 'star' ? `${step.heroId} ${step.to}星` : `${step.heroId} 技能${step.slot + 1}`;
+        if (entry.skipped) console.log(`  - ${label} 已跳过：${entry.error}`);
+        else console.log(entry.ok ? `  . ${label}` : `  x ${label} 失败: ${entry.error}`);
       },
     });
     const after = await client.request('AllHeroRequest', {}, 'AllHeroResponse', 15000);
@@ -545,7 +548,7 @@ async function field({ sub, gridIdx, fleets, allowMutate }) {
     const player = response.playerInfo;
     let map = null;
     try {
-      map = loadMapAsset(Number(player?.scenarioId ?? 0));
+      map = await loadMapAsset(Number(player?.scenarioId ?? 0));
     } catch (error) {
       console.log(`warn: 地图资源读取失败 (${error.message})`);
     }
@@ -779,6 +782,37 @@ async function main() {
       allowUniversal: !process.argv.includes('--no-universal'),
       allowMutate: process.env.CW_ALLOW_MUTATE === '1' || process.argv.includes('--yes'),
     });
+    return;
+  }
+
+  if (mode === 'stages') {
+    const { values } = parseArgs({ args: process.argv.slice(3), options: {
+      'max-failures': { type: 'string' }, account: { type: 'string' }, yes: { type: 'boolean' },
+      dry: { type: 'boolean' }, help: { type: 'boolean' },
+    } });
+    if (values.help) {
+      console.log('node src/app.mjs stages [--account 账号] [--max-failures 次数] [--dry] [--yes]\n默认预览，同一关连续失败 3 次停止，过关后清零。');
+      return;
+    }
+    const maxFailures = stageFailureLimit(values['max-failures']);
+    const { url, login } = loadCredentials(values.account ?? process.env.CW_ACCOUNT ?? null);
+    const config = getConfig();
+    const client = new GameClient({ url, protocol: loadProtocol() });
+    const controller = new AbortController();
+    client.on('fatal', ({ reason }) => controller.abort(new Error(`连接中断：${reason}`)));
+    client.on('close', () => controller.abort(new Error('游戏连接已断开')));
+    client.on('error', (error) => controller.abort(error));
+    try {
+      const { playerInfo } = await client.connect(login);
+      const result = await runStages(client, playerInfo, config, {
+        maxFailures, signal: controller.signal,
+        allowMutate: !values.dry && (values.yes || process.env.CW_ALLOW_MUTATE === '1'),
+        onBattle: ({ stage, won, failures }) => console.log(won ? `主线第 ${stage} 关胜利` : `第 ${stage} 关连续失败 ${failures} 次`),
+      });
+      console.log(`本次通过 ${result.wins} 关。${result.reason}`);
+    } finally {
+      client.stop();
+    }
     return;
   }
 
