@@ -5,6 +5,7 @@ const weekNames = { 1: '周战令', 2: '累计充值', 3: '英雄升星', 4: '�
 const serverNow = client => (Date.now() + (client.serverClockOffsetMs || 0)) / 1000;
 const open = (activity, now) => activity.startTime <= now && now < activity.endTime;
 const linkageNames = { 28: '风水罗盘', 29: '酆都法旨', 30: '驱邪除祟' };
+const linkageTasks = { 28: 'compassReward', 29: 'edict', 30: 'evilExpel' };
 
 function playable(row, sub, now) {
   return open(row, now) && (!sub.openTime || sub.openTime <= now) && (!sub.closeTime || now < sub.closeTime);
@@ -49,7 +50,7 @@ export async function runLinkage(client, config, enabled, report) {
   for (const row of client.festivals ?? []) {
     for (const sub of row.subActivity ?? []) {
       const expel = sub.subActivityType === 30;
-      const key = ({ 28: 'compassReward', 29: 'edict', 30: 'evilExpel' })[sub.subActivityType];
+      const key = linkageTasks[sub.subActivityType];
       if (!key) continue;
       const allowed = () => enabled(key) && playable(row, sub, serverNow(client));
       if (!allowed()) continue;
@@ -90,18 +91,32 @@ export async function runLinkage(client, config, enabled, report) {
   }
 }
 
-async function weekly(client) {
+async function weekSchedule(client) {
   const reply = await client.request('WeekInfoRequest', {}, 'WeekInfoResponse');
-  return (normalize(reply).activityTime ?? []).filter(row => open(row, serverNow(client)));
+  return normalize(reply).activityTime ?? [];
 }
 
-export async function readWeekOrder(client, week) {
+async function weekly(client) {
+  return (await weekSchedule(client)).filter(row => open(row, serverNow(client)));
+}
+
+export async function readWeekOrder(client, week, config) {
   const active = week ?? await weekly(client);
   const needed = new Map();
-  if (!active.some(row => row.type === 5)) return { needed, finished: false };
+  const current = active.find(row => row.type === 5);
+  if (!current) return { needed, finished: false };
   const order = normalize(await client.request('WeekOrderInfoRequest', {}, 'WeekOrderInfoResponse'));
-  for (const item of order.order ?? []) needed.set(item.id, (needed.get(item.id) ?? 0) + item.num);
-  return { needed, finished: Boolean(order.isGotFinal) };
+  if (order?.isGotFinal) return { needed, finished: true };
+  const prizes = config?.tables?.WeekOrderRwdCfg?.data?.filter(row => row.periodId === current.period && row.rwdId > 0);
+  if (prizes?.length && prizes.every(row => order?.gotRwdId?.includes(row.rwdId))) {
+    return { needed, finished: true, finalReady: true };
+  }
+  if (!order?.order?.length) throw new Error('未能确认当前周订单的材料清单');
+  for (const item of order.order) {
+    if (!item?.id || !Number.isSafeInteger(item.num) || item.num <= 0) throw new Error('周订单材料或数量不完整');
+    needed.set(item.id, (needed.get(item.id) ?? 0) + item.num);
+  }
+  return { needed, finished: false };
 }
 
 function lotteryProgress(config, period, info) {
@@ -120,7 +135,7 @@ export async function activityView(client, festivals = [], config = null) {
     const linkage = (row.subActivity ?? []).filter(sub => linkageNames[sub.subActivityType]);
     if (linkage.length) {
       for (const sub of linkage) {
-        if (playable(row, sub, serverNow(client))) activities.push({ name: '捞尸人联动 · ' + linkageNames[sub.subActivityType], endTime: Math.min(sub.closeTime || row.endTime, row.endTime) });
+        if (playable(row, sub, serverNow(client))) activities.push({ name: '捞尸人联动 · ' + linkageNames[sub.subActivityType], taskKey: linkageTasks[sub.subActivityType], endTime: Math.min(sub.closeTime || row.endTime, row.endTime) });
       }
     }
     if (open(row, serverNow(client))) activities.push({
@@ -139,8 +154,10 @@ export async function activityView(client, festivals = [], config = null) {
   }
   if (!week.some(row => row.type === 5)) return { activities, lottery, lotteryError, order: null };
   try {
-    const { needed, finished } = await readWeekOrder(client, week);
+    const { needed, finished, finalReady } = await readWeekOrder(client, week, config);
+    if (finished) return { activities, lottery, lotteryError, order: { materials: [], finished, finalReady } };
     const bag = normalize(await client.request('AllItemRequest', {}, 'AllItemResponse'));
+    if (!Array.isArray(bag?.items)) throw new Error('未能确认仓库库存');
     const stock = new Map();
     for (const item of bag.items ?? []) stock.set(item.itemId, (stock.get(item.itemId) ?? 0) + item.num);
 
@@ -150,7 +167,7 @@ export async function activityView(client, festivals = [], config = null) {
       const seed = crop ? { name: displayMaterial(config, crop.material[0]), count: stock.get(crop.material[0]) ?? 0 } : null;
       return { id, seed, sources: config?.materialSources?.(id) ?? [], name: displayMaterial(config, id), required, owned, missing: Math.max(0, required - owned) };
     });
-    return { activities, lottery, lotteryError, order: { materials, finished } };
+    return { activities, lottery, lotteryError, order: { materials, finished, ready: materials.every(m => m.missing === 0) } };
   } catch (error) {
     return { activities, lottery, lotteryError, order: null, orderError: error.message };
   }
@@ -158,13 +175,27 @@ export async function activityView(client, festivals = [], config = null) {
 
 const passLocks = new WeakMap();
 
-export async function claimWeekly(client, config, enabled, report, playerLevel) {
-  const week = await weekly(client);
+export async function claimWeekly(client, config, enabled, report, playerLevel, scheduler) {
+  const due = key => enabled(key) && (!scheduler || scheduler.due(key));
+  if (!['weekPass', 'weekTimes', 'weekGift'].some(due)) return;
+  const midnight = scheduler?.nextDay();
+  const schedule = await weekSchedule(client);
+  const time = serverNow(client);
+  const week = schedule.filter(row => open(row, time));
+  if (scheduler) {
+    for (const [key, type] of [['weekPass', 1], ['weekGift', 4], ['weekTimes', 4]]) {
+      if (!due(key) || week.some(row => row.type === type)) continue;
+      const starts = schedule.filter(row => row.type === type && row.startTime > time).map(row => row.startTime);
+      scheduler.defer(key, Math.min(starts.length ? Math.min(...starts) : time + 600, midnight));
+    }
+  }
   for (const row of week) {
-    if (row.type === 4 && enabled('weekTimes')) {
+    let lotteryInfo;
+    const readLottery = () => client.request('WeekLotteryInfoRequest', {}, 'WeekLotteryInfoResponse');
+    if (row.type === 4 && due('weekTimes')) {
       try {
-        const info = await client.request('WeekLotteryInfoRequest', {}, 'WeekLotteryInfoResponse');
-        let state = lotteryProgress(config, row.period, info.gotInfo);
+        lotteryInfo = await readLottery();
+        let state = lotteryProgress(config, row.period, lotteryInfo.gotInfo);
         while (state.ready && enabled('weekTimes') && open(row, serverNow(client))) {
           const reply = await client.request('WeekLotteryTimesRewardRequest', {}, 'WeekLotteryTimesRewardResponse');
           const after = lotteryProgress(config, row.period, reply.gotInfo);
@@ -172,10 +203,13 @@ export async function claimWeekly(client, config, enabled, report, playerLevel) 
           report({ label: '周抽奖次数奖励 · 已领至第 ' + after.claimed + ' 档（累计 ' + after.times + ' 次）', ok: true });
           state = after;
         }
+        if (scheduler && enabled('weekTimes') && !state.ready) {
+          scheduler.defer('weekTimes', Math.min(row.endTime, state.required == null ? midnight : scheduler.now() + 180));
+        }
       } catch (error) { report({ label: '周抽奖次数奖励', ok: false, error: error.message }); }
     }
     const key = row.type === 1 ? 'weekPass' : row.type === 4 ? 'weekGift' : null;
-    if (!key || !enabled(key)) continue;
+    if (!key || !due(key)) continue;
     const allowed = () => enabled(key) && open(row, serverNow(client));
     const tables = config?.tables;
     try {
@@ -205,12 +239,19 @@ export async function claimWeekly(client, config, enabled, report, playerLevel) 
       } else {
         const cfg = tables?.WeekLotteryPackCfg?.data.find(pack => pack.price === 0 && pack.limitedTimes > 0);
         if (!cfg) throw new Error('缺少周抽奖免费礼包配置');
-        const read = async () => (await client.request('WeekLotteryInfoRequest', {}, 'WeekLotteryInfoResponse'))
-          .gift?.find(item => item.giftId === cfg.packId)?.gotTimes ?? 0;
-        const before = await read();
-        if (before >= cfg.limitedTimes || !allowed()) continue;
+        const claimed = info => info.gift?.find(item => item.giftId === cfg.packId)?.gotTimes ?? 0;
+        // Recheck a claimed pack at rollover or when this event ends, whichever is first.
+        const recheck = scheduler && Math.min(row.endTime, midnight);
+        const before = claimed(lotteryInfo ?? await readLottery());
+        if (before >= cfg.limitedTimes) {
+          scheduler?.defer(key, recheck);
+          continue;
+        }
+        if (!allowed()) continue;
         await client.sendWatch('WeekLotteryFreePackRequest', {});
-        if (await read() <= before) throw new Error('服务端尚未确认礼包领取');
+        const after = claimed(await readLottery());
+        if (after <= before) throw new Error('服务端尚未确认礼包领取');
+        if (after >= cfg.limitedTimes) scheduler?.defer(key, recheck);
         report({ label: '周抽奖免费礼包', ok: true });
       }
     } catch (error) {
@@ -218,7 +259,9 @@ export async function claimWeekly(client, config, enabled, report, playerLevel) 
         const threshold = tables?.ModuleOpenCfg?.data.find(entry => entry.moduleId === '周活动')?.playerLevel;
         const levelHint = playerLevel > 0 && playerLevel < threshold
           ? `（当前 ${playerLevel} 级，周活动 ${threshold} 级开放）` : '';
-        passLocks.set(client, { endTime: row.endTime, level: playerLevel, retryAt: serverNow(client) + 1800 });
+        const retryAt = Math.min(row.endTime, serverNow(client) + 1800);
+        passLocks.set(client, { endTime: row.endTime, level: playerLevel, retryAt });
+        scheduler?.defer('weekPass', retryAt);
         report({ label: weekNames[row.type], skipped: true, reason: '账号尚未解锁' + levelHint + '，稍后自动复查' });
       } else {
         report({ label: weekNames[row.type], ok: false, error: error.message });

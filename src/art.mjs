@@ -12,13 +12,21 @@ export const ART_DIR = path.resolve(import.meta.dirname, '../work/cdn/art');
 const INDEX_PATH = path.join(ART_DIR, 'index.json');
 
 let cached = null;
+let indexMtime;
+let nextIndexCheck = 0;
 
 export function iconIndex() {
-  if (cached) return cached;
+  const now = Date.now();
+  if (cached && now < nextIndexCheck) return cached;
+  nextIndexCheck = now + 1000;
   try {
-    cached = JSON.parse(fs.readFileSync(INDEX_PATH, 'utf8'));
+    const mtime = fs.statSync(INDEX_PATH).mtimeMs;
+    if (!cached || indexMtime !== mtime) {
+      cached = JSON.parse(fs.readFileSync(INDEX_PATH, 'utf8'));
+      indexMtime = mtime;
+    }
   } catch {
-    cached = { generatedAt: null, icons: {}, pages: [] };
+    cached ??= { generatedAt: null, icons: {}, pages: [] };
   }
   return cached;
 }
@@ -57,7 +65,7 @@ export function iconEntry(name) {
 
 // 只允许取镜像目录里真实存在的文件，路径里的 .. 与绝对路径一律拒掉。
 export function atlasFile(bundle, file) {
-  if (!bundle || !file || /[\\/]/.test(bundle) || /[\\/]/.test(file) || bundle.includes('..') || file.includes('..')) return null;
+  if (!bundle || !file?.endsWith('.png') || /[\\/]/.test(bundle) || /[\\/]/.test(file) || bundle.includes('..') || file.includes('..')) return null;
   const full = path.join(ART_DIR, bundle, file);
   if (!full.startsWith(ART_DIR + path.sep) || !fs.existsSync(full)) return null;
   return full;
@@ -103,6 +111,8 @@ function indexes() {
 
 export function resetCache() {
   cached = null;
+  indexMtime = undefined;
+  nextIndexCheck = 0;
   tables = null;
   maps = null;
 }

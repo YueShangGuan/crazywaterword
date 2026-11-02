@@ -63,6 +63,22 @@ export function makeTypeResolver(config) {
   return (buildingId) => types.find((type) => buildingId.endsWith(type)) ?? null;
 }
 
+export function displayBuilding(config, building) {
+  const { buildingId, type } = building;
+  const name = rowsOf(config, 'BuildingCfg').find(row => row.buildingType === type)?.name || type;
+  if (!name) return buildingId;
+  const prefix = buildingId.endsWith(type) ? buildingId.slice(0, -type.length) : '';
+  const hasPeers = rowsOf(config, 'BuildingUnlockCfg').some(row => row.buildingType === type && row.buildingId !== buildingId);
+  return hasPeers && /^\d+$/.test(prefix) ? `${name}（${prefix} 号）` : name;
+}
+
+function durationText(seconds) {
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  if (!minutes) return seconds + ' 秒';
+  return minutes + ' 分钟' + (rest ? ' ' + rest + ' 秒' : '');
+}
+
 // 活动页和挂机共用游戏配方；同类工厂优先使用等级最高的一座。
 export function weekFactoryInfo(config, itemId, buildings) {
   const recipe = rowsOf(config, 'BuildingProduceCfg').find(row => row.itemId === itemId);
@@ -87,8 +103,38 @@ export function topLevel(config, buildingType) {
     .reduce((max, r) => Math.max(max, r.level), 0);
 }
 
+// v74 identifies orders by reusable slots. Keep a per-connection token that
+// changes if the game replaces the slot, or we have already attempted its delivery.
+const residentSessions = new WeakMap();
+function trackResidentOrders(client) {
+  let session = residentSessions.get(client);
+  if (session) return session;
+  session = new Map();
+  residentSessions.set(client, session);
+  client.on?.('message', ({ name, body }) => {
+    if (name === 'SCWorkerOrder') rememberResidentOrders(session, normalize(body?.order ?? []));
+  });
+  return session;
+}
+
+function rememberResidentOrders(session, orders) {
+  const keys = new Map();
+  for (const order of orders) {
+    const index = order.index ?? 0;
+    if (keys.has(index)) { keys.set(index, null); session.delete(index); continue; }
+    const quantities = new Map();
+    for (const item of order.requirements ?? []) quantities.set(item.id ?? '', (quantities.get(item.id ?? '') ?? 0) + Number(item.num ?? 0));
+    const needs = [...quantities].sort(([a], [b]) => a.localeCompare(b));
+    const signature = JSON.stringify([order.workerId ?? 0, order.textId ?? 0, !!order.isSpecial, order.refreshTime ?? 0, needs]);
+    if (session.get(index)?.signature !== signature) session.set(index, { key: randomUUID(), signature });
+    keys.set(index, session.get(index).key);
+  }
+  for (const index of session.keys()) if (!keys.has(index)) session.delete(index);
+  return keys;
+}
+
 // 只读探测：一次拉齐海面状态、库存、资源田、舰队。
-export async function surveyWorld(client, protocol, { config = null, player = null, includeWeekOrder = true, includeCargo = false, timeout = 8000 } = {}) {
+export async function surveyWorld(client, protocol, { config = null, player = null, includeWeekOrder = true, includeCargo = false, ordersOnly = false, timeout = 8000 } = {}) {
   const get = async (name) => {
     const responseName = `${name.slice(0, -7)}Response`;
     if (!protocol[name] || !protocol[responseName]) return null;
@@ -99,19 +145,23 @@ export async function surveyWorld(client, protocol, { config = null, player = nu
     }
   };
 
+  const orderSession = trackResidentOrders(client);
   const water = await get('OnWaterRequest');
   if (!water) throw new Error('拿不到 OnWaterResponse，无法探测海面');
+  const orderKeys = rememberResidentOrders(orderSession, water.workerOrder ?? []);
   const [itemList, resourceList, resFields, fleets] = await Promise.all([
     get('AllItemRequest'),
-    get('AllResourceRequest'),
-    get('MyResFieldsRequest'),
-    get('MyFleetsRequest'),
+    ordersOnly ? null : get('AllResourceRequest'),
+    ordersOnly ? null : get('MyResFieldsRequest'),
+    ordersOnly ? null : get('MyFleetsRequest'),
   ]);
 
   // 道具和资源合到一张库存表里，消耗项的 id 有的是道具名（木材）、有的是资源名（GOLD）。
   const stock = new Map();
   const addStock = (id, num) => stock.set(id, (stock.get(id) ?? 0) + Number(num ?? 0));
-  for (const item of itemList?.items ?? []) addStock(item.itemId ?? item.id, item.num ?? item.count);
+  if (Array.isArray(itemList?.items)) for (const item of itemList.items) {
+    if (item?.itemId || item?.id) addStock(item.itemId ?? item.id, item.num ?? item.count);
+  }
   for (const entry of resourceList?.list ?? []) addStock(RESOURCE[entry.res] ?? String(entry.res), entry.amount);
 
   const resolveType = makeTypeResolver(config);
@@ -131,7 +181,7 @@ export async function surveyWorld(client, protocol, { config = null, player = nu
     const future = raw.buildStartTime > 0 ? upgradeRow(config, type, level + 1) : current;
     futurePopulation += sumEffect(future?.effect, '人口增加');
     maxPopulation += sumEffect(current?.effect, '人口上限');
-    if (!type) notes.push(`建筑 ${buildingId} 的类型没在 BuildingCfg 里匹配上，跳过`);
+    if (!type) notes.push(`暂时无法识别建筑「${buildingId}」，本轮跳过`);
     buildings.push({
       buildingId,
       type,
@@ -158,10 +208,13 @@ export async function surveyWorld(client, protocol, { config = null, player = nu
 
   const orderCfg = indexBy(config, 'WorkerOrderCfg', 'itemId');
   const specOrderCfg = indexBy(config, 'WorkerSpecOrderCfg', 'times');
+  const workerNames = new Map(rowsOf(config, 'WorkerBaseCfg').map(worker => [String(worker.id), worker.showName]));
   const have = (id) => stock.get(id) ?? 0;
 
   const orders = (water.workerOrder ?? []).map((raw) => {
-    const requirements = (raw.requirements ?? []).map((r) => ({ id: r.id, num: Number(r.num ?? 0) }));
+    const quantities = new Map();
+    for (const row of raw.requirements ?? []) quantities.set(row.id, (quantities.get(row.id) ?? 0) + Number(row.num ?? 0));
+    const requirements = Array.from(quantities, ([id, num]) => ({ id, num }));
     const missing = requirements
       .map((r) => ({ id: r.id, num: Math.max(0, r.num - have(r.id)) }))
       .filter((r) => r.num > 0);
@@ -182,8 +235,10 @@ export async function surveyWorld(client, protocol, { config = null, player = nu
       rewardExp = known ? total : null;
     }
     return {
-      index: raw.index,
+      index: raw.index ?? 0,
+      orderKey: orderKeys.get(raw.index ?? 0),
       workerId: raw.workerId,
+      workerName: workerNames.get(String(raw.workerId)) || '未知居民',
       textId: raw.textId,
       isSpecial: raw.isSpecial === true,
       refreshTime: raw.refreshTime ?? 0,
@@ -195,14 +250,25 @@ export async function surveyWorld(client, protocol, { config = null, player = nu
 
   let weekOrder = new Map();
   const cargoOrder = new Map();
+  const stockKnown = Array.isArray(itemList?.items) && itemList.items.every(item =>
+    (item?.itemId || item?.id) && Number.isSafeInteger(item.num ?? item.count ?? 0) && (item.num ?? item.count ?? 0) >= 0);
+  let orderCheckError = !stockKnown ? '未能读取仓库库存' : includeWeekOrder &&
+    (!protocol.WeekInfoRequest || !protocol.WeekOrderInfoRequest) ? '无法确认周订单预留' : '';
+  if (includeCargo && !player?.level) orderCheckError = '无法确认贸易港的开放状态';
   if (includeWeekOrder && itemList && protocol.WeekInfoRequest && protocol.WeekOrderInfoRequest) {
     try {
-      const { needed, finished } = await readWeekOrder(client);
+      const { needed, finished } = await readWeekOrder(client, undefined, config);
       if (!finished) weekOrder = needed;
       if (includeCargo && player?.level >= (config?.tables?.CargoUnlockCfg?.data[0]?.playerLevel ?? 9)) {
         const ships = await get('CargoShipsRequest');
-        if (!ships) notes.push('本轮未能读取贸易港货单');
-        for (const ship of ships?.ship ?? []) {
+        const ordersKnown = Array.isArray(ships?.ship) && ships.ship.every(ship => ship &&
+          ((ship.status ?? 0) !== 0 || (Array.isArray(ship.orderItem) && ship.orderItem.every(slot =>
+            slot && (slot.filled || (slot.asset?.id && Number.isSafeInteger(slot.asset.num) && slot.asset.num > 0))))));
+        if (!ordersKnown) {
+          notes.push('本轮未能读取贸易港货单');
+          orderCheckError = '未能确认贸易港货单预留';
+        }
+        for (const ship of ordersKnown ? ships.ship : []) {
           if ((ship.status ?? 0) !== 0) continue;
           for (const { filled, asset } of ship.orderItem ?? []) {
             if (!filled && asset?.num > 0) cargoOrder.set(asset.id, (cargoOrder.get(asset.id) ?? 0) + Number(asset.num));
@@ -211,10 +277,13 @@ export async function surveyWorld(client, protocol, { config = null, player = nu
       }
     } catch (error) {
       notes.push('本轮未能读取周订单：' + error.message);
+      orderCheckError = '未能确认周订单预留';
     }
   }
   const factories = buildings.filter((b) => b.factory);
   const resFieldInfo = resFields?.info ?? null;
+  const vip = rowsOf(config, 'VipLevelCfg').find(row => row.level === player?.vip?.vipLevel);
+  const stockBonus = Number(vip?.effects?.find(([effect]) => effect === '加工品存量上限')?.[1] ?? 0);
 
   return {
     now: Math.floor(Date.now() / 1000),
@@ -225,6 +294,7 @@ export async function surveyWorld(client, protocol, { config = null, player = nu
     buildings,
     factories,
     orders,
+    orderCheckError,
     weekOrder,
     cargoOrder,
     orderOfTheDay: water.orderOfTheDay ?? { orderNum: 0, rewardedNum: 0 },
@@ -236,7 +306,7 @@ export async function surveyWorld(client, protocol, { config = null, player = nu
     futurePopulation,
     maxPopulation,
     autoFarming: water.autoFarming === true,
-    stockCap: paramOf(config, STOCK_PARAM),
+    stockCap: paramOf(config, STOCK_PARAM) + stockBonus,
     factorySlots: paramOf(config, SLOTS_PARAM),
     resFields: resFieldInfo ? normalize(resFieldInfo) : null,
     fleets: fleets ? normalize(fleets.fleets ?? []) : null,
@@ -256,36 +326,57 @@ export function planWorld(survey, {
 } = {}) {
   const { now, have } = survey;
   const name = id => displayMaterial(config, id);
+  const buildingName = b => displayBuilding(config, b);
   const actions = [];
   const notes = [];
   const reserved = new Map();
+  const orderDecisions = [];
+  const dueHarvest = new Map();
+  const markHarvest = (id, num) => dueHarvest.set(id, (dueHarvest.get(id) ?? 0) + num);
   const reserve = (id, num) => reserved.set(id, (reserved.get(id) ?? 0) + Number(num ?? 0));
   const free = (id) => have(id) - (reserved.get(id) ?? 0);
 
   // 给手动交周订单留出已有库存，在产和待收的成品也计入缺口。
   const weeklyGap = new Map();
-  if (enabled('startProduce') || enabled('weekFactory') || enabled('farm') || enabled('upgrade')) {
-    for (const [id, required] of survey.weekOrder ?? []) {
-      const held = Math.min(required, have(id));
-      if (held > 0) reserve(id, held);
-      weeklyGap.set(id, required - held);
-    }
+  const weeklyHeld = new Map();
+  const borrowedTotals = new Map();
+  const weeklyNeeds = [...(survey.weekOrder ?? [])];
+  const weeklyIncomplete = !survey.orderCheckError && weeklyNeeds.every(([id, num]) => id && Number.isSafeInteger(num) && num > 0)
+    && weeklyNeeds.some(([id, num]) => have(id) < num);
+  for (const [id, required] of weeklyNeeds) {
+    const held = Math.min(required, have(id));
+    if (held > 0) reserve(id, held);
+    weeklyHeld.set(id, held);
+    weeklyGap.set(id, required - held);
   }
   const cargoGap = new Map();
+  const cargoHeld = new Map();
   for (const [id, required] of survey.cargoOrder ?? []) {
     const held = Math.min(required, free(id));
     reserve(id, held);
+    cargoHeld.set(id, held);
     cargoGap.set(id, required - held);
   }
+  const incomingForResidents = new Map();
   const credit = (id, num) => {
     const weekly = Math.min(weeklyGap.get(id) ?? 0, num);
     if (weekly) weeklyGap.set(id, weeklyGap.get(id) - weekly);
-    if (cargoGap.has(id)) cargoGap.set(id, Math.max(0, cargoGap.get(id) - (num - weekly)));
+    const cargo = Math.min(cargoGap.get(id) ?? 0, num - weekly);
+    if (cargo) cargoGap.set(id, cargoGap.get(id) - cargo);
+    return num - weekly - cargo;
   };
-  for (const { factory } of survey.factories) {
-    for (const item of factory.finishedProducts ?? []) credit(item.id, item.num);
-    for (const job of factory.factoryQ ?? []) credit(job.productId, 1);
-  }
+  const creditExistingProduction = () => {
+    incomingForResidents.clear();
+    for (const [id, required] of weeklyNeeds) weeklyGap.set(id, required - weeklyHeld.get(id));
+    for (const [id, required] of survey.cargoOrder ?? []) cargoGap.set(id, required - cargoHeld.get(id));
+    const addIncoming = (id, num) => incomingForResidents.set(id, (incomingForResidents.get(id) ?? 0) + credit(id, num));
+    for (const { factory } of survey.factories) {
+      for (const item of factory.finishedProducts ?? []) addIncoming(item.id, item.num);
+      for (const job of factory.factoryQ ?? []) addIncoming(job.productId, 1);
+    }
+  };
+  creditExistingProduction();
+  const initialWeeklyGap = new Map(weeklyGap);
 
   const factoryTargets = new Map();
   if (enabled('weekFactory')) {
@@ -299,37 +390,37 @@ export function planWorld(survey, {
   // 1. 收成品：工厂走 GainFactoryProduce，非工厂建筑的囤积产物一次性批量收。
   for (const b of survey.factories) {
     if (enabled('gainFactory') && (b.factory.finishedProducts ?? []).length > 0) {
+      for (const item of b.factory.finishedProducts) markHarvest(item.id, Number(item.num));
       actions.push({
         kind: 'gainFactory',
         request: 'GainFactoryProduceRequest',
         response: 'GainFactoryProduceResponse',
         body: { buildingId: b.buildingId },
-        label: `收成品 ${b.buildingId}`,
+        label: `收取${buildingName(b)}的成品：${b.factory.finishedProducts.map(item => name(item.id) + ' ×' + item.num).join('、')}`,
       });
     }
   }
-  const collectible = survey.buildings.filter((b) => !b.factory && b.product.length > 0).map((b) => b.buildingId);
+  const collectible = survey.buildings.filter((b) => !b.factory && b.product.length > 0);
   if (enabled('collectProduct') && collectible.length > 0) {
+    for (const b of collectible) for (const item of b.product) markHarvest(item.id, item.num);
     actions.push({
       kind: 'collectProduct',
       request: 'CollectBuildingProductRequest',
       response: 'CollectBuildingProductResponse',
-      body: { buildingId: collectible },
-      label: `收建筑产物 ${collectible.join(',')}`,
+      body: { buildingId: collectible.map(b => b.buildingId) },
+      label: `收取建筑产物：${collectible.map(buildingName).join('、')}`,
     });
   }
 
   // 2. 竣工：建造时间已过的建筑先收尾，收尾后它才能继续升级。
-  const finishing = new Set();
   for (const b of survey.buildings) {
     if (enabled('finishUpgrade') && b.buildFinishTime > 0 && b.buildFinishTime <= now) {
-      finishing.add(b.buildingId);
       actions.push({
         kind: 'finishUpgrade',
         request: 'FinishUpgradeBuildingRequest',
         response: null,
         body: { buildingId: b.buildingId },
-        label: `竣工 ${b.buildingId}`,
+        label: `完成${buildingName(b)}的施工`,
       });
     }
   }
@@ -345,28 +436,31 @@ export function planWorld(survey, {
   for (const b of survey.buildings) {
     if (!enabled('build')) break;
     if (!b.type || b.level !== 0) continue;
-    // buildFinishTime 在将来 = 正在盖，重复发只会被拒；等它到了由上面的竣工步骤收尾。
-    if (b.buildStartTime > 0 || b.buildFinishTime > now) continue;
-    // 本轮刚排了竣工的，收尾后它就是 level 1 了，同一轮再发建造必被拒。
-    if (finishing.has(b.buildingId)) continue;
+    // 有开工或完工时间就已有工程；即便已到竣工时间且竣工开关关闭，也不是空地。
+    if (b.buildStartTime > 0 || b.buildFinishTime > 0) continue;
     const row = unlocks.get(b.buildingId);
     if (!row) continue;
-    if (!(row.condition ?? []).every(([id, lv]) => (levels.get(id) ?? 0) >= lv)) {
-      notes.push(`${b.buildingId} 建造有额外条件 ${JSON.stringify(row.condition)}，跳过`);
+    const missingBuildings = (row.condition ?? []).filter(([id, lv]) => (levels.get(id) ?? 0) < lv);
+    if (missingBuildings.length) {
+      const requirements = missingBuildings.map(([id, level]) => {
+        const type = unlocks.get(id)?.buildingType;
+        return `${buildingName({ buildingId: id, type })}达到 ${level} 级`;
+      });
+      notes.push(`${buildingName(b)} 建造有额外条件：需要${requirements.join('、')}`);
       continue;
     }
     if (row.curPeople > survey.population) {
-      notes.push(`${b.buildingId} 需要人口 ${row.curPeople}，当前 ${survey.population}`);
+      notes.push(`${buildingName(b)} 需要人口 ${row.curPeople}，当前 ${survey.population}`);
       continue;
     }
     if (row.playerLevel > (survey.player?.level ?? 1)) {
-      notes.push(`${b.buildingId} 建造要等级 ${row.playerLevel}，当前 ${survey.player?.level ?? 1}，先推主线`);
+      notes.push(`${buildingName(b)} 建造要等级 ${row.playerLevel}，当前 ${survey.player?.level ?? 1}，先推主线`);
       continue;
     }
     const consume = (row.consume ?? []).map(([id, n]) => ({ id, num: Number(n) }));
     if (!consume.every((c) => free(c.id) >= c.num)) {
       const short = consume.filter((c) => free(c.id) < c.num).map((c) => `${name(c.id)} ${free(c.id)}/${c.num}` + (config?.materialSources?.(c.id)?.length ? `（来源：${config.materialSources(c.id).join("、")}）` : "")).join(' ');
-      notes.push(`${b.buildingId} 建造材料不足（${short}），不买材料，等下一轮`);
+      notes.push(`${buildingName(b)} 建造材料不足（${short}），不买材料，等下一轮`);
       continue;
     }
     const effect = upgradeRow(config, b.type, 1)?.effect;
@@ -389,11 +483,11 @@ export function planWorld(survey, {
   builds.sort((a, b) => Number(priorityPlots.has(b.building.buildingId)) - Number(priorityPlots.has(a.building.buildingId)));
   for (const u of builds) {
     if (u.gain && plannedPopulation + u.gain > survey.maxPopulation) {
-      notes.push(`${u.building.buildingId} 增加 ${u.gain} 人，需上限 ${plannedPopulation + u.gain}，当前上限 ${survey.maxPopulation}；先建指标建筑`);
+      notes.push(`${buildingName(u.building)} 增加 ${u.gain} 人，需上限 ${plannedPopulation + u.gain}，当前上限 ${survey.maxPopulation}；先建指标建筑`);
       continue;
     }
     if (!u.consume.every(c => free(c.id) >= c.num)) {
-      notes.push(`${u.building.buildingId} 建材已预留给本轮其他地块，下一轮重新检查`);
+      notes.push(`${buildingName(u.building)} 建材已预留给本轮其他地块，下一轮重新检查`);
       continue;
     }
     plannedPopulation += u.gain;
@@ -403,71 +497,134 @@ export function planWorld(survey, {
       request: 'BuildBuildingRequest',
       response: null,
       body: { buildingId: u.building.buildingId },
-      label: `建造 ${u.building.buildingId}（需等级 ${u.row.playerLevel}）`
+      label: `建造${buildingName(u.building)}（需要角色 ${u.row.playerLevel} 级）`
         + (priorityPlots.has(u.building.buildingId) ? `，周订单需要 ${factoryTargets.get(u.building.type).required} 级` : '')
         + (u.capacity ? `，竣工后人口上限 +${u.capacity}` : '')
         + (u.gain ? `，竣工后人口 +${u.gain}` : ''),
     });
   }
 
+  // Count ripe crops too: keep the order until the actual harvest reply is known.
+  if (enabled('farm') && !survey.autoFarming) {
+    const crops = rowsOf(config, 'FarmlandPlantCfg');
+    for (const plot of survey.buildings.filter(b => b.type === '农田' && b.level > 0 && !b.buildStartTime && !b.buildFinishTime)) {
+      const crop = crops.find(r => r.id === plot.farm?.productId);
+      if (crop && plot.farm.ripeTime > 0 && plot.farm.ripeTime < (survey.serverNow ?? now)) {
+        markHarvest(crop.id, crop.produceNum);
+        actions.push({ kind: 'farm', request: 'FarmHarvestRequest', response: 'FarmHarvestResponse',
+          body: { buildingId: [plot.buildingId] }, label: '农田收获 ' + name(crop.id) });
+      }
+    }
+  }
   // 4. 交居民订单：材料齐就交；不齐时按开关决定要不要拒绝重刷。
+  const lendable = id => {
+    if (!weeklyIncomplete) return 0;
+    const cargoOverlap = Math.max(0, (survey.cargoOrder?.get(id) ?? 0) - (cargoHeld.get(id) ?? 0));
+    return Math.max(0, (weeklyHeld.get(id) ?? 0) - cargoOverlap);
+  };
   for (const order of survey.orders) {
-    const buildable = order.requirements.every((r) => free(r.id) >= r.num);
-    if (buildable) {
-      if (!enabled('finishOrder')) continue;
+    const label = `${order.workerName || '未知居民'}的订单 #${order.index}`;
+    const decision = (status, reason, shortages = []) => {
+      const harvestNeeds = shortages.filter(item => item.missing > 0)
+        .map(({ id, missing }) => ({ id, missing }));
+      orderDecisions.push({ index: order.index, status, reason, shortages, harvestNeeds });
+      if (status !== 'ready' && status !== 'disabled') notes.push(label + ' ' + reason);
+    };
+    // v74 ignores the previous order's requirements while its slot is refreshing.
+    if (order.refreshTime) { decision('refreshing', '订单刷新中，等待新需求'); continue; }
+    if (order.orderKey === null) { decision('unknown', '服务器返回重复的订单槽位，请刷新后再试'); continue; }
+    if (survey.orderCheckError || !order.requirements.length || order.requirements.some(r => !r.id || !(r.num > 0))) {
+      decision('unknown', survey.orderCheckError || '尚未收到完整订单需求');
+      continue;
+    }
+    const shortages = order.requirements.filter(r => free(r.id) < r.num).map(({ id, num }) => {
+      const owned = have(id), available = Math.max(0, free(id));
+      const weeklyReserved = weeklyHeld.get(id) ?? 0, cargoReserved = cargoHeld.get(id) ?? 0;
+      const canBorrow = Math.min(num - available, lendable(id));
+      return { id, name: name(id), required: num, owned, available, weeklyReserved, cargoReserved,
+        allocated: owned - available - weeklyReserved - cargoReserved, ...(canBorrow ? { canBorrow } : {}),
+        missing: num - available - canBorrow };
+    });
+    // A material may already be fully held for the week, so cargoHeld alone
+    // does not cover the ship's outstanding demand when reallocating it.
+    const canYield = weeklyIncomplete && shortages.every(item => item.missing === 0);
+    if (!shortages.length || canYield) {
+      if (!enabled('finishOrder')) { decision('disabled', '材料已齐，自动交居民订单未开启'); continue; }
+      const weeklyBorrowed = shortages.map(({ id, canBorrow }) => ({ id, num: canBorrow }));
+      const borrowedText = weeklyBorrowed.map(item => name(item.id) + ' ×' + item.num).join('、');
+      decision('ready', borrowedText ? '周订单尚缺材料，先交居民订单，周订单待补 ' + borrowedText : '材料已齐，可交单');
+      for (const { id, num } of weeklyBorrowed) {
+        weeklyHeld.set(id, weeklyHeld.get(id) - num);
+        reserve(id, -num);
+        borrowedTotals.set(id, (borrowedTotals.get(id) ?? 0) + num);
+      }
       for (const r of order.requirements) reserve(r.id, r.num);
       actions.push({
         kind: 'finishOrder',
         request: 'FinishWorkerOrderRequest',
         response: 'FinishWorkerOrderResponse',
         body: { index: order.index },
-        label: `交订单 #${order.index}（经验 ${order.rewardExp ?? '?'}）`,
+        weeklyBorrowed,
+        orderKey: order.orderKey, requirements: order.requirements, workerId: order.workerId, textId: order.textId,
+        label: `交付${label}${order.rewardExp == null ? '' : `（经验 ${order.rewardExp}）`}` +
+          (borrowedText ? '；周订单待补 ' + borrowedText : ''),
       });
       continue;
     }
-    const short = order.requirements.filter(m => free(m.id) < m.num).map(m => `${name(m.id)} ${free(m.id)}/${m.num}`).join(' ');
-    if (order.requirements.some(m => weeklyGap.has(m.id) || cargoGap.has(m.id)) && order.requirements.every(m => have(m.id) >= m.num)) {
-      notes.push(`订单 #${order.index} 材料已预留，等待补货`);
-    } else if (!allowReroll) {
-      notes.push(`订单 #${order.index} 材料不足（${short}），未开 --reroll，保留`);
-    } else if (minOrderExp === null || (order.rewardExp ?? 0) < minOrderExp) {
+    const short = shortages.map(item => {
+      const holds = [];
+      if (item.weeklyReserved) holds.push('周订单预留 ' + item.weeklyReserved);
+      if (item.cargoReserved) holds.push('贸易港预留 ' + item.cargoReserved);
+      const cargoOverlap = Math.min(item.weeklyReserved, (survey.cargoOrder?.get(item.id) ?? 0) - item.cargoReserved);
+      if (weeklyIncomplete && cargoOverlap > 0) holds.push('其中贸易港也需 ' + cargoOverlap);
+      if (item.allocated) holds.push('本轮其他操作占用 ' + item.allocated);
+      const limited = item.weeklyReserved > 0 && survey.stockCap > 0
+        && item.weeklyReserved + item.required > survey.stockCap
+        && rowsOf(config, 'BuildingProduceCfg').some(row => row.itemId === item.id);
+      return item.name + '需 ' + item.required + '，库存 ' + item.owned
+        + (holds.length ? '（' + holds.join('、') + '）' : '')
+        + (item.canBorrow ? '，整单材料齐后可从周订单临时使用 ' + item.canBorrow : holds.length ? '，可用 ' + item.available : '')
+        + (item.missing ? '，缺 ' + item.missing : '')
+        + (item.missing && limited ? '；加工品存量上限 ' + survey.stockCap : '');
+    }).join('；');
+    if (shortages.every(item => item.owned >= item.required)) {
+      const holdReason = !weeklyIncomplete && shortages.some(item => item.weeklyReserved) ? '周订单材料已齐，保留待玩家交单：' : '材料已预留：';
+      decision('reserved', holdReason + short, shortages);
+    } else if (enabled('finishOrder') && shortages.every(item => (dueHarvest.get(item.id) ?? 0) >= item.missing)) {
+      decision('missing', '等待本轮收货后复查：' + short, shortages);
+    } else if (allowReroll && enabled('denyOrder') && (minOrderExp === null || (order.rewardExp ?? 0) < minOrderExp)) {
+      decision('reroll', '材料不足，将拒单重刷：' + short, shortages);
       actions.push({
         kind: 'denyOrder',
         request: 'DenyOrderRequest',
         response: null,
         body: { index: order.index },
-        label: `拒绝材料不足的订单 #${order.index}（${short}）`,
+        orderKey: order.orderKey,
+        label: `拒绝${label}（材料不足：${short}）`,
       });
     } else {
-      notes.push(`订单 #${order.index} 材料不足（${short}），保留等待生产`);
+      decision('missing', '材料不足：' + short, shortages);
     }
   }
 
   // 5. 排产：按订单缺口挑配方，缺得多的先产；已设自动生产的工厂不覆盖。
+  if (borrowedTotals.size) creditExistingProduction();
   const demand = new Map();
-  for (const order of survey.orders) {
-    for (const m of order.missing) demand.set(m.id, (demand.get(m.id) ?? 0) + m.num);
-    // 周订单预留的库存不能同时用于居民订单。
-    for (const m of order.requirements) {
-      if (!weeklyGap.has(m.id)) continue;
-      const held = Math.min(have(m.id), survey.weekOrder.get(m.id));
-      const extra = Math.min(m.num, have(m.id)) - Math.min(m.num, have(m.id) - held);
-      if (extra > 0) demand.set(m.id, (demand.get(m.id) ?? 0) + extra);
-    }
+  for (const [i, order] of survey.orders.entries()) {
+    if (!['reserved', 'missing', 'disabled'].includes(orderDecisions[i].status)) continue;
+    for (const item of order.requirements) demand.set(item.id, (demand.get(item.id) ?? 0) + item.num);
+  }
+  for (const [id, required] of demand) {
+    demand.set(id, Math.max(0, required - free(id) - lendable(id) - (incomingForResidents.get(id) ?? 0)));
   }
   if (enabled('farm') && !survey.autoFarming) {
     const crops = rowsOf(config, 'FarmlandPlantCfg');
     const planted = new Map();
     const plots = survey.buildings.filter(b => b.type === '农田' && b.level > 0 && !b.buildStartTime && !b.buildFinishTime);
-    const serverNow = survey.serverNow ?? now;
     for (const b of plots) {
       const crop = crops.find(r => r.id === b.farm?.productId);
       if (!crop) continue;
       planted.set(crop.id, (planted.get(crop.id) ?? 0) + crop.produceNum);
-      if (b.farm.ripeTime > 0 && b.farm.ripeTime < serverNow) actions.push({
-        kind: 'farm', request: 'FarmHarvestRequest', response: 'FarmHarvestResponse',
-        body: { buildingId: [b.buildingId] }, label: '农田收获 ' + name(crop.id),
-      });
     }
     const shortage = id => Math.max(0, (weeklyGap.get(id) ?? 0) + (demand.get(id) ?? 0) - (planted.get(id) ?? 0));
     const projected = id => have(id) + (planted.get(id) ?? 0);
@@ -492,7 +649,8 @@ export function planWorld(survey, {
   }
   const incoming = new Map();
   const addIncoming = (id, num) => incoming.set(id, (incoming.get(id) ?? 0) + num);
-  const projectedStock = id => have(id) + (incoming.get(id) ?? 0);
+  const projectedStock = id => have(id) + (incoming.get(id) ?? 0) - (borrowedTotals.get(id) ?? 0);
+  const replacementJobs = new Map();
   for (const { factory } of survey.factories) {
     for (const job of factory.factoryQ ?? []) addIncoming(job.productId, 1);
     for (const item of factory.finishedProducts ?? []) addIncoming(item.id, Number(item.num));
@@ -503,7 +661,7 @@ export function planWorld(survey, {
     if (!enabled('startProduce')) break;
     if (b.factory.autoProductId && survey.autoProduceEndTime > (survey.serverNow ?? now)) {
       factoryReasons.set(b.buildingId, `游戏自动生产 ${name(b.factory.autoProductId)} 已开启`);
-      notes.push(`${b.buildingId} 已设自动生产 ${name(b.factory.autoProductId)}，不覆盖`);
+      notes.push(`${buildingName(b)}已在游戏内自动生产${name(b.factory.autoProductId)}`);
       continue;
     }
     const queue = b.factory.factoryQ ?? [];
@@ -518,7 +676,7 @@ export function planWorld(survey, {
           reason = '库存、待收和在产合计已达 ' + survey.stockCap;
         else {
           const missing = (row.costItem ?? []).filter(([item, n]) => free(item) < n);
-          if (missing.length) reason = missing.map(([item, n]) => name(item) + '可用 ' + free(item) + '/' + n).join('、');
+          if (missing.length) reason = missing.map(([item, n]) => name(item) + '需要 ' + n + '，可用 ' + free(item)).join('；');
         }
         if (reason) reasons.push(name(id) + '：' + reason);
         return !reason;
@@ -537,15 +695,31 @@ export function planWorld(survey, {
       const weeklyNeed = weeklyGap.get(best.itemId) ?? 0;
       const cargoNeed = cargoGap.get(best.itemId) ?? 0;
       const projected = projectedStock(best.itemId);
+      // The account may already be at its storage limit. Only run a dependent
+      // job after enough resident deliveries have actually freed that stock.
+      let needsConfirmedBorrow = Math.max(0, have(best.itemId) + (incoming.get(best.itemId) ?? 0) + 1 - survey.stockCap);
+      const initialNeed = initialWeeklyGap.get(best.itemId) ?? 0;
+      if (weeklyNeed && initialNeed) initialWeeklyGap.set(best.itemId, initialNeed - 1);
+      else if (weeklyNeed && borrowedTotals.has(best.itemId)) {
+        const replacement = (replacementJobs.get(best.itemId) ?? 0) + 1;
+        replacementJobs.set(best.itemId, replacement);
+        needsConfirmedBorrow = Math.max(needsConfirmedBorrow, replacement);
+      }
       addIncoming(best.itemId, 1);
       if (need > 0 && !weeklyNeed && !cargoNeed) demand.set(best.itemId, need - 1);
       credit(best.itemId, 1);
+      const displayFactory = buildingName(b);
+      const displayProduct = name(best.itemId);
+      const reason = weeklyNeed ? `周订单缺 ${weeklyNeed} 件` + (needsConfirmedBorrow ? '，居民交单后补回' : '') : cargoNeed ? `贸易港缺 ${cargoNeed} 件`
+        : need ? `居民订单缺 ${need} 件` : `补库存，排入后预计共 ${projected + 1} 件（含待收和在产）`;
       actions.push({
         kind: 'startProduce',
         request: 'StartFactoryProduceRequest',
         response: null,
         body: { buildingId: b.buildingId, productId: best.itemId },
-        label: `排产 ${b.buildingId} → ${name(best.itemId)}（${best.produceTime}s${weeklyNeed ? `，周订单缺 ${weeklyNeed}` : cargoNeed ? `，贸易港缺 ${cargoNeed}` : need ? `，居民订单缺 ${need}` : `，补库存，预计已有 ${projected}`}）`,
+        ...(needsConfirmedBorrow ? { needsConfirmedBorrow } : {}),
+        displayFactory, displayProduct,
+        label: `${displayFactory}安排生产${displayProduct} 1 件，耗时 ${durationText(best.produceTime)}。${reason}`,
       });
     }
   }
@@ -560,21 +734,25 @@ export function planWorld(survey, {
       const forOrder = target?.buildingId === b.buildingId && b.level < target.required;
       if (forOrder !== priority || (!priority && !enabled('upgrade'))) continue;
       if (b.level <= 0) continue;
-      if (!b.type) { upgradeReasons.push(b.buildingId + '未找到建筑类型'); continue; }
+      if (!b.type) { upgradeReasons.push(buildingName(b) + '未找到建筑类型'); continue; }
       if (b.buildStartTime > 0 || b.buildFinishTime > 0) {
-        upgradeReasons.push(b.buildingId + '已有施工任务，本轮先检查竣工'); continue;
+        upgradeReasons.push(buildingName(b) + '已有施工任务，本轮先检查竣工'); continue;
       }
       const next = b.level + 1;
       const row = upgradeRow(config, b.type, next);
       if (!row) {
         const max = topLevel(config, b.type);
-        upgradeReasons.push(b.buildingId + (max && b.level >= max ? '已达最高 ' + max + ' 级' : '缺少下一级配置'));
+        upgradeReasons.push(buildingName(b) + (max && b.level >= max ? '已达最高 ' + max + ' 级' : '缺少下一级配置'));
         continue;
       }
       const unmet = (row.condition ?? []).find(([type, lv]) => (typeLevels.get(type) ?? 0) < lv);
-      if (unmet) { upgradeReasons.push(b.buildingId + '需要' + unmet[0] + ' ' + unmet[1] + '级'); continue; }
-      if (row.playerLevel > (survey.player?.level ?? 1)) { upgradeReasons.push(b.buildingId + '需要角色 ' + row.playerLevel + ' 级'); continue; }
-      if (row.curPeople > survey.population) { upgradeReasons.push(b.buildingId + '需要人口 ' + row.curPeople + '，当前 ' + survey.population); continue; }
+      if (unmet) {
+        const prerequisite = rowsOf(config, 'BuildingCfg').find(cfg => cfg.buildingType === unmet[0])?.name || unmet[0];
+        upgradeReasons.push(`${buildingName(b)}需要${prerequisite}达到 ${unmet[1]} 级`);
+        continue;
+      }
+      if (row.playerLevel > (survey.player?.level ?? 1)) { upgradeReasons.push(buildingName(b) + '需要角色 ' + row.playerLevel + ' 级'); continue; }
+      if (row.curPeople > survey.population) { upgradeReasons.push(buildingName(b) + '需要人口 ' + row.curPeople + '，当前 ' + survey.population); continue; }
       const consume = (row.consume ?? []).map(([id, num]) => ({ id, num: Number(num) }));
       const gain = Math.max(0, sumEffect(row.effect, '人口增加') - (b.population ?? 0));
       upgrades.push({ building: b, row, consume, gain, costTime: row.costTime ?? 0 });
@@ -582,16 +760,16 @@ export function planWorld(survey, {
     upgrades.sort((a, b) => a.row.curPeople - b.row.curPeople || a.costTime - b.costTime);
     for (const u of upgrades) {
       if (upgradeCount >= maxUpgrades) {
-        notes.push(`${u.building.buildingId} 本轮升级额度用完，下一轮再升`);
+        notes.push(`${buildingName(u.building)} 本轮升级额度用完，下一轮再升`);
         continue;
       }
       if (u.gain && plannedPopulation + u.gain > survey.maxPopulation) {
-        upgradeReasons.push(u.building.buildingId + '升级后人口超过上限 ' + survey.maxPopulation);
+        upgradeReasons.push(buildingName(u.building) + '升级后人口超过上限 ' + survey.maxPopulation);
         continue;
       }
       const short = u.consume.filter(c => free(c.id) < c.num);
       if (short.length) {
-        upgradeReasons.push(u.building.buildingId + '缺' + short.map(c => name(c.id) + ' ×' + (c.num - free(c.id))).join('、'));
+        upgradeReasons.push(buildingName(u.building) + '缺' + short.map(c => name(c.id) + ' ×' + (c.num - free(c.id))).join('、'));
         continue;
       }
       upgradeCount++;
@@ -602,7 +780,7 @@ export function planWorld(survey, {
         request: 'UpgradeBuildingRequest',
         response: null,
         body: { buildingId: u.building.buildingId },
-        label: `升级 ${u.building.buildingId} ${u.building.level}->${u.building.level + 1}（${u.costTime}s，人口 ${u.row.curPeople}）`
+        label: `${buildingName(u.building)}从 ${u.building.level} 级升至 ${u.building.level + 1} 级（耗时 ${durationText(u.costTime)}，需要 ${u.row.curPeople} 人）`
           + (priority ? `，周订单需要 ${factoryTargets.get(u.building.type).required} 级` : ''),
       });
     }
@@ -623,7 +801,7 @@ export function planWorld(survey, {
         request: 'SpeedUpUpgradeBuildingRequest',
         response: null,
         body: { buildingId: b.buildingId, speedUp: { type: SPEED_UP_ITEM_TYPE, useNum } },
-        label: `加速建造 ${b.buildingId} 用 ${useNum} 个${name(SPEED_UP_ITEM)}`,
+        label: `使用 ${useNum} 个${name(SPEED_UP_ITEM)}加速${buildingName(b)}施工`,
       });
     }
     for (const b of survey.factories) {
@@ -638,19 +816,119 @@ export function planWorld(survey, {
           request: 'SpeedUpFactoryProduceRequest',
           response: null,
           body: { buildingId: b.buildingId, index: job.idx, speedUp: { type: SPEED_UP_ITEM_TYPE, useNum } },
-          label: `加速生产 ${b.buildingId} 用 ${useNum} 个${name(SPEED_UP_ITEM)}`,
+          label: `使用 ${useNum} 个${name(SPEED_UP_ITEM)}加速${buildingName(b)}生产`,
         });
       }
     }
     if (left === speeders) notes.push(`${SPEED_UP_ITEM} 有 ${speeders} 个，但没有等待中的建造或生产`);
   }
 
-  return { actions, notes, factoryReasons, upgradeReasons, reserved: [...reserved].filter(([, n]) => n > 0) };
+  return { actions, notes, factoryReasons, upgradeReasons, orderDecisions, reserved: [...reserved].filter(([, n]) => n > 0) };
 }
 
 export function stepKey(step) {
   const target = step.body?.buildingId ?? step.body?.index ?? '';
   return `${step.kind}:${Array.isArray(target) ? target.join('+') : target}`;
+}
+
+const lastOrderSent = new WeakMap();
+
+// A collection request alone is not proof that the stock increased. Check the
+// actual reward before spending another set of reads on affected resident slots.
+export function orderSlotsAfterHarvest(plan, results, attempted) {
+  const gained = new Map();
+  for (const { step, ok, body } of results) {
+    if (!ok || !body || !(step.kind === 'gainFactory' || step.kind === 'collectProduct' || step.request === 'FarmHarvestRequest')) continue;
+    const reply = normalize(body);
+    let assets;
+    if (step.kind === 'gainFactory') assets = reply.products?.asset;
+    else if (step.kind === 'collectProduct') assets = reply.reward?.flatMap(row => row.product?.asset ?? []);
+    else if (step.request === 'FarmHarvestRequest') assets = reply.reward?.map(item => item.reward).filter(Boolean);
+    for (const asset of assets ?? []) if (asset.num > 0) gained.set(asset.id, (gained.get(asset.id) ?? 0) + asset.num);
+  }
+  return new Set(plan.orderDecisions.filter(d => {
+    const needs = d.harvestNeeds ?? d.shortages;
+    return !attempted.has(d.index) && needs.length && needs.every(row => (gained.get(row.id) ?? 0) >= row.missing);
+  }).map(d => d.index));
+}
+
+export async function runWorldRound(client, protocol, plan, {
+  config, player, cargoEnabled = () => false, attemptedOrders = new Set(),
+  finishEnabled, ...options
+}) {
+  const execution = { ...options, config, player, cargoEnabled };
+  const result = await runWorld(client, protocol, plan, execution);
+  const canFinish = finishEnabled ?? (() => !options.enabled || options.enabled('finishOrder'));
+  for (const { step } of result.results) {
+    if (step.kind === 'finishOrder' || step.kind === 'denyOrder') attemptedOrders.add(step.body.index);
+  }
+  result.followupCount = 0;
+  if (!canFinish()) return result;
+  const slots = orderSlotsAfterHarvest(plan, result.results, attemptedOrders);
+  if (!slots.size) return result;
+  try {
+    const includeCargo = cargoEnabled();
+    const survey = await surveyWorld(client, protocol, { config, player, ordersOnly: true, includeCargo });
+    const allow = kind => kind === 'finishOrder' && canFinish() && (includeCargo || !cargoEnabled());
+    if (!allow('finishOrder')) return result;
+    if (survey.orderCheckError) throw new Error(survey.orderCheckError);
+    survey.orders = survey.orders.filter(order => slots.has(order.index));
+    const followup = planWorld(survey, { config, enabled: allow });
+    const { results } = await runWorld(client, protocol, followup, { ...execution, enabled: allow });
+    for (const { step } of results) attemptedOrders.add(step.body.index);
+    result.followupCount = results.length;
+    result.results.push(...results);
+  } catch (error) {
+    if (canFinish()) {
+      const entry = { step: { kind: 'checkResidentOrders', label: '收货后核对居民订单' }, ok: false, error: error.message };
+      result.followupCount = 1;
+      result.results.push(entry);
+      options.onStep?.(entry);
+    }
+  }
+  return result;
+}
+
+// A harvest earlier in this round can complete the weekly order. Do not spend
+// its stock based solely on a plan that was made before the harvest.
+async function confirmResidentOrder(client, protocol, step, config, player, cargoEnabled) {
+  if (!config || !player) return { reason: '无法复核周订单和贸易港预留' };
+  const includeCargo = cargoEnabled();
+  const survey = await surveyWorld(client, protocol, { config, player, ordersOnly: true, includeCargo });
+  if (survey.orderCheckError) return { reason: survey.orderCheckError };
+  const order = survey.orders.find(row => row.index === step.body.index);
+  if (!order || (step.orderKey && order.orderKey !== step.orderKey)) return { reason: '这条居民订单已刷新或已处理，请查看当前订单' };
+  if (!step.manualCheck && (order.workerId !== step.workerId || order.textId !== step.textId ||
+    order.requirements.length !== step.requirements.length ||
+    !order.requirements.every(item => step.requirements.some(old => item.id === old.id && item.num === old.num)))) {
+    return { reason: '订单需求已刷新，留待下一轮重新安排' };
+  }
+  const fresh = planWorld({ ...survey, orders: [order] }, { config, enabled: kind => kind === 'finishOrder' });
+  const current = fresh.actions.find(action => action.kind === 'finishOrder');
+  if (!current) return { reason: fresh.orderDecisions[0].reason };
+  if ((!includeCargo && cargoEnabled()) || (!step.manualCheck && current.weeklyBorrowed.some(item =>
+    item.num > (step.weeklyBorrowed.find(old => old.id === item.id)?.num ?? 0)))) {
+    return { reason: '订单预留已变化，请重新核对库存' };
+  }
+  return { action: current };
+}
+
+export async function submitResidentOrder(client, protocol, { index, orderKey, config, player, cargoEnabled = () => false, enabled = () => true }) {
+  if (!Number.isSafeInteger(index) || index < 0 || index > 2147483647 || typeof orderKey !== 'string' || !orderKey) {
+    throw new Error('请从当前居民订单列表中选择要交付的一单');
+  }
+  if (!enabled()) throw new Error('账号托管状态已变化，已取消手动交单');
+  if (trackResidentOrders(client).get(index)?.key !== orderKey) throw new Error('这条居民订单已刷新或已处理，请查看当前订单');
+  const step = { kind: 'finishOrder', request: 'FinishWorkerOrderRequest', response: 'FinishWorkerOrderResponse',
+    body: { index }, orderKey, manualCheck: true, label: '交付居民订单 #' + index };
+  const { results } = await runWorld(client, protocol, { actions: [step] }, {
+    config, player, allowMutate: true, cargoEnabled, enabled,
+  });
+  const [entry] = results;
+  if (!entry?.ok) throw new Error(entry?.error || '账号托管状态已变化，已取消手动交单');
+  const reward = normalize(entry.body.reward);
+  const prize = reward.asset.map(item => displayMaterial(config, item.id) + ' ×' + item.num).join('、');
+  return { index, label: '已' + entry.step.label + '，获得' + prize, reward };
 }
 
 // 逐条执行。同类动作失败就跳过该类的剩余动作；被服务端拒过的具体动作记进 rejected，
@@ -662,25 +940,57 @@ export async function runWorld(client, protocol, plan, {
   rejected = new Set(),
   onStep,
   enabled = () => true,
+  config, player, cargoEnabled = () => false,
 } = {}) {
   if (!allowMutate) throw new Error('海面自动化会改变账号状态，需要 --yes');
   const results = [];
   const blocked = new Set();
   const failedRecipes = new Set();
+  const confirmedBorrow = new Map();
   for (const step of plan.actions) {
     if (!enabled(step.kind)) continue;
     const key = stepKey(step);
+    const resident = step.kind === 'finishOrder' || step.kind === 'denyOrder';
     const recipe = step.kind === 'startProduce' ? JSON.stringify(step.body) : null;
     if (recipe && failedRecipes.has(recipe)) continue;
     let entry;
-    if (rejected.has(key)) entry = { step, ok: false, skipped: true, error: '刚被服务端拒过，跳过' };
+    if (step.needsConfirmedBorrow > (confirmedBorrow.get(step.body?.productId) ?? 0)) {
+      entry = { step, ok: false, skipped: true, error: '尚未确认居民订单已释放相应库存，稍后复查补产' };
+    } else if (!resident && rejected.has(key)) entry = { step, ok: false, skipped: true, error: '刚被服务端拒过，跳过' };
     else if (blocked.has(step.kind)) entry = { step, ok: false, skipped: true, error: `同类动作已失败，本轮不再尝试` };
     else if (!protocol[step.request]) entry = { step, ok: false, error: `协议表里没有 ${step.request}` };
     else {
       try {
+        let actual = step;
+        if (step.kind === 'finishOrder') {
+          if (!protocol[step.response]) throw new Error('当前协议不能确认居民订单交付结果');
+          // WorkerOrderPop spaces consecutive commits by at least two seconds.
+          const delay = (lastOrderSent.get(client) ?? 0) + 2000 - Date.now();
+          if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
+          if (!enabled(step.kind)) continue;
+          if (step.manualCheck || step.weeklyBorrowed?.length) {
+            const fresh = await confirmResidentOrder(client, protocol, step, config, player, cargoEnabled);
+            if (fresh.reason) {
+              entry = { step, ok: false, skipped: true, error: fresh.reason };
+              results.push(entry);
+              onStep?.(entry);
+              continue;
+            }
+            if (!enabled(step.kind)) continue;
+            actual = fresh.action;
+          }
+          lastOrderSent.set(client, Date.now());
+        }
+        if (resident && actual.orderKey) {
+          const session = trackResidentOrders(client);
+          if (session.get(step.body.index)?.key !== actual.orderKey) throw new Error('这条居民订单已刷新或已处理，请查看当前订单');
+          session.delete(step.body.index); // A lost reply can still have consumed this slot.
+        }
         if (step.response && protocol[step.response]) {
           const body = await client.request(step.request, step.body, step.response, timeout);
-          entry = { step, ok: true, body };
+          if (step.kind === 'finishOrder' && !body?.reward?.asset?.length) throw new Error('服务端尚未返回居民订单的交付奖励');
+          for (const item of actual.weeklyBorrowed ?? []) confirmedBorrow.set(item.id, (confirmedBorrow.get(item.id) ?? 0) + item.num);
+          entry = { step: actual, ok: true, body };
         } else {
           // 没有配套 Response：静默即成功，回包是 PromptResponse 就是被拒。
           const sent = await client.sendWatch(step.request, step.body, { window });
@@ -690,7 +1000,7 @@ export async function runWorld(client, protocol, plan, {
         if (recipe) failedRecipes.add(recipe);
         // Each plot has independent prerequisites. A failed build must not
         // suppress other plots, or prevent a later fresh survey from retrying it.
-        if (!['build', 'farm', 'upgrade', 'weekFactory', 'startProduce'].includes(step.kind)) {
+        if (!resident && !['build', 'farm', 'upgrade', 'weekFactory', 'startProduce'].includes(step.kind)) {
           rejected.add(key);
           blocked.add(step.kind);
         }

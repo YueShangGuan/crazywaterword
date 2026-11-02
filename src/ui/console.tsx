@@ -30,10 +30,17 @@ export function idlePanel(tasks: AutoTask[]) {
       <CardHeader><CardTitle>{group}</CardTitle></CardHeader>
       <CardContent className="task-grid">
         {tasks.filter(t => t.group === group).map(t => <div className="task-setting" key={t.key}>
-          <label htmlFor={'auto-' + t.key}>{t.label}</label>
+          <label htmlFor={'auto-' + t.key}>{t.label}<small id={'next-' + t.key} className="block text-muted-foreground" /></label>
           <Switch id={'auto-' + t.key} data-auto-task={t.key} className="p-0" disabled />
         </div>)}
       </CardContent>
+      {group === '钓鱼' && <CardContent>
+        <form id="fishing-reserve-form" className="bar">
+          <label htmlFor="fishing-reserve">强化后至少保留金币</label>
+          <Input id="fishing-reserve" type="number" min="0" step="1" required className="w-32" disabled />
+          <Button id="fishing-reserve-save" type="submit" variant="outline" disabled>保存</Button>
+        </form>
+      </CardContent>}
     </Card>)}
     <details><summary>挂机记录</summary><pre id="loop-view">尚无记录</pre></details>
   </div>)

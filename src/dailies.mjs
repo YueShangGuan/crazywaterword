@@ -136,15 +136,25 @@ export function planDailyGift(response) {
 }
 
 // 每个驱动声明它要的只读前置请求，框架统一批量取一遍。
+function recruitmentWait(water) {
+  if (!water) return '暂未读取到海面建筑状态，稍后再检查广播站';
+  const station = water.building?.find(row => row.buildingId === '1广播站');
+  if (station?.level > 0) return null;
+  if (station?.buildStartTime > 0 || station?.buildFinishTime > 0) return '广播站正在建造，等待竣工';
+  return '广播站尚未建造，建成后再招募';
+}
+
 export const DAILY_DRIVERS = {
   1002: {
     id: 1002,
     title: '招募英雄',
-    probes: [['RecruitInfoRequest', {}]],
+    probes: [['OnWaterRequest', {}], ['RecruitInfoRequest', {}, probe => !recruitmentWait(probe('OnWaterRequest'))]],
     evaluate({ task, probe, items, now, config }) {
-      const info = probe('RecruitInfoRequest')?.hero;
       const remaining = Math.max(0, task.targetProgress - task.progress);
       if (remaining === 0) return { status: 'done' };
+      const reason = recruitmentWait(probe('OnWaterRequest'));
+      if (reason) return { status: 'waiting', reason };
+      const info = probe('RecruitInfoRequest')?.hero;
       const actions = [];
       // RecruitWay: 1=免费 2=单抽 3=十连 4=五十连 5=高级；单抽花 1 张抽卡券。
       if (info && info.freeEndTimeSeconds <= now) {
@@ -333,17 +343,18 @@ function lowPower(power) {
 }
 
 // 只读调研：跑一遍前置请求，给出每个日常任务能不能做、要发什么。
-export async function surveyDailies(client, protocol, { config = null, player = null, timeout = 8000, includeTask = () => true, probeGift = true } = {}) {
+export async function surveyDailies(client, protocol, { config = null, player = null, timeout = 8000, includeTask = () => true, probeGift = true, idle = false } = {}) {
   const daily = await client.request('DailyTaskInfoRequest', {}, 'DailyTaskInfoResponse', timeout);
   const tasks = (daily.dailyTask ?? []).filter(task => includeTask(task.id)).map((task) => describeDailyTask(task, config));
-  const itemList = await client.request('AllItemRequest', {}, 'AllItemResponse', timeout);
+  const unfinished = id => tasks.some(task => task.id === id && task.progress < task.targetProgress);
+  const itemList = !idle || unfinished(1002) ? await client.request('AllItemRequest', {}, 'AllItemResponse', timeout) : null;
   const items = new Map();
-  for (const item of itemList.items ?? []) {
+  for (const item of itemList?.items ?? []) {
     const id = item.itemId ?? item.id;
     items.set(id, (items.get(id) ?? 0) + Number(item.num ?? item.count ?? 0));
   }
-  const resourceList = await client.request('AllResourceRequest', {}, 'AllResourceResponse', timeout);
-  const ruby = Number((resourceList.list ?? []).find((entry) => entry.res === RUBY)?.amount ?? 0);
+  const resourceList = !idle || unfinished(1006) || unfinished(1007) ? await client.request('AllResourceRequest', {}, 'AllResourceResponse', timeout) : null;
+  const ruby = Number((resourceList?.list ?? []).find((entry) => entry.res === RUBY)?.amount ?? 0);
 
   const cache = new Map();
   const fetchProbe = async (name, body) => {
@@ -361,20 +372,20 @@ export async function surveyDailies(client, protocol, { config = null, player = 
   };
 
   const probeCache = new Map();
+  const probe = (name) => {
+    for (const [key, value] of probeCache) if (key.startsWith(`${name}|`)) return value;
+    return null;
+  };
   for (const driver of Object.values(DAILY_DRIVERS)) {
     if (!tasks.some(task => task.id === driver.id && task.progress < task.targetProgress)) continue;
-    for (const [name, body] of driver.probes ?? []) {
+    for (const [name, body, shouldProbe] of driver.probes ?? []) {
+      if (shouldProbe && !shouldProbe(probe)) continue;
       const key = `${name}|${JSON.stringify(body)}`;
       if (probeCache.has(key)) continue;
       probeCache.set(key, await fetchProbe(name, body));
     }
   }
-  const probe = (name) => {
-    for (const [key, value] of probeCache) if (key.startsWith(`${name}|`)) return value;
-    return null;
-  };
-
-  const now = Date.now() / 1000;
+  const now = (Date.now() + (client.serverClockOffsetMs || 0)) / 1000;
   const evaluations = [];
   for (const task of tasks) {
     if (task.progress >= task.targetProgress) {
@@ -403,7 +414,12 @@ export async function surveyDailies(client, protocol, { config = null, player = 
       gift = null;
     }
   }
-  return { daily, tasks: evaluations, chests: planChests(daily, config), gift, ruby, config };
+  const gold = probe('ClickGoldInfoRequest')?.info;
+  const freeLimit = config?.tables?.OfflineParamCfg?.data?.find(row => row.paramName === '免费点金次数')?.paramValue;
+  return { daily, tasks: evaluations, chests: planChests(daily, config), gift, ruby, config,
+    freeRecruitAt: probe('RecruitInfoRequest')?.hero?.freeEndTimeSeconds,
+    freeGoldAt: freeLimit > 0 && gold?.freeTimes >= freeLimit ? gold.resetTime : undefined,
+  };
 }
 
 // 发一条动作，带 Response 的等回包，没有配套 Response 的靠 sendWatch 看有没有被 PromptResponse 打回来。
@@ -438,7 +454,7 @@ export async function runDailies(client, protocol, survey, { allowMutate = false
         results.push(outcome);
         onStep?.(outcome);
       } catch (error) {
-        const outcome = { id: entry.task.id, title: entry.task.title, request: action.request, note: action.note, ok: false, error: error.message };
+        const outcome = { id: entry.task.id, title: entry.task.title, request: action.request, way: action.body?.way, note: action.note, ok: false, error: error.message };
         results.push(outcome);
         onStep?.(outcome);
         break;
@@ -455,9 +471,9 @@ export async function runDailies(client, protocol, survey, { allowMutate = false
 }
 
 // 收尾两连：先领达标任务的奖励，再领活跃度宝箱。
-export async function claimDailies(client, protocol, { config = null, timeout = 15000, onStep, enabled = () => true } = {}) {
+export async function claimDailies(client, protocol, { config = null, timeout = 15000, onStep, enabled = () => true, scheduler } = {}) {
   const results = [];
-  if (!protocol.DailyTaskInfoRequest || !protocol.DailyTaskInfoResponse) return results;
+  const ready = key => enabled(key) && (!scheduler || scheduler.due(key));
 
   const report = (outcome) => {
     results.push(outcome);
@@ -472,10 +488,11 @@ export async function claimDailies(client, protocol, { config = null, timeout = 
       return null;
     }
   }
-  const after = enabled('dailyRewards') || enabled('chests') ? await readDaily('读取日常奖励') : null;
+  const canReadDaily = protocol.DailyTaskInfoRequest && protocol.DailyTaskInfoResponse;
+  const after = canReadDaily && (ready('dailyRewards') || ready('chests')) ? await readDaily('读取日常奖励') : null;
   const claimable = (after?.dailyTask ?? []).filter((task) => task.progress >= task.targetProgress && !task.rewardClaimed);
   for (const task of claimable) {
-    if (!enabled('dailyRewards')) break;
+    if (!ready('dailyRewards')) break;
     const title = TASK_TITLES[task.id] ?? String(task.id);
     const action = { request: 'DrawDailyTaskRewardRequest', response: 'DrawDailyTaskRewardResponse', body: { id: task.id }, note: `领任务奖励（${title}）` };
     try {
@@ -488,10 +505,27 @@ export async function claimDailies(client, protocol, { config = null, timeout = 
   }
 
   // 任务奖励刚加过活跃度，所以宝箱要按新活跃度重新算一次，否则会漏掉刚好够到的档位。
-  const fresh = enabled('chests') && results.some(entry => entry.ok) ? await readDaily('刷新活跃度') : after;
+  const fresh = ready('chests') && results.some(entry => entry.ok) ? await readDaily('刷新活跃度') : after;
   const actions = fresh ? planChests(fresh, config).actions : [];
+  if (scheduler && fresh?.dailyResetTime > scheduler.now()) {
+    const recheck = Math.min(fresh.dailyResetTime, scheduler.now() + 180);
+    if (ready('dailyRewards') && fresh.dailyTask?.length) {
+      if (fresh.dailyTask.every(task => task.rewardClaimed)) scheduler.defer('dailyRewards', fresh.dailyResetTime);
+      else if (fresh.dailyTask.every(task => task.rewardClaimed || task.progress < task.targetProgress)) scheduler.defer('dailyRewards', recheck);
+    }
+    // This switch serves both day and week tiers. Only sleep once both sets
+    // are exhausted, waking at the earlier (daily) reset.
+    const allCollected = kind => {
+      const rows = config?.tables?.[CHEST_TABLE[kind]]?.data;
+      const claimed = fresh[kind + 'RewardClaimed'];
+      return rows?.length && rows.every(row => claimed?.includes(row.id));
+    };
+    if (ready('chests') && !actions.length && Object.values(CHEST_TABLE).every(table => config?.tables?.[table]?.data?.length)) {
+      scheduler.defer('chests', allCollected('daily') && allCollected('weekly') ? fresh.dailyResetTime : recheck);
+    }
+  }
   for (const action of actions) {
-    if (!enabled('chests')) break;
+    if (!ready('chests')) break;
     const title = action.request === 'DrawWeeklyRewardRequest' ? '周活跃宝箱' : '日常活跃宝箱';
     try {
       const body = await sendAction(client, protocol, action, timeout);
@@ -504,7 +538,7 @@ export async function claimDailies(client, protocol, { config = null, timeout = 
 
   // 每日精选的免费赠礼。GotFreeDailyPackRequest 没有配套 Response，所以发完要重新问一次
   // DailyGiftPackResponse 确认 drawnPack 里真的多了「赠礼」——只看「没被 prompt 打回」不算成功。
-  if (enabled('gift') && protocol.DailyGiftPackRequest && protocol.DailyGiftPackResponse) {
+  if (ready('gift') && protocol.DailyGiftPackRequest && protocol.DailyGiftPackResponse) {
     let before;
     try {
       before = await client.request('DailyGiftPackRequest', {}, 'DailyGiftPackResponse', timeout);
@@ -513,14 +547,16 @@ export async function claimDailies(client, protocol, { config = null, timeout = 
       return results;
     }
     const plan = planDailyGift(before);
-    if (plan.actions.length > 0 && enabled('gift')) {
+    if (!plan.freeAvailable && scheduler && plan.resetTime > scheduler.now()) scheduler.defer('gift', plan.resetTime);
+    if (plan.actions.length > 0 && ready('gift')) {
       const action = plan.actions[0];
       try {
         await sendAction(client, protocol, action, timeout);
         const after = await client.request('DailyGiftPackRequest', {}, 'DailyGiftPackResponse', timeout);
         const ok = (after.drawnPack ?? []).includes(FREE_DAILY_PACK_ID);
+        if (ok && scheduler && after.resetTime > scheduler.now()) scheduler.defer('gift', after.resetTime);
         report({ id: 'freeDailyPack', title: '每日免费赠礼', request: action.request, note: action.note, ok,
-          error: ok ? undefined : '服务端没有把它记进 drawnPack' });
+          error: ok ? undefined : '服务端尚未确认领取每日赠礼' });
       } catch (error) {
         report({ id: 'freeDailyPack', title: '每日免费赠礼', request: action.request, note: action.note, ok: false, error: error.message });
       }

@@ -7,7 +7,7 @@
   "scripts": {
     "build:ui": "esbuild src/ui/console.tsx --bundle --platform=node --format=esm --packages=external --outfile=src/ui/dist/console.mjs && tailwindcss -i src/ui/theme.css -o src/ui/dist/theme.css --minify",
     "start": "node src/app.mjs",
-    "test": "node src/selftest.mjs && node tools/selftest-automation.mjs",
+    "test": "node src/selftest.mjs && node tools/selftest-automation.mjs && node tools/selftest-hero-show-rewards.mjs && node tools/selftest-daily-schedule.mjs && node tools/selftest-ad-shop.mjs",
     "test:capture": "node tools/selftest-raw-capture.mjs && node tools/selftest-douyin-cli.mjs",
     "test:wxapkg": "node tools/selftest-wxapkg.mjs",
     "test:wechat": "node tools/selftest-wechat-capture.mjs && node tools/selftest-wechat-cli.mjs",

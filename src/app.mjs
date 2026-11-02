@@ -12,8 +12,8 @@ import { getConfig } from './config.mjs';
 import { planHeroes, runHeroPlan, formatHeroPlan } from './heroes.mjs';
 import { surveyDailies, runDailies, formatSurvey, planChests, planDailyGift } from './dailies.mjs';
 import { surveyTasks, runTasks, formatTaskPlan } from './tasks.mjs';
-import { surveyWorld, planWorld, runWorld, formatWorldPlan, formatFieldReport, loadMapAsset, planFieldOccupy, planFieldGiveUp, SPEED_UP_ITEM, makeTypeResolver as resolveBuildingType, upgradeRow } from './world.mjs';
-import { runLoop, formatLoopRound } from './loop.mjs';
+import { surveyWorld, planWorld, runWorld, runWorldRound, formatWorldPlan, formatFieldReport, loadMapAsset, planFieldOccupy, planFieldGiveUp, SPEED_UP_ITEM, makeTypeResolver as resolveBuildingType, upgradeRow } from './world.mjs';
+import { runLoop, formatLoopRound, formatLoopStep } from './loop.mjs';
 import { runStages, stageFailureLimit } from './stages.mjs';
 
 const READ_ONLY_PROBES = [
@@ -35,7 +35,7 @@ function accountSelector() {
 function loadCredentials(selector = accountSelector()) {
   const store = loadStore();
   if (!store.accounts.length) {
-    throw new Error(`还没有任何账号。先跑 node tools/capture-credentials.mjs 抓一份凭证，或在网页控制台里扫码添加`);
+    throw new Error('还没有账号。打开本地控制台，在「账号」页选择「从电脑微信添加」或「从电脑抖音添加」，再从对应客户端重新进入游戏。');
   }
   const account = pickAccount(store, selector);
   if (!account) throw new Error('选不出账号，用 --account <id|昵称|序号> 指定一个');
@@ -445,7 +445,7 @@ async function tasks({ allowMutate, dryRun }) {
   const config = loadConfigSafe();
   try {
     console.log(`login ok: ${describeRole(response.playerInfo)?.nickname} lv${describeRole(response.playerInfo)?.level}`);
-    const survey = await surveyTasks(client, protocol, { config });
+    const survey = await surveyTasks(client, protocol, { config, player: response.playerInfo });
     console.log(`\n${formatTaskPlan(survey)}\n`);
     for (const step of survey.plan) {
       const reward = step.reward ? ` 奖励 ${step.reward.map(([id, num]) => `${id}x${num}`).join(',')}` : '';
@@ -469,7 +469,7 @@ async function tasks({ allowMutate, dryRun }) {
 
     // 领没领到只认服务端回包，重新探一遍对照。
     await new Promise((resolve) => setTimeout(resolve, 1200));
-    const after = await surveyTasks(client, protocol, { config });
+    const after = await surveyTasks(client, protocol, { config, player: response.playerInfo });
     console.log(`\n领取后剩余可领 ${after.plan.length} 条:`);
     for (const step of after.plan) console.log(`  ${step.label}`);
   } finally {
@@ -501,8 +501,8 @@ async function world({ allowMutate, dryRun, allowSpeedUp, allowReroll }) {
     }
 
     console.log('\n执行:');
-    const { rejected } = await runWorld(client, protocol, plan, {
-      allowMutate,
+    const { rejected } = await runWorldRound(client, protocol, plan, {
+      config, player: response.playerInfo, allowMutate,
       onStep: (entry) => {
         if (entry.skipped) console.log(`  - ${entry.step.label} 跳过: ${entry.error}`);
         else console.log(entry.ok ? `  . ${entry.step.label}` : `  x ${entry.step.label} 失败: ${entry.error}`);
@@ -512,7 +512,9 @@ async function world({ allowMutate, dryRun, allowSpeedUp, allowReroll }) {
 
     // 前面对照只认重新探测的结果。
     await new Promise((resolve) => setTimeout(resolve, 1200));
-    const after = await surveyWorld(client, protocol, { config, player: response.playerInfo });
+    let after;
+    try { after = await surveyWorld(client, protocol, { config, player: response.playerInfo }); }
+    catch (error) { console.error('海面操作已结束，刷新状态失败：' + error.message); return; }
     console.log(`\n对照: 人口 ${survey.population}/${survey.maxPopulation} -> ${after.population}/${after.maxPopulation}`);
     console.log(`  库存种类 ${survey.stock.size} -> ${after.stock.size}，订单 ${survey.orders.length} -> ${after.orders.length}`);
     const changed = survey.buildings.filter((b) => {
@@ -619,19 +621,7 @@ async function loopCli({ allowMutate, rounds, everySeconds, allowSpeedUp, allowR
       allowReroll,
       stop,
       onRound: (summary) => console.log(`\n${formatLoopRound(summary)}`),
-      onStep: (entry) => {
-        if (entry.phase === 'tasks') {
-          if (entry.skipped) console.log(`  - ${entry.step.label} 跳过: ${entry.error}`);
-          else console.log(entry.ok ? `  . ${entry.step.label}` : `  x ${entry.step.label} 失败: ${entry.error}`);
-        } else if (entry.phase === 'world') {
-          if (entry.skipped) console.log(`  - ${entry.step.label} 跳过: ${entry.error}`);
-          else console.log(entry.ok ? `  . ${entry.step.label}` : `  x ${entry.step.label} 失败: ${entry.error}`);
-        } else if (entry.skipped) {
-          console.log(`  - ${entry.title ?? entry.id} 跳过: ${entry.reason}`);
-        } else {
-          console.log(entry.ok ? `  . ${entry.title ?? entry.id} ${entry.note ?? ''}` : `  x ${entry.title ?? entry.id} 失败: ${entry.error}`);
-        }
-      },
+      onStep: entry => console.log('  ' + formatLoopStep(entry)),
     });
   } finally {
     process.off('SIGINT', onSigint);
@@ -896,7 +886,7 @@ async function main() {
   console.log(`console: ${url}${browser ? ` (via ${browser})` : ''}`);
   const store = loadStore();
   if (!store.accounts.length) {
-    console.log(`还没有账号：打开 ${url} 用「账号」页扫码添加，或跑 node tools/capture-credentials.mjs`);
+    console.log(`还没有账号：打开 ${url}，在「账号」页选择「从电脑微信添加」或「从电脑抖音添加」，再从对应客户端重新进入游戏。`);
   } else {
     console.log(`账号 ${store.accounts.length} 个，当前: ${describeAccount(pickAccount(store, null)).title}`);
   }

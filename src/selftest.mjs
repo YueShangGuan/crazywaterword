@@ -807,7 +807,7 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
 // 订单优先的资源分配：订单材料与排产耗料先扣，剩下的才轮到升级。所以同样的库存，
 // 少 8 个木材就该从「能升级」翻成「不能升级」，而这条分界线只能来自预留而不是随机。
 {
-  const { planWorld } = await import('./world.mjs');
+  const { planWorld, surveyWorld } = await import('./world.mjs');
   const config = { tables: {
     BuildingCfg: { data: [{ buildingType: '民居' }, { buildingType: '材料厂' }] },
     BuildingProduceCfg: { data: [
@@ -837,6 +837,26 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
   };
 
   const weekly = surveyFor(60);
+  // reserve all 50 items for the weekly order: only a VIP stock bonus leaves
+  // room to make more for the resident, without submitting either order.
+  const capacityConfig = { tables: { ...config.tables,
+    GameParamCfg: { data: [{ paramName: '产品存量初始上限', paramValue: 50 }] },
+    BuildingProduceParamCfg: { data: [{ paramName: '制造位上限', paramValue: 6 }] },
+    VipLevelCfg: { data: [{ level: 3, effects: [] }, { level: 4, effects: [['加工品存量上限', 5]] }] },
+  } };
+  const client = { request: async name => name === 'OnWaterRequest' ? {
+    building: [weekly.factories[0]], workerOrder: [{ index: 1, requirements: [{ id: '布匹', num: 1 }] }],
+  } : { items: [{ itemId: '布匹', num: 50 }, { itemId: '木材', num: 50 }] } };
+  for (const [vip, expectedCap] of [[undefined, 50], [{ vipLevel: 3 }, 50], [{ vipLevel: 4 }, 55]]) {
+    const snapshot = await surveyWorld(client, protocol, { config: capacityConfig, player: { level: 15, vip }, includeWeekOrder: false });
+    snapshot.weekOrder.set('布匹', 50);
+    const actions = planWorld(snapshot, { config: capacityConfig }).actions;
+    const jobs = actions.filter(a => a.kind === 'startProduce');
+    assert.equal(snapshot.stockCap, expectedCap);
+    assert.equal(jobs.length, expectedCap - 50);
+    if (jobs.length) assert.match(jobs[0].label, /居民订单缺 1/);
+    assert(!actions.some(a => a.kind === 'finishOrder'));
+  }
   const balancing = surveyFor(60);
   balancing.orders = [];
   balancing.stock.set('布匹', 3);
@@ -981,11 +1001,14 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
 
   // 盖完了的那一栋：这一轮只发竣工，不能再顺手发一次建造——竣工后它已经是 level 1，
   // 建造会被服务端拒，界面上就成了一条假的失败。
-  const done = planWorld({ ...survey, buildings: [
+  const pendingFinish = { ...survey, buildings: [
     { buildingId: '1日用品厂', type: '日用品厂', level: 0, product: [], buildFinishTime: 900, factory: null },
-  ] }, { config });
+  ] };
+  const done = planWorld(pendingFinish, { config });
   assert.deepEqual(done.actions.map((a) => a.kind), ['finishUpgrade'], '正在收尾的楼同一轮不该再排建造');
   assert.equal(done.actions[0].request, 'FinishUpgradeBuildingRequest');
+  assert.equal(planWorld(pendingFinish, { config, enabled: key => key === 'build' }).actions.length, 0,
+    '竣工开关关闭时，待竣工的建筑也不能被当成空地重复建造');
   checked += 1;
 }
 

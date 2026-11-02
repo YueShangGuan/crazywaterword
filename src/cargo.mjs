@@ -16,7 +16,7 @@ export async function serviceCargo(client, config, { enabled, log, testSpeedUp =
     if ((state.status ?? 0) === 0) {
       if (!available) {
         const [inventory, order] = await Promise.all([
-          client.request('AllItemRequest', {}).then(normalize), readWeekOrder(client),
+          client.request('AllItemRequest', {}).then(normalize), readWeekOrder(client, undefined, config),
         ]);
         available = new Map((inventory.items ?? []).map(item => [item.itemId, Number(item.num)]));
         if (!order.finished) for (const [id, num] of order.needed) available.set(id, (available.get(id) ?? 0) - num);

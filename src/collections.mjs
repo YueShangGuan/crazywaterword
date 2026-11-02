@@ -51,7 +51,8 @@ export async function collectFloaters(client, config, floaters, enabled, report)
   report({ label: '漂浮物拾取 ' + (ids.length - denied.length) + ' 个' + (denied.length ? '，跳过 ' + denied.length + ' 个' : '') + ' ' + rewardText(config, reply.reward), ok: true });
 }
 
-export async function claimCollection(client, config, key, enabled, report) {
+export async function claimCollection(client, config, key, enabled, report, scheduler) {
+  if (scheduler && !scheduler.due(key)) return;
   if (key === 'fishBook') {
     let view = await fishView(client, config);
     while (view.ready && enabled(key)) {
@@ -63,6 +64,7 @@ export async function claimCollection(client, config, key, enabled, report) {
       view = fresh;
     }
   } else {
+    const midnight = scheduler?.nextDay();
     for (const day of newbieView(client)?.available ?? []) {
       if (!enabled(key) || !newbieView(client)?.available.includes(day)) break;
       const start = client.newbieActivity.startTime;
@@ -72,6 +74,11 @@ export async function claimCollection(client, config, key, enabled, report) {
         if (!claimed.includes(day)) claimed.push(day);
       }
       report({ label: '新手登录第 ' + day + ' 天 ' + rewardText(config, reply.reward), ok: true });
+    }
+    const view = newbieView(client);
+    if (scheduler && enabled(key) && !view?.available.length) {
+      const start = client.newbieActivity?.startTime;
+      scheduler.defer(key, Math.min(midnight, view?.end ?? (start > now(client) ? start : midnight)));
     }
   }
 }

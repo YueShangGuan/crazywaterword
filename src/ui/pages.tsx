@@ -31,6 +31,7 @@ export function activitiesPage() {
     <Panel title="当前活动">
       <div className="bar"><Button id="activities-refresh" variant="outline">刷新活动</Button></div>
       <div id="activities-list" aria-live="polite" />
+      <template id="ui-event-switch"><Switch className="p-0" /></template>
     </Panel>
     <Panel title="材料来源查询"><label htmlFor="source-query">游戏材料名称</label><Input id="source-query" placeholder="例如：有机土壤" /><div id="source-results" aria-live="polite" /></Panel>
     <Panel title="海盗首杀"><div id="pirate-tracker" aria-live="polite" /></Panel>
@@ -45,7 +46,7 @@ export function manualPage() {
       <Button id="loot-run" variant="default">领取现在能领的</Button>
       <span id="loot-hint" className="warn"></span>
     </div>
-    <pre id="loot-view">主线、成就、邮件、挂机收益，能领的都领一遍。不花钻石。</pre>
+    <pre id="loot-view">领取主线、成就、邮件、挂机收益，以及已拥有英雄的技能展示首领奖励。不花钻石。</pre>
     </Panel>
     <Panel title="任务奖励">
     <div className="bar">

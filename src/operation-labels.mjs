@@ -1,0 +1,20 @@
+// Operation names shared by the server journal and the browser's network errors.
+export const operationLabels = {
+  '/api/accounts': '读取账号列表', '/api/accounts/export': '导出账号',
+  '/api/accounts/credential': '读取账号凭证', '/api/accounts/active': '切换账号',
+  '/api/accounts/label': '修改账号备注', '/api/accounts/remove': '删除账号',
+  '/api/accounts/pause': '切换账号托管状态',
+  '/api/connect': '连接游戏', '/api/disconnect': '断开连接',
+  '/api/capture': '读取采集状态', '/api/capture/start': '开始采集账号', '/api/capture/stop': '停止采集',
+  '/api/overview': '刷新总览', '/api/heroes': '查看英雄', '/api/heroes/run': '执行英雄养成',
+  '/api/activities': '读取活动', '/api/material-sources': '查询材料来源', '/api/pirates': '查看海盗首杀',
+  '/api/world': '查看海面', '/api/world/run': '执行海面经营', '/api/worlds': '查看海域',
+  '/api/world/order/submit': '手动提交居民订单',
+  '/api/worlds/enter': '进入海域', '/api/trials/challenge': '挑战试炼副本',
+  '/api/appointments': '查看英雄职位', '/api/appointments/run': '任命英雄',
+  '/api/loot/run': '一键领取奖励', '/api/dailies': '查看日常', '/api/dailies/run': '执行日常',
+  '/api/tasks': '查看任务', '/api/tasks/run': '领取任务奖励',
+  '/api/stages': '查看推关进度', '/api/stages/start': '开始推关', '/api/stages/stop': '停止推关',
+  '/api/loop': '查看挂机设置', '/api/loop/start': '开始挂机', '/api/loop/stop': '暂停挂机',
+  '/api/loop/task': '修改自动任务', '/api/loop/fishing-reserve': '设置钓具预留金币',
+};

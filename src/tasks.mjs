@@ -45,24 +45,32 @@ export function taskTarget(row) {
   return Number.isFinite(n) ? n : null;
 }
 
-// 每日订单档位：rewardedNum 是「最后一个已领档位的 reqNum」，所以下一档就是第一个
-// reqNum 大于它的档位（客户端 OrderUtil.isOrderReward 就是这么算的）。
-// 各赛季的 reqNum 序列共享 6/12/18/24/30/40 前缀，合并去重后不会歧义。
-export function nextOrderTier(config, { orderNum = 0, rewardedNum = 0 } = {}) {
-  const reqNums = [...new Set((config?.tables?.OrderDailyRewardCfg?.data ?? []).map((row) => row.reqNum))]
-    .filter((num) => Number.isFinite(num))
-    .sort((a, b) => a - b);
+// WorkerOrderUtil uses RewardUtil.seasonCfgList: within the season take the
+// most recent group unlocked by the world's age, counting Beijing calendar days.
+export function nextOrderTier(config, { orderNum = 0, rewardedNum = 0, player, now = Date.now() / 1000 } = {}) {
+  let rows = config?.tables?.OrderDailyRewardCfg?.data ?? [];
+  if (rows.some(row => row.season != null)) {
+    const { worldId, worldOpenTime } = normalize(player ?? {});
+    const season = Math.floor(worldId / 1e6) % 1000;
+    const maxSeason = Math.max(...rows.map(row => row.season));
+    rows = rows.filter(row => row.season === Math.min(season, maxSeason));
+    const days = [...new Set(rows.map(row => row.worldOpenDays))].sort((a, b) => a - b);
+    const age = worldOpenTime > 0 && now >= worldOpenTime
+      ? Math.floor((now + 28800) / 86400) - Math.floor((worldOpenTime + 28800) / 86400) + 1 : null;
+    const group = season > maxSeason ? days.at(-1) : days.length === 1 ? days[0]
+      : age === null ? null : days.filter(day => day <= age).at(-1) ?? days[0];
+    rows = rows.filter(row => row.worldOpenDays === group);
+  }
+  const reqNums = [...new Set(rows.map(row => row.reqNum))].filter(num => Number.isFinite(num)).sort((a, b) => a - b);
   const tier = reqNums.find((num) => num > rewardedNum) ?? null;
   if (tier === null) return { tier: null, reqNums, claimable: false };
   return { tier, reqNums, claimable: orderNum >= tier };
 }
 
 // 只读探测：把三类任务和每日订单档位都拉一遍，算出每一条能不能领。
-export async function surveyTasks(client, protocol, { config = null, water = null, timeout = 8000 } = {}) {
+export async function surveyTasks(client, protocol, { config = null, water = null, timeout = 8000, scheduler, player } = {}) {
   const main = normalize(await client.request('MainTaskInfoRequest', {}, 'MainTaskInfoResponse', timeout));
   const achievement = normalize(await client.request('AchievementInfoRequest', {}, 'AchievementInfoResponse', timeout));
-  // 每日订单档位要 OnWaterResponse；调用方手里已经有了就传进来，省一次往返。
-  const waterBody = normalize(water ?? (await client.request('OnWaterRequest', {}, 'OnWaterResponse', timeout)));
 
   const mainCfg = indexBy(config, 'MainTaskCfg', 'taskId');
   const branchCfg = indexBy(config, 'BranchTaskCfg', 'taskId');
@@ -152,17 +160,35 @@ export async function surveyTasks(client, protocol, { config = null, water = nul
   }
 
   // 每日订单档位奖励：空体请求，服务端按 reqNum 发下一档。
-  const order = waterBody.orderOfTheDay ?? {};
-  const tier = nextOrderTier(config, { orderNum: order.orderNum ?? 0, rewardedNum: order.rewardedNum ?? 0 });
+  const summary = { main: mainView, branch: branchView, achievement: achievementView, orderOfTheDay: null, plan, notes };
+  if (scheduler && !scheduler.due('orderDaily')) return summary;
+  let order;
+  try {
+    const waterBody = normalize(water ?? await client.request('OnWaterRequest', {}, 'OnWaterResponse', timeout));
+    order = waterBody?.orderOfTheDay;
+  } catch (error) {
+    summary.orderError = error.message;
+    notes.push('未能查询每日订单：' + error.message);
+    return summary;
+  }
+  if (!order) return summary;
+  const now = scheduler?.now() ?? Math.floor((Date.now() + (client.serverClockOffsetMs || 0)) / 1000);
+  const tier = nextOrderTier(config, { ...order, player, now });
   const orderView = {
     orderNum: order.orderNum ?? 0,
     rewardedNum: order.rewardedNum ?? 0,
     tier: tier.tier,
     claimable: tier.claimable,
   };
-  if (tier.tier === null) notes.push(`每日订单：各档位都已领完（rewardedNum=${orderView.rewardedNum}）`);
-  else if (!tier.claimable) notes.push(`每日订单：下一档要 ${tier.tier} 单，现在 ${orderView.orderNum} 单`);
-  else {
+  summary.orderOfTheDay = orderView;
+  if (!tier.reqNums.length) notes.push('每日订单：未能确认当前赛季的奖励档位');
+  else if (tier.tier === null) {
+    notes.push('每日订单：已领完本日全部档位');
+    scheduler?.defer('orderDaily', scheduler.nextDay());
+  } else if (!tier.claimable) {
+    notes.push(`每日订单：下一档要 ${tier.tier} 单，现在 ${orderView.orderNum} 单`);
+    scheduler?.defer('orderDaily', Math.min(now + 180, scheduler.nextDay()));
+  } else {
     plan.push({
       kind: 'orderDaily',
       id: tier.tier,
@@ -173,7 +199,7 @@ export async function surveyTasks(client, protocol, { config = null, water = nul
     });
   }
 
-  return { main: mainView, branch: branchView, achievement: achievementView, orderOfTheDay: orderView, plan, notes };
+  return summary;
 }
 
 // 逐条领取。同一条被服务端拒过就记下来，本轮之后不再重发——否则循环模式里会每轮骚扰一次。
@@ -227,7 +253,7 @@ export function formatTaskPlan(survey) {
     lines.push(`${mark(!a.claimed && a.progress >= (a.target ?? Infinity))} 成就 ${String(a.id).padEnd(6)}${a.progress}/${a.target ?? '?'}${a.claimed ? ' 已领' : ''}`);
   }
   const o = survey.orderOfTheDay;
-  lines.push(`${mark(o.claimable)} 订单 今日 ${o.orderNum} 单，已领档位 ${o.rewardedNum}，下一档 ${o.tier ?? '无'}`);
+  if (o) lines.push(`${mark(o.claimable)} 订单 今日 ${o.orderNum} 单，已领档位 ${o.rewardedNum}，下一档 ${o.tier ?? '无'}`);
   for (const note of survey.notes) lines.push(`跳过 ${note}`);
   return lines.join('\n');
 }

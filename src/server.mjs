@@ -18,14 +18,17 @@ import { planHeroes, runHeroPlan, formatHeroPlan } from './heroes.mjs';
 import { appointments } from './appointments.mjs';
 import { surveyDailies, runDailies, formatSurvey } from './dailies.mjs';
 import { surveyTasks, runTasks, formatTaskPlan } from './tasks.mjs';
-import { makeTypeResolver, weekFactoryInfo, surveyWorld, planWorld, runWorld, formatWorldPlan, formatFieldReport, loadMapAsset } from './world.mjs';
-import { runLoop, formatLoopRound } from './loop.mjs';
-import { automationTasks, taskSettings } from './automation.mjs';
+import { makeTypeResolver, weekFactoryInfo, surveyWorld, planWorld, runWorldRound, submitResidentOrder, formatWorldPlan, formatFieldReport, loadMapAsset } from './world.mjs';
+import { runLoop, formatLoopRound, formatLoopStep } from './loop.mjs';
+import { describeLogError } from './log-errors.mjs';
+import { operationLabels } from './operation-labels.mjs';
+import { automationTasks, defaultFishingGoldReserve, taskSettings, worldTaskKey } from './automation.mjs';
+import { rewardSchedule } from './reward-schedule.mjs';
 import { createStageTask } from './stages.mjs';
 import { runAction } from './actions.mjs';
 import { loadStore, saveStore, upsertAccount, removeAccount, setActive, pickAccount, describeAccount, revealAccount, DATA_DIR } from './accounts.mjs';
 import { startCapture, stopCapture, captureState, DEFAULT_PROXY_PORT } from './capture.mjs';
-import { iconIndex, atlasFile, itemIcon, resourceIcon, materialIcon, heroIcon, heroCard, buildingIcon } from './art.mjs';
+import { iconIndex, atlasFile, itemIcon, resourceIcon, materialIcon, heroIcon, heroCard, buildingIcon, workerIcon } from './art.mjs';
 
 const LOG_LIMIT = 400;
 const overviewQueries = ENTRY_QUERIES.filter(({ name }) => [
@@ -57,7 +60,9 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
   };
 
   function emit(session, level, message, extra) {
-    const entry = { id: ++logId, t: Date.now(), level, message, extra, account: session?.id ?? null };
+    const display = describeLogError(message, extra);
+    const detail = [extra?.diagnostic, display.detail].filter(Boolean).join('\n');
+    const entry = { id: ++logId, t: Date.now(), level, message: display.message, detail: detail || undefined, extra, account: session?.id ?? null };
     const list = session ? session.log : globalLog;
     list.push(entry);
     logLimit(list);
@@ -115,6 +120,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       heroJob: null,
       queueTail: null,
       appointmentJob: null,
+      residentJobs: new Map(),
       log: [],
       loop: {
         running: false,
@@ -122,6 +128,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         completed: 0,
         everyMs: (saved?.everySeconds ?? 60) * 1000,
         tasks: taskSettings(saved?.tasks),
+        fishingGoldReserve: saved?.fishingGoldReserve ?? defaultFishingGoldReserve,
         controller: null, job: null,
         history: [],
         error: null,
@@ -135,7 +142,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       sessions.set(id, session);
       try {
         const audit = JSON.parse(fs.readFileSync(factoryReportFile(id), 'utf8'));
-        for (const line of audit.lines) emit(session, 'info', '上次工厂核对（' + audit.time + '） ' + line);
+        if (audit.lines?.length) emit(session, 'info', '上次工厂检查 · ' + audit.time, { diagnostic: audit.lines.join('\n') });
       } catch { /* 新账号没有历史核对记录 */ }
     }
     return sessions.get(id);
@@ -147,6 +154,18 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
 
   function wire(session, instance) {
     instance.on('message', ({ name, body }) => {
+      // The loop keeps a reference to this login's player object. Update it in place
+      // so crossing an unlock level takes effect without restarting the console.
+      if (name === 'SCPlayerExpUpdate' && session.client === instance && session.player && body.level > 0) {
+        if (session.player.level !== body.level) {
+          for (const key of ['adShop', 'weekPass', 'trialSweep', 'dailyRewards', 'chests']) rewardSchedule(instance).clearTask(key);
+        }
+        session.player.level = body.level;
+        session.player.exp = body.exp;
+      }
+      if (name === 'SCVipUpdate' && session.client === instance && session.player) {
+        Object.assign(session.player.vip ??= {}, { vipLevel: body.vipLevel, vipExp: body.vipExp });
+      }
       if (name === 'SCAllActivity' || name === 'SCNewbieActivityUpdate') instance.newbieActivity = normalize(body.newbieActivity);
       if (name === 'SCAllActivity') {
         instance.festivals = body.festivalActivities ?? [];
@@ -160,7 +179,9 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     instance.on('frame', ({ dir, name, seq, bytes }) => trace(session, `${dir === 'out' ? '->' : '<-'} [${name}] seq=${seq} ${bytes.byteLength}B`));
     instance.on('message', ({ seq, name, body }) => trace(session, `[${name}] seq=${seq} ${JSON.stringify(body).slice(0, 400)}`));
     instance.on('pong', ({ latencyMs, offsetMs }) => trace(session, `pong ${latencyMs}ms offset=${offsetMs}ms`));
-    instance.on('drop', ({ name, reason }) => emit(session, 'warn', `漏收了一条 ${name} 的应答（${reason}），本轮跳过`));
+    instance.on('drop', ({ name, reason }) => emit(session, reason === 'duplicate' ? 'info' : 'warn',
+      reason === 'duplicate' ? '已忽略服务器重复发送的消息' : '服务器消息序号不连续，已跳过这条消息',
+      { diagnostic: name + ' · ' + reason }));
     instance.on('warn', (message) => emit(session, 'warn', message === 'ping timeout' ? '服务器心跳超时，连接可能已经断了' : message));
     instance.on('fatal', ({ reason }) => {
       const message = reason === 'SCChannelExpired' ? '这个账号在别处登录了，本条连接被顶掉' : `连接被服务器中断（${reason}）`;
@@ -204,7 +225,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     client.send('LoginFinishRequest', {});
     persistIdentity(account, session.player);
     const role = describeRole(session.player);
-    emit(session, 'info', `已进入游戏：${role?.nickname ?? '未知'} lv${role?.level ?? '?'}`);
+    emit(session, 'info', `已进入游戏：${role?.nickname ?? '未知角色'}（${role?.level ?? '?'} 级）`);
     return { url: account.url, result: response.result, initSeqNo: response.initSeqNo, playerInfo: session.player };
   }
 
@@ -258,7 +279,10 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
   async function overview(session, account) {
     const instance = await ensureConnected(session, account);
     const { ok, failed } = await collectState(instance, protocol, { queries: overviewQueries, signals: [], timeout: 8000 });
-    for (const [name, error] of Object.entries(failed)) emit(session, 'warn', `总览查询 ${name} 失败：${error}`);
+    const sections = { AllResourceRequest: '资源', AllItemRequest: '仓库', AllHeroRequest: '英雄', MainTaskInfoRequest: '主线任务',
+      DailyTaskInfoRequest: '每日任务', AchievementInfoRequest: '成就', EmailBoxRequest: '邮件', AfkInfoRequest: '挂机收益',
+      OnWaterRequest: '海面建筑', MyResFieldsRequest: '资源田', MonthCardRequest: '月卡' };
+    for (const [name, error] of Object.entries(failed)) emit(session, 'warn', `总览：未能读取${sections[name] ?? '游戏数据'}：${error}`, { diagnostic: name });
     const config = loadConfigSafe();
     const view = summarize({ ok }, { config });
     const daily = view.daily;
@@ -294,7 +318,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
 
   async function tasks(session, account) {
     const instance = await ensureConnected(session, account);
-    const survey = await surveyTasks(instance, protocol, { config: loadConfigSafe() });
+    const survey = await surveyTasks(instance, protocol, { config: loadConfigSafe(), player: session.player });
     return { ...survey, text: formatTaskPlan(survey) };
   }
 
@@ -303,6 +327,12 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     const config = loadConfigSafe();
     const survey = await surveyWorld(instance, protocol, { config, player: session.player, includeCargo: session.loop.tasks.cargo });
     const plan = planWorld(survey, { config });
+    // Manual preview and idle execution can use different toggles. The order
+    // table describes what the account's idle loop can actually deliver.
+    const autoOrders = survey.orders.length ? planWorld(survey, {
+      config, enabled: kind => session.loop.tasks[worldTaskKey(kind)] === true,
+      allowReroll: session.loop.tasks.denyOrder, minOrderExp: null,
+    }).orderDecisions : [];
     let map = null, mapError;
     try {
       map = await loadMapAsset(Number(session.player?.scenarioId ?? 0));
@@ -322,6 +352,11 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       factories: survey.factories.map((b) => ({ buildingId: b.buildingId, type: b.type, typeName: typeNames.get(b.type), level: b.level, queue: (b.factory.factoryQ ?? []).length, auto: b.factory.autoProductId ? displayMaterial(config, b.factory.autoProductId) : null, icon: buildingIcon(b.type) })),
       orders: survey.orders.map((order) => ({
         ...order,
+        workerIcon: workerIcon(order.workerId),
+        decision: autoOrders.find(row => row.index === order.index),
+        manualDecision: order.orderKey ? planWorld({ ...survey, orders: [order] }, {
+          config, enabled: kind => kind === 'finishOrder',
+        }).orderDecisions[0] : { status: 'unknown', reason: '无法确认这条居民订单，请刷新后再试' },
         requirements: order.requirements.map((need) => ({ ...need, name: displayMaterial(config, need.id), sources: config?.materialSources(need.id), icon: materialIcon(need.id) })),
         missing: (order.missing ?? []).map((need) => ({ ...need, name: displayMaterial(config, need.id), sources: config?.materialSources(need.id), icon: materialIcon(need.id) })),
       })),
@@ -333,7 +368,9 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         awaitingFinish: b.buildFinishTime > 0 && b.buildFinishTime <= now,
         icon: buildingIcon(b.type),
       })),
-      stock: [...survey.stock].sort((a, b) => b[1] - a[1]).slice(0, 40).map(([id, num_]) => ({ id, name: displayMaterial(config, id), num: num_, sources: config?.materialSources(id), icon: materialIcon(id) })),
+      idleRunning: session.loop.running && !session.loop.controller?.signal.aborted,
+      autoDeliverOrders: session.loop.tasks.finishOrder,
+      stock: [...survey.stock].filter(([, num]) => num > 0).sort((a, b) => b[1] - a[1]).map(([id, num]) => ({ id, name: displayMaterial(config, id), num, sources: config?.materialSources(id), icon: materialIcon(id) })),
       resFields: fields,
       plan: plan.actions,
       notes: [...survey.notes, ...plan.notes],
@@ -668,6 +705,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         const client = await ensureConnected(session, account);
         const view = await activityView(client, client.festivals, loadConfigSafe());
         view.newbie = newbieView(client);
+        if (view.newbie) view.activities.push({ name: '新手七日登录', taskKey: 'newbieLogin', endTime: view.newbie.end });
         try { view.fish = await fishView(client, loadConfigSafe()); }
         catch (error) { emit(session, 'error', '读取钓鱼图鉴失败：' + error.message); }
         if (view.order?.materials.length && !view.order.finished) {
@@ -691,6 +729,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         }
         if (view.lotteryError) emit(session, 'error', '读取周抽奖进度失败：' + view.lotteryError);
         if (view.orderError) emit(session, 'error', '读取周订单失败：' + view.orderError);
+        view.eventTasks = automationTasks.filter(task => task.group === '限时活动').map(({ key, label }) => ({ key, label, enabled: session.loop.tasks[key] }));
+        view.serverNow = (Date.now() + (client.serverClockOffsetMs || 0)) / 1000;
         json(view);
         return;
       }
@@ -706,7 +746,33 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       }
       if (route === 'GET /api/world') {
         const { account, session } = scoped_(parsed);
-        json(await world(session, account));
+        session.worldRead ??= enqueue(session, () => world(session, account)).finally(() => { session.worldRead = null; });
+        json(await session.worldRead);
+        return;
+      }
+      if (route === 'POST /api/world/order/submit') {
+        const { session } = scoped_(parsed);
+        const payload = jsonBody();
+        needConfirm(payload);
+        const { index, orderKey } = payload;
+        if (!Number.isSafeInteger(index) || index < 0 || index > 2147483647 || typeof orderKey !== 'string' || !orderKey.length || orderKey.length > 512) {
+          throw new Error('订单信息不完整，请刷新居民订单');
+        }
+        const key = index + ':' + orderKey;
+        let job = session.residentJobs.get(key);
+        if (!job) {
+          const client = session.client, generation = session.generation;
+          const enabled = () => client?.connected && session.client === client && !session.paused && session.generation === generation;
+          job = enqueue(session, async () => {
+            if (!enabled()) throw new Error('账号连接已变化，请刷新居民订单');
+            const result = await submitResidentOrder(client, protocol, { index, orderKey, enabled,
+              config: loadConfigSafe(), player: session.player, cargoEnabled: () => session.loop.tasks.cargo });
+            emit(session, 'info', result.label, { worldUpdated: true });
+            return { ok: true, ...result };
+          }, '手动提交居民订单 #' + index).finally(() => session.residentJobs.delete(key));
+          session.residentJobs.set(key, job);
+        }
+        json(await job);
         return;
       }
       if (route === 'GET /api/worlds') {
@@ -777,7 +843,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
           const instance = await ensureConnected(session, account);
           emit(session, 'info', '开始一键领取');
           const results = await claimRewards(instance, protocol, loadConfigSafe(), ({ label, ok, error }) =>
-            emit(session, ok ? 'info' : 'error', ok ? `领取 · ${label}` : `领取 · ${label}失败：${error}`));
+            emit(session, ok ? 'info' : 'error', ok ? `领取 · ${label}` : `领取 · ${label}失败：${error}`), undefined, undefined, undefined, session.player);
           const failed = results.filter((entry) => !entry.ok).length;
           const summary = `本轮完成 ${results.length - failed} 项，失败 ${failed} 项`;
           emit(session, failed ? 'warn' : 'info', summary);
@@ -831,7 +897,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
           allowPaid: payload.paid === true,
           onStep: (entry) => {
             if (entry.skipped) emit(session, 'warn', `日常「${entry.title}」跳过：${entry.reason}`);
-            else emit(session, entry.ok ? 'info' : 'error', entry.ok ? `日常「${entry.title}」${entry.note}` : `日常「${entry.title}」失败：${entry.error}`);
+            else emit(session, entry.ok ? 'info' : 'error', entry.ok ? `日常「${entry.title}」${entry.note}` : `日常「${entry.title}」${entry.note ?? ''}失败：${entry.error}`,
+              entry.ok ? undefined : { request: entry.request, way: entry.way });
           },
         });
         // 任务奖励、活跃度宝箱与每日赠礼的领取都在 runDailies 内部收尾，这里只把结果重新读一遍给页面。
@@ -865,19 +932,31 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         const payload = jsonBody();
         needConfirm(payload);
         const { account, session } = scoped_(parsed);
+        const generation = session.generation;
         const instance = await ensureConnected(session, account);
         const config = loadConfigSafe();
-        const survey = await surveyWorld(instance, protocol, { config, player: session.player, includeCargo: session.loop.tasks.cargo });
+        const protectCargo = session.loop.tasks.cargo;
+        const survey = await surveyWorld(instance, protocol, { config, player: session.player, includeCargo: protectCargo });
         const plan = planWorld(survey, { config, allowSpeedUp: payload.speedUp === true, allowReroll: payload.reroll === true });
-        const { results } = await runWorld(instance, protocol, plan, {
-          allowMutate: true,
+        const { results } = await runWorldRound(instance, protocol, plan, {
+          config, player: session.player, allowMutate: true,
+          cargoEnabled: () => protectCargo || session.loop.tasks.cargo,
+          enabled: kind => generation === session.generation && !session.paused &&
+            (!['finishOrder', 'denyOrder'].includes(kind) || protectCargo || !session.loop.tasks.cargo),
           onStep: (entry) => {
             if (entry.skipped) emit(session, 'warn', `海面「${entry.step.label}」跳过：${entry.error}`);
             else emit(session, entry.ok ? 'info' : 'error', entry.ok ? `海面 ${entry.step.label}` : `海面 ${entry.step.label} 失败：${entry.error}`);
           },
         });
         await new Promise((resolve) => setTimeout(resolve, 1200));
-        const after = await world(session, account);
+        let after;
+        try {
+          if (generation !== session.generation || session.paused) throw new Error('账号托管状态已变更');
+          after = await world(session, account);
+        } catch (error) {
+          emit(session, 'warn', '海面操作已结束，刷新状态失败：' + error.message);
+          after = { refreshError: error.message };
+        }
         json({ ...after, results: results.map((r) => ({ label: r.step.label, ok: r.ok, skipped: r.skipped, error: r.error })) });
         return;
       }
@@ -933,6 +1012,16 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         return;
       }
 
+      if (route === 'POST /api/loop/fishing-reserve') {
+        const { session } = scoped_(parsed);
+        const { fishingGoldReserve } = jsonBody();
+        if (!Number.isSafeInteger(fishingGoldReserve) || fishingGoldReserve < 0) throw new Error('预留金币必须是非负整数');
+        saveAutomation(session.id, { fishingGoldReserve });
+        session.loop.fishingGoldReserve = fishingGoldReserve;
+        emit(session, 'info', '钓具强化将保留 ' + fishingGoldReserve.toLocaleString('zh-CN') + ' 金币');
+        json({ fishingGoldReserve });
+        return;
+      }
       if (route === 'POST /api/loop/task') {
         const payload = jsonBody();
         needConfirm(payload);
@@ -942,6 +1031,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         const tasks = { ...session.loop.tasks, [task.key]: payload.enabled };
         saveAutomation(session.id, { tasks });
         session.loop.tasks = tasks;
+        if (session.client && payload.enabled) rewardSchedule(session.client).clearTask(task.key);
         if (!Object.values(tasks).some(Boolean)) stopLoop(session, '全部自动项目已暂停');
         emit(session, 'info', task.label + (payload.enabled ? '已启用' : '已暂停'));
         json(loopView(session));
@@ -950,7 +1040,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
 
       json({ error: 'not found' }, 404);
     } catch (error) {
-      const entry = emit(scoped, 'error', `${route} · ${error.message}`);
+      const entry = emit(scoped, 'error', (operationLabels[parsed.pathname] ?? '控制台操作') + '失败：' + error.message, { diagnostic: route });
       json({ error: error.message, log: entry }, 400);
     } finally {
       releaseWrite?.();
@@ -991,10 +1081,13 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       try {
         const client = await ensureConnected(session, account);
         if (signal.aborted) return;
+        const { appId, channelId, originVersion } = account.login?.eworldClientInfo ?? {};
         await runLoop(client, protocol, { config: loadConfigSafe(), player: session.player,
+          adChannel: { clientInfo: { appId, channelId, originVersion }, language: account.login?.language },
           rounds, everyMs: loop.everyMs, allowMutate: true, stop: signal,
           schedule: work => enqueue(session, work),
           isEnabled: key => loop.tasks[key] === true,
+          getFishingGoldReserve: () => loop.fishingGoldReserve,
           onRound(summary) {
             if (summary.world.factories?.length) {
               try {
@@ -1004,15 +1097,14 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
             loop.completed = summary.round;
             loop.history.push(summary);
             if (loop.history.length > 50) loop.history.shift();
-            emit(session, 'info', formatLoopRound(summary));
+            emit(session, 'info', formatLoopRound(summary), summary.world.population ? { worldUpdated: true } : undefined);
           },
           onStep(entry) {
-            if (entry.skipped) {
-              if (entry.phase === 'tasks' && entry.label && entry.reason) emit(session, 'info', entry.label + '：' + entry.reason);
-              return;
-            }
-            const label = entry.step?.label ?? entry.title ?? entry.id;
-            emit(session, entry.ok ? 'info' : 'error', entry.ok ? `循环[${entry.phase}] ${label}` : `循环[${entry.phase}] ${label} 失败：${entry.error}`);
+            const production = entry.ok && !entry.skipped && entry.step?.kind === 'startProduce';
+            const batch = production ? JSON.stringify([entry.round, entry.step.body.buildingId, entry.step.body.productId]) : undefined;
+            emit(session, entry.skipped || entry.ok ? 'info' : 'error', formatLoopStep(entry),
+              batch ? { batch, factory: entry.step.displayFactory, product: entry.step.displayProduct }
+                : entry.request && entry.ok === false ? { request: entry.request, way: entry.way } : undefined);
           },
         });
       } catch (error) {
@@ -1032,10 +1124,14 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
 
   function loopView(session) {
     const loop = session.loop;
+    const rewards = session.client ? rewardSchedule(session.client) : null;
     return {
       running: loop.running,
       stopping: !!loop.controller?.signal.aborted,
-      tasks: automationTasks.map(({ key, label, group }) => ({ key, label, group, enabled: loop.tasks[key] })),
+      tasks: automationTasks.map(({ key, label, group }) => ({
+        key, label, group, enabled: loop.tasks[key], nextCheck: loop.tasks[key] ? rewards?.nextCheck(key) : null,
+      })),
+      fishingGoldReserve: loop.fishingGoldReserve,
       rounds: loop.rounds,
       completed: loop.completed,
       everyMs: loop.everyMs,

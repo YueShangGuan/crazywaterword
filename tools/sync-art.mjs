@@ -11,7 +11,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { createHash, randomUUID } from 'node:crypto';
 import { parsePackage, ITEM_TYPE } from '../src/fgui.mjs';
+import { getConfig } from '../src/config.mjs';
+import { decrypt, inspectArchive } from './wxapkg.mjs';
 
 export const APPID = 'wx2ea52a972ea18e5e';
 export const SERVER = 'https://dhyaoj-cdn.khlgamen.com/HotUpdateRes/wx/';
@@ -21,7 +24,6 @@ export const ART_DIR = path.resolve(import.meta.dirname, '../work/cdn/art');
 //   ui_iconlib/ui_iconlib2 道具与资源图标  ui_iconequip 装备  ui_herohead/ui_herohead2 英雄头像
 //   ui_building 建筑与工厂  ui_iconaccess 少数建筑与要塞  ui_iconchip 芯片
 //   ui_iconworker 工人  ui_preset 预设  ui_chat_iframe 聊天头像框
-// 砍掉的：ui_common（9.0M，核心图标一个都不落在这里）、ui_head_frame（3.8M，头像框界面不显示）。
 export const BUNDLES = [
   'ui_iconlib',
   'ui_iconlib2',
@@ -35,6 +37,9 @@ export const BUNDLES = [
   'ui_chat_iframe',
   'ui_iconworker',
 ];
+// These UI packages also contain warehouse item sprites. Only fill configured
+// icon names absent from the primary packages, not similarly named UI widgets.
+const ITEM_BUNDLES = ['ui_iconactivity', 'ui_head_frame', 'ui_skin', 'ui_linkage_lsr', 'ui_iconoldactivity'];
 
 const BASE64_KEYS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 const B64 = new Map([...BASE64_KEYS].map((c, i) => [c, i]));
@@ -66,6 +71,28 @@ export function findCacheDir() {
   return null;
 }
 
+// Use the active game's bundle versions: a cache may retain multiple versions
+// of the same bundle, each packing its sprites at different coordinates.
+function bundleVersions(cacheDir) {
+  const root = path.resolve(cacheDir, '../../../../packages', APPID);
+  if (!fs.existsSync(root)) return { versions: {}, fallback: true };
+  const files = fs.readdirSync(root).filter(v => /^\d+$/.test(v)).sort((a, b) => Number(b) - Number(a));
+  for (const version of files) {
+    const file = path.join(root, version, '__APP__.wxapkg');
+    if (!fs.existsSync(file)) continue;
+    try {
+      const { data } = decrypt(APPID, fs.readFileSync(file));
+      const entry = inspectArchive(data).files.find(f => /^src\/settings(?:\.[^/]+)?\.json$/.test(f.relativePath));
+      if (!entry) continue;
+      const versions = JSON.parse(data.toString('utf8', entry.off, entry.off + entry.size)).assets?.bundleVers;
+      if (versions && Object.keys(versions).length) return { versions, fallback: version !== files[0] };
+    } catch {
+      console.warn(`微信游戏包 ${version} 的素材版本清单无法读取，尝试其他本地版本`);
+    }
+  }
+  return { versions: {}, fallback: true };
+}
+
 export function readCacheList(cacheDir) {
   const list = JSON.parse(fs.readFileSync(path.join(cacheDir, 'cacheList.json'), 'utf8'));
   const byUrl = new Map();
@@ -79,14 +106,21 @@ export function readCacheList(cacheDir) {
 export function readBundleConfig(cacheDir, bundle) {
   const dir = path.join(cacheDir, bundle);
   if (!fs.existsSync(dir)) return null;
-  for (const file of fs.readdirSync(dir)) {
-    if (!file.endsWith('.json')) continue;
+  const files = fs.readdirSync(dir).filter(file => file.endsWith('.json'));
+  files.sort((a, b) => fs.statSync(path.join(dir, b)).mtimeMs - fs.statSync(path.join(dir, a)).mtimeMs);
+  for (const file of files) {
     const full = path.join(dir, file);
-    if (fs.statSync(full).size < 500) continue;
-    const parsed = JSON.parse(fs.readFileSync(full, 'utf8'));
-    if (parsed?.paths && parsed?.uuids) return parsed;
+    const cfg = parseBundleConfig(full);
+    if (cfg) return cfg;
   }
   return null;
+}
+
+function parseBundleConfig(file) {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return cfg?.paths && Array.isArray(cfg.types) && Array.isArray(cfg.uuids) && cfg.versions ? cfg : null;
+  } catch { return null; }
 }
 
 // 每个资源在 CDN 上的真实地址：native 优先（贴图 .png、二进制 .bin），没有才回落到 import 的 .json。
@@ -104,15 +138,30 @@ export function assetUrl(bundle, cfg, index, typeName) {
 async function materialize(url, target, byUrl, allowFetch) {
   if (fs.existsSync(target)) return fs.statSync(target).size;
   const cached = byUrl.get(url);
-  if (cached?.local && fs.existsSync(cached.local)) {
-    fs.copyFileSync(cached.local, target);
-    return fs.statSync(target).size;
-  }
-  if (!allowFetch) return 0;
-  const res = await fetch(url);
-  if (!res.ok) return -1;
-  fs.writeFileSync(target, Buffer.from(await res.arrayBuffer()));
+  const local = cached?.local && fs.existsSync(cached.local);
+  if (!local && !allowFetch) return 0;
+  const temp = target + '.' + randomUUID() + '.tmp';
+  try {
+    if (local) fs.copyFileSync(cached.local, temp);
+    else {
+      let bytes;
+      try {
+        const res = await fetch(url, { signal: AbortSignal.timeout(20000) });
+        if (!res.ok) return -1;
+        bytes = Buffer.from(await res.arrayBuffer());
+      } catch { return -1; }
+      fs.writeFileSync(temp, bytes);
+    }
+    fs.renameSync(temp, target);
+  } finally { fs.rmSync(temp, { force: true }); }
   return fs.statSync(target).size;
+}
+
+// A stable, versioned filename also lets browsers cache the PNG without
+// serving yesterday's texture against today's sprite rectangles.
+function resourceFile(name, url, ext) {
+  const version = createHash('sha256').update(url).digest('hex').slice(0, 16);
+  return name + '.' + version + '.' + ext;
 }
 
 async function main() {
@@ -123,40 +172,57 @@ async function main() {
     process.exit(1);
   }
   const byUrl = readCacheList(cacheDir);
+  const { versions, fallback } = bundleVersions(cacheDir);
+  const indexPath = path.join(ART_DIR, 'index.json');
+  const previous = fs.existsSync(indexPath) ? JSON.parse(fs.readFileSync(indexPath, 'utf8')).icons : {};
+  let itemNames;
+  try { itemNames = new Set(getConfig().tables.ItemCfg.data.flatMap(r => r.pic ? [r.pic, r.pic + '_hw', r.pic + '_s_hw'] : [])); } catch {}
   const icons = {};
   const pages = {};
   const missing = [];
   const stats = [];
+  const incomplete = new Set();
 
-  for (const bundle of BUNDLES) {
-    const cfg = readBundleConfig(cacheDir, bundle);
+  for (const bundle of [...BUNDLES, ...ITEM_BUNDLES]) {
+    if (ITEM_BUNDLES.includes(bundle) && !itemNames?.size) {
+      incomplete.add(bundle);
+      stats.push(`${bundle}: 缺少道具配置，保留原有图标`);
+      continue;
+    }
+    if (fallback) incomplete.add(bundle);
+    const dir = path.join(ART_DIR, bundle);
+    fs.mkdirSync(dir, { recursive: true });
+    const version = versions[bundle];
+    let cfg;
+    if (version) {
+      const name = 'config.' + version + '.json';
+      const full = path.join(dir, name);
+      if (await materialize(SERVER + 'remote/' + bundle + '/' + name, full, byUrl, allowFetch) > 0) cfg = parseBundleConfig(full);
+    }
     if (!cfg) {
+      incomplete.add(bundle);
+      cfg = readBundleConfig(cacheDir, bundle) ?? readBundleConfig(ART_DIR, bundle);
+    }
+    if (!cfg) {
+      incomplete.add(bundle);
       stats.push(`${bundle}: 缓存里没有这个包`);
       continue;
     }
-    const dir = path.join(ART_DIR, bundle);
-    fs.mkdirSync(dir, { recursive: true });
-
-    // 名字 -> 本地文件。ImageAsset 是图集页，BufferAsset 是 FGUI 二进制。
-    const pageFiles = new Map();
-    let declaredPages = 0;
+    const textures = new Map();
     let binFile = null;
     for (const [key, [name, type]] of Object.entries(cfg.paths)) {
       const typeName = cfg.types[type];
       if (typeName !== 'cc.ImageAsset' && typeName !== 'cc.BufferAsset') continue;
-      if (typeName === 'cc.ImageAsset') declaredPages += 1;
+      if (path.basename(name) !== name || /[\\/:]/.test(name)) throw new Error('不支持的图集文件名：' + name);
       const index = Number(key);
-      const isBin = typeName === 'cc.BufferAsset';
-      const target = path.join(dir, `${name}.${isBin ? 'bin' : 'png'}`);
-      const size = await materialize(assetUrl(bundle, cfg, index, typeName), target, byUrl, allowFetch);
-      if (size <= 0) {
-        missing.push(`${bundle}/${name}`);
-        continue;
-      }
-      if (isBin) binFile = target;
-      else pageFiles.set(name, `${name}.png`);
+      const url = assetUrl(bundle, cfg, index, typeName);
+      if (typeName === 'cc.ImageAsset') { textures.set(name, url); continue; }
+      const target = path.join(dir, resourceFile(name, url, 'bin'));
+      if (await materialize(url, target, byUrl, allowFetch) > 0) binFile = target;
+      else missing.push(bundle + '/' + name);
     }
     if (!binFile) {
+      incomplete.add(bundle);
       stats.push(`${bundle}: 没有 FGUI 二进制`);
       continue;
     }
@@ -167,35 +233,58 @@ async function main() {
     // 图集页：FGUI 里写的是 atlas0.png 这种裸名，Cocos 里的名字是 <包名>_atlas0，两边对一下。
     const resolvePage = (rawFile) => {
       const stem = path.basename(rawFile ?? '').replace(/\.[^.]*$/, '');
-      const exact = pageFiles.get(`${pkg.name}_${stem}`);
-      if (exact) return exact;
-      const candidates = [...pageFiles.keys()].filter((key) => key.endsWith(`_${stem}`));
-      return candidates.length === 1 ? pageFiles.get(candidates[0]) : null;
+      const exact = `${pkg.name}_${stem}`;
+      if (textures.has(exact)) return exact;
+      const candidates = [...textures.keys()].filter((key) => key.endsWith(`_${stem}`));
+      return candidates.length === 1 ? candidates[0] : null;
     };
 
     let withRect = 0;
     let noPage = 0;
+    const pageFiles = new Map();
     for (const item of pkg.items) {
       if (item.type !== ITEM_TYPE.IMAGE || !item.name) continue;
+      if (ITEM_BUNDLES.includes(bundle) && (!itemNames.has(item.name) || icons[item.name])) continue;
       const sprite = pkg.sprites.get(item.id);
       if (!sprite) continue;
-      const page = resolvePage(sprite.atlas?.rawFile ?? sprite.atlas?.file);
+      const texture = resolvePage(sprite.atlas?.rawFile ?? sprite.atlas?.file);
+      if (texture && !pageFiles.has(texture)) {
+        const url = textures.get(texture);
+        const file = resourceFile(texture, url, 'png');
+        const present = await materialize(url, path.join(dir, file), byUrl, allowFetch) > 0;
+        pageFiles.set(texture, present ? file : null);
+        if (!present) missing.push(bundle + '/' + texture);
+      }
+      const page = pageFiles.get(texture);
       if (!page) {
         noPage += 1;
+        incomplete.add(bundle);
         continue;
       }
       icons[item.name] = { bundle, page, x: sprite.rect.x, y: sprite.rect.y, w: sprite.rect.width, h: sprite.rect.height, rotated: sprite.rotated };
       pages[`${bundle}/${page}`] = true;
       withRect += 1;
     }
-    stats.push(`${bundle}: 图标 ${withRect} 个，图集页 ${pageFiles.size}/${declaredPages}，落在缺页上的图标 ${noPage} 个`);
+    stats.push(`${bundle}: 图标 ${withRect} 个，使用 ${[...pageFiles.values()].filter(Boolean).length} 张图集，缺页图标 ${noPage} 个`);
   }
 
+  // An offline sync can see only a subset of the game's cache. Keep usable
+  // old entries together with their matching PNG instead of erasing them.
+  for (const [name, icon] of Object.entries(previous)) {
+    if (!icons[name] && incomplete.has(icon.bundle) && fs.existsSync(path.join(ART_DIR, icon.bundle, icon.page))) {
+      icons[name] = icon;
+      pages[icon.bundle + '/' + icon.page] = true;
+    }
+  }
   const index = { generatedAt: new Date().toISOString(), icons, pages: Object.keys(pages) };
   fs.mkdirSync(ART_DIR, { recursive: true });
-  fs.writeFileSync(path.join(ART_DIR, 'index.json'), JSON.stringify(index));
-  const size = (fs.statSync(path.join(ART_DIR, 'index.json')).size / 1024).toFixed(0);
-  console.log(`索引已写入 ${path.join(ART_DIR, 'index.json')} (${size} KB, ${Object.keys(icons).length} 个图标)`);
+  const temp = path.join(ART_DIR, 'index.' + randomUUID() + '.tmp');
+  try {
+    fs.writeFileSync(temp, JSON.stringify(index));
+    fs.renameSync(temp, indexPath);
+  } finally { fs.rmSync(temp, { force: true }); }
+  const size = (fs.statSync(indexPath).size / 1024).toFixed(0);
+  console.log(`索引已写入 ${indexPath} (${size} KB, ${Object.keys(icons).length} 个图标)`);
   for (const line of stats) console.log(`  ${line}`);
   if (missing.length) {
     console.log(`缺 ${missing.length} 个图集页${allowFetch ? '（已尝试下载）' : '，加 --fetch 从 CDN 补'}:`);

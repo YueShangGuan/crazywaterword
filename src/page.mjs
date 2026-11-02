@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { automationTasks } from './automation.mjs';
+import { operationLabels } from './operation-labels.mjs';
 import { iconEntry } from './art.mjs';
 import { chrome, journal, dialogs, templates, overviewPage, manualPage, heroesPage, dailiesPage, activitiesPage, accountPage, idlePanel, stagePanel } from './ui/dist/console.mjs';
 const componentCss = readFileSync(new URL('./ui/dist/theme.css', import.meta.url), 'utf8');
@@ -23,7 +24,7 @@ ${chrome(iconEntry)}
   </section>
 
   <section id="tab-idle" class="hidden">
-    ${idlePanel(automationTasks)}
+    ${idlePanel(automationTasks.filter(task => task.group !== '限时活动'))}
   </section>
 
   <section id="tab-manual" class="hidden">
@@ -56,6 +57,7 @@ ${templates()}
 <script>
 const $ = (id) => document.getElementById(id);
 const logEl = $('log');
+const operationNames = ${JSON.stringify(operationLabels)};
 
 // 同一个页面只伺候一个账号：所有请求都带 ?account=<当前选中>。
 let current = null;
@@ -93,7 +95,7 @@ async function call(path, options) {
       const error = new Error(data.error || res.statusText);
       if (data.log && (!data.log.account || account === current)) appendLog(data.log);
       error.logged = true;
-      if (!data.log && account === current) appendLog({ t: Date.now(), level: 'error', message: path + ' · ' + error.message });
+      if (!data.log && account === current) reportError(new Error(data.error || ('控制台返回 HTTP ' + res.status)), path);
       throw error;
     }
     return data;
@@ -268,7 +270,7 @@ for (const raidId of [1, 2, 3]) bindGameAction('trial-' + raidId, () =>
   call('/api/trials/challenge', { method: 'POST', body: JSON.stringify({ raidId }) }));
 const seen = new Set();
 const logTime = new Intl.DateTimeFormat('zh-CN', {
-  hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3, hourCycle: 'h23',
+  hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
 });
 let logAccount;
 let onlyIssues = false;
@@ -282,14 +284,38 @@ function appendLog(entry) {
   if (entry.account && entry.account !== current) return;
   if (entry.id && seen.has(entry.id)) return;
   if (entry.id) seen.add(entry.id);
-  const row = el('div', 'row ' + entry.level);
-  if (entry.id) row.dataset.id = entry.id;
-  row.appendChild(el('time', 'ts', logTime.format(entry.t)));
-  row.appendChild(el('span', null, entry.message));
   const atEnd = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 30;
-  logEl.appendChild(row);
+  const batch = entry.extra?.batch;
+  const last = logEl.lastElementChild;
+  if (batch && last?.dataset.batch === batch && last.logIds.length < 32) {
+    last.logIds.push(entry.id);
+    const timestamp = logTime.format(entry.t);
+    last.querySelector('time').textContent = timestamp;
+    last.querySelector('.log-message').textContent = entry.extra.factory + '：连续安排生产' + entry.extra.product + '，共 ' + last.logIds.length + ' 次';
+    last.querySelector('.log-details').hidden = false;
+    last.querySelector('.log-detail-text').textContent += '\\n' + timestamp + ' ' + entry.message;
+  } else {
+    const row = el('div', 'row ' + entry.level);
+    row.logIds = entry.id ? [entry.id] : [];
+    if (batch) row.dataset.batch = batch;
+    const timestamp = logTime.format(entry.t);
+    row.appendChild(el('time', 'ts', timestamp));
+    const body = el('div', 'log-body');
+    const levelName = { error: '错误', warn: '提醒' }[entry.level];
+    if (levelName) body.appendChild(el('span', 'log-level', levelName));
+    body.appendChild(el('span', 'log-message', entry.message));
+    if (entry.detail || batch) {
+      const details = el('details', 'log-details');
+      details.hidden = !entry.detail;
+      details.append(el('summary', null, batch ? '查看逐次排产' : '查看详情'),
+        el('div', 'log-detail-text', entry.detail || timestamp + ' ' + entry.message));
+      body.appendChild(details);
+    }
+    row.appendChild(body);
+    logEl.appendChild(row);
+  }
   while (logEl.childElementCount > 400) {
-    seen.delete(Number(logEl.firstChild.dataset.id));
+    for (const id of logEl.firstChild.logIds) seen.delete(id);
     logEl.firstChild.remove();
   }
   updateLogSummary();
@@ -297,7 +323,12 @@ function appendLog(entry) {
 }
 function reportError(error, context) {
   if (error?.logged) return;
-  appendLog({ t: Date.now(), level: 'error', message: (context ? context + ' · ' : '') + (error?.message || String(error)) });
+  const api = context?.startsWith('/api/');
+  const action = api ? operationNames[context.split('?')[0]] || '控制台操作' : context;
+  const raw = error?.message || String(error);
+  const reason = raw === 'Failed to fetch' ? '无法连接本地控制台，请检查控制台是否仍在运行' : raw;
+  appendLog({ t: Date.now(), level: 'error', message: (action ? action + '失败：' : '') + reason,
+    detail: api ? context + ' · ' + raw : undefined });
   if (error instanceof Error) error.logged = true;
 }
 window.addEventListener('unhandledrejection', (event) => { reportError(event.reason); event.preventDefault(); });
@@ -320,6 +351,7 @@ function subscribe() {
     const entry = JSON.parse(event.data);
     appendLog(entry);
     if (entry.extra?.pauseChanged && entry.account === current) void loadAccounts(false);
+    if (entry.extra?.worldUpdated && entry.account === current && Date.now() - entry.t < 10_000) refreshManualWorld();
   };
 }
 
@@ -391,6 +423,7 @@ $('account-pause').onclick = async () => {
     refreshManualWorld();
     refreshOverview();
     refreshLoop();
+    refreshActivities();
   } finally {
     if (current === account) $('account-pause').disabled = false;
   }
@@ -569,6 +602,9 @@ $('stage-stop').onclick = () => stageCommand(false);
 let loopVersion = 0;
 let loopAccount = null;
 const savingTasks = new Set();
+const savingReserve = new Set();
+let reserveEdited = false;
+const reserveInput = $('fishing-reserve'), reserveSave = $('fishing-reserve-save');
 const taskInputs = [...document.querySelectorAll('[data-auto-task]')];
 function setTaskSwitch(input, enabled) {
   input.setAttribute('aria-checked', String(enabled));
@@ -576,9 +612,18 @@ function setTaskSwitch(input, enabled) {
   input.querySelector('[data-slot=switch-thumb]').dataset.state = input.dataset.state;
 }
 function renderLoop(data) {
+  if (loopAccount !== current) reserveEdited = false;
+  if (!reserveEdited) reserveInput.value = data.fishingGoldReserve;
+  reserveInput.disabled = savingReserve.has(current);
+  reserveSave.disabled = reserveInput.disabled || !reserveEdited;
   for (const input of taskInputs) {
     if (savingTasks.has(current + ':' + input.dataset.autoTask)) continue;
-    setTaskSwitch(input, data.tasks.find(t => t.key === input.dataset.autoTask)?.enabled === true);
+    const task = data.tasks.find(t => t.key === input.dataset.autoTask);
+    setTaskSwitch(input, task?.enabled === true);
+    const hint = $('next-' + input.dataset.autoTask);
+    hint.textContent = task?.nextCheck ? '下次检查 ' + new Date(task.nextCheck * 1000).toLocaleString('zh-CN', {
+      timeZone: 'Asia/Shanghai', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
+    }) + '（北京时间）' : '';
     input.disabled = false;
   }
   if (loopAccount !== current || data.running) {
@@ -605,7 +650,14 @@ async function refreshLoop() {
   if (loopAccount !== account || !account) {
     $('loop-hint').textContent = account ? '正在读取设置' : '请选择账号';
     $('loop-view').textContent = '';
-    for (const input of taskInputs) { input.disabled = true; setTaskSwitch(input, false); }
+    for (const input of taskInputs) {
+      input.disabled = true;
+      setTaskSwitch(input, false);
+      $('next-' + input.dataset.autoTask).textContent = '';
+    }
+    reserveInput.disabled = reserveSave.disabled = true;
+    reserveInput.value = '';
+    reserveEdited = false;
     $('loop-start').disabled = $('loop-stop').disabled = true;
   }
   if (!account) return;
@@ -617,7 +669,7 @@ async function refreshLoop() {
   }
 }
 
-for (const input of taskInputs) input.onclick = async () => {
+async function toggleAutoTask(input) {
   const account = current, key = input.dataset.autoTask, saving = account + ':' + key;
   const enabled = input.getAttribute('aria-checked') !== 'true';
   setTaskSwitch(input, enabled);
@@ -626,8 +678,47 @@ for (const input of taskInputs) input.onclick = async () => {
   ++loopVersion;
   try {
     await call('/api/loop/task', { method: 'POST', body: JSON.stringify({ confirm: true, key, enabled }) });
-  } catch (error) { reportError(error); }
-  finally { savingTasks.delete(saving); if (account === current) refreshLoop(); }
+  } catch (error) { setTaskSwitch(input, !enabled); reportError(error); }
+  finally {
+    savingTasks.delete(saving);
+    if (account === current) {
+      if (input.dataset.eventTask) {
+        for (const toggle of document.querySelectorAll('[data-event-task]')) {
+          if (toggle.dataset.autoTask !== key) continue;
+          setTaskSwitch(toggle, input.getAttribute('aria-checked') === 'true');
+          toggle.disabled = false;
+        }
+      }
+      else refreshLoop();
+    }
+  }
+}
+for (const input of taskInputs) input.onclick = () => toggleAutoTask(input);
+
+reserveInput.oninput = () => {
+  reserveEdited = true;
+  reserveSave.disabled = false;
+};
+$('fishing-reserve-form').onsubmit = async event => {
+  event.preventDefault();
+  const account = current;
+  if (!account || account !== loopAccount || savingReserve.has(account)) return;
+  const value = reserveInput.valueAsNumber;
+  if (!Number.isSafeInteger(value) || value < 0) {
+    reportError(new Error('预留金币必须是非负整数'), '设置钓具预留金币');
+    return;
+  }
+  ++loopVersion;
+  savingReserve.add(account);
+  reserveInput.disabled = reserveSave.disabled = true;
+  try {
+    await call('/api/loop/fishing-reserve', { method: 'POST', body: JSON.stringify({ fishingGoldReserve: value }) });
+    if (account === current) reserveEdited = false;
+  } catch (error) { if (account === current) reportError(error); }
+  finally {
+    savingReserve.delete(account);
+    if (account === current) refreshLoop();
+  }
 };
 
 $('loop-start').onclick = async () => {
@@ -676,6 +767,53 @@ bindGameAction('tasks-run', async () => {
   }
 });
 
+function orderState(order, data) {
+  const box = el('div', 'order-state');
+  const decision = order.decision;
+  const labels = { ready: data.idleRunning ? '等待自动交付' : '等待开启挂机', disabled: '自动交付已关闭', refreshing: '订单刷新中',
+    unknown: '等待核对', missing: '材料不足', reserved: '材料已预留', reroll: '等待换单' };
+  const state = decision?.status ?? 'unknown';
+  const label = !data.autoDeliverOrders && state !== 'reroll' ? labels.disabled : labels[state] || labels.unknown;
+  box.appendChild(chip(state === 'ready' && data.idleRunning && data.autoDeliverOrders ? 'ready' : 'waiting', label));
+  if (decision?.reason) box.appendChild(el('span', 'dim', decision.reason));
+  return box;
+}
+
+const pendingResidentOrders = new Set();
+function residentOrderButton(order) {
+  const account = current, key = account + ':' + order.index;
+  const pending = pendingResidentOrders.has(key);
+  const button = smallButton(pending ? '提交中…' : '提交订单');
+  button.dataset.residentOrder = String(order.index);
+  const ready = Boolean(order.orderKey) && order.manualDecision?.status === 'ready';
+  button.disabled = pending || !ready || !account || snapshot.paused || disconnected.has(account);
+  button.title = pending ? '账号忙时自动排队，结果见运行日志'
+    : ready ? '提交这份居民订单' : order.manualDecision?.reason || '请先刷新订单状态';
+  button.setAttribute('aria-label', '提交' + (order.workerName || '居民') + '的订单 #' + order.index);
+  button.onclick = async () => {
+    if (button.disabled || pendingResidentOrders.has(key) || current !== account || snapshot.paused || disconnected.has(account)) return;
+    pendingResidentOrders.add(key);
+    button.disabled = true;
+    button.textContent = '提交中…';
+    try {
+      await call('/api/world/order/submit', { method: 'POST', body: JSON.stringify({ confirm: true, index: order.index, orderKey: order.orderKey }) });
+    } catch (error) {
+      if (current === account) reportError(error, '提交居民订单');
+    } finally {
+      pendingResidentOrders.delete(key);
+      if (current === account) {
+        const displayed = $('world-orders').querySelector('[data-resident-order="' + order.index + '"]');
+        if (displayed) {
+          displayed.disabled = true;
+          displayed.textContent = '待刷新';
+        }
+        refreshManualWorld(true);
+      }
+    }
+  };
+  return button;
+}
+
 function renderWorld(data) {
   $('world-view').textContent = data.text;
   const fbox = clear($('world-factories'));
@@ -707,11 +845,13 @@ function renderWorld(data) {
   const obox = clear($('world-orders'));
   if (data.orders.length) {
     obox.appendChild(el('h2', null, '居民订单'));
-    obox.appendChild(table(['订单', '居民', '需求', '缺口'], data.orders.map((o) => [
+    obox.appendChild(el('p', 'dim', '可手动提交材料已齐的订单。账号忙时自动排队，交付结果见运行日志。'));
+    obox.appendChild(table(['订单', '居民', '需求', '挂机交付', '手动交付'], data.orders.map((o) => [
       '#' + o.index,
-      { cell: null, text: o.workerId + (o.isSpecial ? '（特殊）' : '') },
-      { cells: o.requirements },
-      o.missing.length === 0 ? chip('done', '材料齐') : { cells: o.missing, prefix: '缺 ' },
+      { cell: o.workerIcon, text: (o.workerName || '未知居民') + (o.isSpecial ? '（特殊）' : '') },
+      o.requirements.length && o.decision?.status !== 'refreshing' ? { cells: o.requirements } : '—',
+      orderState(o, data),
+      residentOrderButton(o),
     ])));
   }
   const sbox = clear($('world-stock'));
@@ -721,7 +861,8 @@ function renderWorld(data) {
 }
 
 let worldVersion = 0, worldRead = null, displayedWorldAccount;
-function refreshManualWorld() {
+function refreshManualWorld(force = false) {
+  if (force) { worldVersion++; worldRead = null; }
   if ($('tab-manual').classList.contains('hidden')) return;
   const account = current;
   const available = account && !snapshot.paused && !disconnected.has(account);
@@ -748,7 +889,7 @@ function refreshManualWorld() {
     if (version === worldVersion) $('world-hint').textContent = '';
   });
 }
-$('world-plan').onclick = refreshManualWorld;
+$('world-plan').onclick = () => refreshManualWorld();
 bindGameAction('world-run', async () => {
   const account = current;
   $('world-hint').textContent = '执行中 ...';
@@ -758,7 +899,7 @@ bindGameAction('world-run', async () => {
     if (account !== current || disconnected.has(account)) return;
     worldVersion++;
     $('world-hint').textContent = '执行 ' + data.results.length + ' 个动作，失败 ' + data.results.filter((r) => r.ok === false).length;
-    renderWorld(data);
+    if (!data.refreshError) renderWorld(data);
   } catch (error) {
     $('world-hint').textContent = '';
     reportError(error);
@@ -952,8 +1093,10 @@ async function refreshDiscovery(version, account) {
 }
 
 let activitiesVersion = 0;
+let activityExpiryTimer;
 async function refreshActivities() {
   const version = ++activitiesVersion, account = current;
+  clearTimeout(activityExpiryTimer);
   if ($('tab-activities').classList.contains('hidden')) return;
   const list = clear($('activities-list')), materials = clear($('activities-order'));
   if (snapshot.paused) { list.textContent = '账号已暂停'; clear($('pirate-tracker')); return; }
@@ -964,8 +1107,33 @@ async function refreshActivities() {
     const data = await call('/api/activities');
     if (version !== activitiesVersion || account !== current) return;
     clear(list);
-    if (data.activities.length) list.appendChild(table(['活动', '结束时间（北京时间）'], data.activities.map(row =>
-      [row.name, new Date(row.endTime * 1000).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })])));
+    const active = data.activities.filter(row => row.endTime > data.serverNow);
+    if (active.length) {
+      const hasTask = active.some(row => row.taskKey);
+      if (hasTask) list.appendChild(el('p', 'dim', '开启的限时任务随账号挂机执行，到期自动停止。'));
+      const headers = ['活动', '结束时间（北京时间）'];
+      if (hasTask) headers.push('限时自动任务');
+      list.appendChild(table(headers, active.map(row => {
+        const cells = [row.name, new Date(row.endTime * 1000).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })];
+        const task = data.eventTasks.find(t => t.key === row.taskKey);
+        if (task) {
+          const toggle = component('ui-event-switch');
+          toggle.dataset.autoTask = task.key;
+          toggle.dataset.eventTask = 'true';
+          toggle.setAttribute('aria-label', task.label);
+          toggle.title = task.label;
+          setTaskSwitch(toggle, task.enabled);
+          toggle.disabled = savingTasks.has(account + ':' + task.key);
+          toggle.onclick = () => toggleAutoTask(toggle);
+          const control = el('div', 'bar');
+          control.append(toggle, el('span', null, task.label));
+          cells.push(control);
+        } else if (hasTask) cells.push('');
+        return cells;
+      })));
+      const nextEnd = Math.min(...active.map(row => row.endTime));
+      activityExpiryTimer = setTimeout(refreshActivities, Math.min(2147483647, Math.ceil((nextEnd - data.serverNow) * 1000)));
+    }
     else list.textContent = '当前没有开放的周活动或节日活动';
     const lottery = data.lottery;
     if (lottery) list.appendChild(el('p', null, '周抽奖 · 累计 ' + lottery.times + ' 次 · '
@@ -978,11 +1146,15 @@ async function refreshActivities() {
     const newbie = data.newbie;
     list.appendChild(el('p', null, newbie ? '新手七日登录 · 已登录 ' + newbie.loginDays + ' 天 · '
       + (newbie.available.length ? '可领第 ' + newbie.available.join('、') + ' 天奖励' : '当前奖励已领完') : '新手七日登录 · 当前无开放活动'));
-    if (data.order?.materials.length && !data.order.finished) materials.appendChild(table(['材料', '需要', '库存', '还缺', '生产地点', '当前状态'], data.order.materials.map(row =>
+    if (data.order?.materials.length && !data.order.finished) {
+      materials.appendChild(el('p', 'dim', data.order.ready
+        ? '周订单材料已齐，已预留整单用量，可在游戏内手动提交。'
+        : '周订单尚缺材料。已备齐的居民订单可先用所需份额，挂机再按缺口补产。'));
+      materials.appendChild(table(['材料', '需要', '库存', '还缺', '生产地点', '当前状态'], data.order.materials.map(row =>
       [row.name, String(row.required), String(row.owned), row.missing ? String(row.missing) : '已齐',
         row.seed ? '农田' : row.factory ? row.factory.name + ' · ' + row.factory.required + ' 级' : '无工厂配方',
         row.seed ? row.farmStatus : !row.factory ? '—' : row.factory.level === null ? '等级未知' : row.factory.level ? row.factory.level + ' 级' + (row.factory.constructing ? ' · 升级中' : '') : row.factory.constructing ? '建造中' : '未建造'])));
-    else materials.textContent = data.orderError ? '未能读取材料，详情见运行日志' : !data.order ? '本期未开放周订单' : data.order.finished ? '本期周订单已完成' : '当前没有材料需求';
+    } else materials.textContent = data.orderError ? '未能读取材料，详情见运行日志' : !data.order ? '本期未开放周订单' : data.order.finalReady ? '本期周订单已全部交付，可在游戏内领取最终奖励。' : data.order.finished ? '本期周订单已完成' : '当前没有材料需求';
   } catch {
     if (version === activitiesVersion && account === current) list.textContent = '读取失败，详情见运行日志';
   }

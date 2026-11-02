@@ -8,17 +8,26 @@ import { claimCollection, collectFloaters } from './collections.mjs';
 import { serviceCargo } from './cargo.mjs';
 import { serviceBoats } from './boats.mjs';
 import { sweepTrials } from './trials.mjs';
+import { fishOnce } from './fishing.mjs';
+import { upgradeFishingOnce } from './fishing-upgrade.mjs';
+import { serviceAntiqueRecruit } from './antique-recruit.mjs';
+import { claimAdShop } from './ad-shop.mjs';
+import { rewardSchedule } from './reward-schedule.mjs';
 import { normalize } from './worlds.mjs';
 import { surveyTasks, runTasks } from './tasks.mjs';
 import { surveyDailies, runDailies } from './dailies.mjs';
-import { surveyWorld, planWorld, runWorld } from './world.mjs';
+import { surveyWorld, planWorld, runWorldRound, displayBuilding } from './world.mjs';
 
 import { setTimeout as pause } from 'node:timers/promises';
 import { claimRewards } from './claim-rewards.mjs';
 import { claimWeekly, runLinkage } from './activities.mjs';
-import { automationTasks, dailyTaskKey, worldTaskKey } from './automation.mjs';
+import { automationTasks, dailyTaskKey, defaultFishingGoldReserve, worldTaskKey } from './automation.mjs';
 
 const defaultSleep = (ms, signal) => pause(ms, undefined, { signal });
+const dailyActionKeys = {
+  1002: ['freeRecruit', 'ticketRecruit'], 1005: ['arena'], 1006: ['freeGold', 'paidGold'],
+  1007: ['shop'], 1010: ['pirate'],
+};
 
 function nextFactoryCheck(buildings, offset, collect) {
   const now = Date.now();
@@ -36,6 +45,7 @@ function nextFactoryCheck(buildings, offset, collect) {
 export async function runLoop(client, protocol, {
   config = null,
   player = null,
+  adChannel = {},
   rounds = 1,
   everyMs = 60_000,
   allowMutate = false,
@@ -45,6 +55,7 @@ export async function runLoop(client, protocol, {
   sleep = defaultSleep,
   stop = { aborted: false },
   isEnabled,
+  getFishingGoldReserve = () => defaultFishingGoldReserve,
   schedule = work => work(),
   onRound,
   onStep,
@@ -52,6 +63,12 @@ export async function runLoop(client, protocol, {
   if (!allowMutate) throw new Error('循环会持续改变账号状态，需要 --yes');
   const rejected = { tasks: new Set(), world: new Set() };
   const history = [];
+  const rewards = isEnabled ? rewardSchedule(client) : null;
+  let lastRecruitWait;
+  let lastFishWait;
+  let lastFishUpgradeWait;
+  const antiqueWait = new Map();
+  let residentWait = new Map();
   // rounds <= 0 表示一直跑，靠 stop.aborted（Ctrl-C 或网页停止按钮）退出。
   const total = rounds > 0 ? rounds : Infinity;
 
@@ -59,15 +76,18 @@ export async function runLoop(client, protocol, {
     if (stop.aborted) break;
     const empty = () => ({ planned: 0, results: [] });
     const summary = { round, startedAt: Math.floor(Date.now() / 1000), tasks: empty(), dailies: empty(), world: empty() };
-    const enabled = key => !stop.aborted && (isEnabled ? isEnabled(key) : true);
+    const enabled = key => !stop.aborted && (!isEnabled || (isEnabled(key) && rewards.due(key)));
     const groupEnabled = group => automationTasks.some(task => task.group === group && enabled(task.key));
     const stepLog = phase => entry => onStep?.({ round, phase, ...entry });
     let afkDeadline;
     let factoryDeadline;
     const rememberDeadline = time => { afkDeadline = time; };
-    const logReward = entry => stepLog('tasks')({ title: entry.label, ...entry });
+    const logReward = (entry, category = '领奖') => stepLog('tasks')({ title: entry.label, ...entry, category });
     const allowDaily = (id, action) => enabled(dailyTaskKey(id, action));
     const allowWorld = kind => enabled(worldTaskKey(kind));
+    const attemptedOrders = new Set();
+    const harvestOptions = { config, player, attemptedOrders, cargoEnabled: () => !!isEnabled && enabled('cargo'),
+      finishEnabled: () => allowWorld('finishOrder') };
     function phaseFailure(phase, title, error) {
       if (!client.connected) throw error;
       const entry = { title, ok: false, error: error.message };
@@ -79,7 +99,7 @@ export async function runLoop(client, protocol, {
       if (stop.aborted) return;
       if (!isEnabled && enabled('tasks')) {
         try {
-          const survey = await surveyTasks(client, protocol, { config });
+          const survey = await surveyTasks(client, protocol, { config, player });
           summary.tasks.planned = survey.plan.length;
           summary.tasks.results = await runTasks(client, protocol, survey, {
             allowMutate, enabled: () => enabled('tasks'), onStep: stepLog('tasks'),
@@ -88,9 +108,13 @@ export async function runLoop(client, protocol, {
       }
       if (groupEnabled('日常')) {
         try {
-          const includeTask = (id) => !isEnabled || (id === 1002 && enabled('freeRecruit')) ||
-            (id === 1006 && enabled('freeGold')) || enabled(dailyTaskKey(id, { body: {} }));
-          const survey = await surveyDailies(client, protocol, { config, player, includeTask, probeGift: !isEnabled });
+          const includeTask = id => !isEnabled || dailyActionKeys[id]?.some(enabled);
+          const survey = await surveyDailies(client, protocol, { config, player, includeTask, probeGift: !isEnabled, idle: !!isEnabled });
+          const recruit = survey.tasks.find(entry => entry.task.id === 1002 && entry.status === 'waiting');
+          if (recruit && recruit.reason !== lastRecruitWait) {
+            stepLog('dailies')({ title: recruit.task.title, skipped: true, reason: recruit.reason });
+          }
+          lastRecruitWait = recruit?.reason;
           summary.dailies.planned = survey.tasks.reduce((n, entry) =>
             n + (entry.actions ?? []).filter(action => allowDaily(entry.task.id, action)).length, 0);
           if (!isEnabled) summary.dailies.planned += (survey.chests?.actions.length ?? 0) + (survey.gift?.actions.length ?? 0);
@@ -100,34 +124,90 @@ export async function runLoop(client, protocol, {
               allowAction: allowDaily, onStep: stepLog('dailies'),
             });
           }
+          if (recruit) summary.dailies.results.push({ id: 1002, skipped: true, reason: recruit.reason });
+          if (rewards) {
+            for (const { task } of survey.tasks) {
+              if (!(task.targetProgress > 0 && task.progress >= task.targetProgress)) continue;
+              for (const key of dailyActionKeys[task.id] ?? []) rewards.defer(key, survey.daily.dailyResetTime);
+            }
+            rewards.defer('freeRecruit', survey.freeRecruitAt);
+            rewards.defer('freeGold', survey.freeGoldAt);
+            for (const entry of summary.dailies.results) {
+              if (entry.ok && entry.request === 'RecruitStartRequest') {
+                rewards.defer('freeRecruit', entry.body?.recruitData?.freeEndTimeSeconds);
+              }
+            }
+          }
         } catch (error) { phaseFailure('dailies', '日常检查', error); }
       }
       if (isEnabled && groupEnabled('领奖')) {
-        const results = await claimRewards(client, protocol, config, logReward, enabled, rememberDeadline);
+        const results = await claimRewards(client, protocol, config, logReward, enabled, rememberDeadline, rewards, player);
         summary.tasks = { planned: results.length, results };
+      }
+      if (isEnabled && enabled('adShop')) {
+        await claimAdShop(client, config, { ...adChannel, player, enabled: () => enabled('adShop'),
+          schedule: rewards, report(entry) {
+            summary.tasks.results.push(entry);
+            if (!entry.skipped) summary.tasks.planned++;
+            logReward(entry, '领奖');
+          } });
       }
       if (isEnabled && enabled('trialSweep')) {
         await sweepTrials(client, config, player?.level ?? 0, () => enabled('trialSweep'), entry => {
           summary.dailies.planned++;
           summary.dailies.results.push(entry);
-          stepLog('dailies')(entry);
-        });
+          stepLog('dailies')({ ...entry, category: '试炼' });
+        }, rewards);
       }
+      if (isEnabled && groupEnabled('藏品')) {
+        try {
+          await serviceAntiqueRecruit(client, config, { player, enabled, scheduler: rewards, report(entry) {
+            summary.tasks.results.push(entry);
+            if (!entry.skipped) summary.tasks.planned++;
+            if (!entry.skipped || antiqueWait.get(entry.key) !== entry.reason) logReward(entry, '藏品');
+            if (entry.skipped) antiqueWait.set(entry.key, entry.reason);
+            else antiqueWait.delete(entry.key);
+          } });
+        } catch (error) { phaseFailure('tasks', '藏品招募检查', error); }
+      }
+      for (const key of antiqueWait.keys()) if (!isEnabled(key)) antiqueWait.delete(key);
+      if (isEnabled && enabled('fishEnhance')) {
+        try {
+          const reserve = getFishingGoldReserve();
+          const entry = await upgradeFishingOnce(client, config, {
+            playerLevel: player?.level, reserveGold: reserve,
+            enabled: () => enabled('fishEnhance') && reserve === getFishingGoldReserve(),
+          });
+          summary.tasks.results.push(entry);
+          if (!entry.skipped) summary.tasks.planned++;
+          if (!entry.skipped || entry.reason !== lastFishUpgradeWait) logReward(entry, '钓鱼');
+          lastFishUpgradeWait = entry.reason;
+        } catch (error) { phaseFailure('tasks', '钓具养成', error); }
+      } else lastFishUpgradeWait = undefined;
+      if (isEnabled && enabled('autoFish')) {
+        try {
+          const entry = await fishOnce(client, config, () => enabled('autoFish'));
+          summary.tasks.results.push(entry);
+          if (!entry.skipped) summary.tasks.planned++;
+          if (!entry.skipped || entry.reason !== lastFishWait) logReward(entry, '钓鱼');
+          lastFishWait = entry.reason;
+        } catch (error) { phaseFailure('tasks', '自动钓鱼', error); }
+      } else lastFishWait = undefined;
       for (const [key, label] of [['fishBook', '钓鱼图鉴'], ['newbieLogin', '新手七日登录']]) {
         if (!isEnabled || !enabled(key)) continue;
         try {
           await claimCollection(client, config, key, enabled, entry => {
             summary.tasks.planned++;
             summary.tasks.results.push(entry);
-            logReward(entry);
-          });
+            logReward(entry, key === 'newbieLogin' ? '活动' : '领奖');
+          }, rewards);
         } catch (error) { phaseFailure('tasks', label, error); }
       }
       if (isEnabled && ['evilExpel', 'compassReward', 'edict'].some(enabled)) {
         await runLinkage(client, config, enabled, entry => {
           if (!entry.skipped) summary.tasks.planned++;
           summary.tasks.results.push(entry);
-          logReward(entry);
+          logReward(entry, '活动');
         });
       }
       if (isEnabled && groupEnabled('船只')) {
@@ -135,7 +215,7 @@ export async function runLoop(client, protocol, {
           await serviceBoats(client, config, enabled, entry => {
             if (!entry.skipped) summary.tasks.planned++;
             summary.tasks.results.push(entry);
-            logReward(entry);
+            logReward(entry, '船只');
           });
         } catch (error) { phaseFailure('tasks', '船只检查', error); }
       }
@@ -144,12 +224,15 @@ export async function runLoop(client, protocol, {
           await claimWeekly(client, config, enabled, entry => {
             if (!entry.skipped) summary.tasks.planned++;
             summary.tasks.results.push(entry);
-            logReward(entry);
-          }, player?.level);
+            logReward(entry, '周期活动');
+          }, player?.level, rewards);
         } catch (error) { phaseFailure('tasks', '周活动检查', error); }
       }
       if (groupEnabled('海面')) {
-        const survey = await surveyWorld(client, protocol, { config, player, includeCargo: !!isEnabled && enabled('cargo') && allowWorld('startProduce'), includeWeekOrder: allowWorld('startProduce') || allowWorld('weekFactory') || allowWorld('farm') || allowWorld('upgrade') });
+        const usesOrders = allowWorld('finishOrder') || allowWorld('denyOrder');
+        const survey = await surveyWorld(client, protocol, { config, player,
+          includeCargo: !!isEnabled && enabled('cargo') && (allowWorld('startProduce') || usesOrders),
+          includeWeekOrder: usesOrders || allowWorld('startProduce') || allowWorld('weekFactory') || allowWorld('farm') || allowWorld('upgrade') });
         if (isEnabled && (enabled('collect') || enabled('startProduce')))
           factoryDeadline = nextFactoryCheck(survey.factories, client.serverClockOffsetMs || 0, enabled('collect'));
         const plan = planWorld(survey, { config, enabled: allowWorld,
@@ -159,6 +242,18 @@ export async function runLoop(client, protocol, {
         });
         summary.world = { planned: plan.actions.length, population: survey.population + '/' + survey.maxPopulation,
           notes: [...survey.notes, ...plan.notes], results: [] };
+        const nextWait = new Map();
+        if (isEnabled && allowWorld('finishOrder')) {
+          for (const decision of plan.orderDecisions) {
+            if (decision.status !== 'reserved' && decision.status !== 'unknown') continue;
+            const order = survey.orders.find(o => o.index === decision.index);
+            const title = (order?.workerName || '未知居民') + '的订单 #' + decision.index;
+            const message = title + ' · ' + decision.reason;
+            nextWait.set(decision.index, message);
+            if (residentWait.get(decision.index) !== message) stepLog('world')({ title, skipped: true, reason: decision.reason });
+          }
+        }
+        residentWait = nextWait;
         if (isEnabled && enabled('upgrade') && plan.upgradeReasons.length)
           stepLog('world')({ title: '建筑暂不能升级：' + plan.upgradeReasons.join('；'), ok: true });
         if (isEnabled && enabled('floaters')) {
@@ -171,9 +266,10 @@ export async function runLoop(client, protocol, {
           } catch (error) { phaseFailure('world', '漂浮物拾取', error); }
         }
         if (plan.actions.length) {
-          const result = await runWorld(client, protocol, plan, {
+          const result = await runWorldRound(client, protocol, plan, { ...harvestOptions,
             allowMutate, enabled: allowWorld, rejected: rejected.world, onStep: stepLog('world'),
           });
+          summary.world.planned += result.followupCount;
           summary.world.results.push(...result.results);
         }
         if (isEnabled && (allowWorld('startProduce') || enabled('upgrade') || enabled('weekFactory'))) {
@@ -190,9 +286,9 @@ export async function runLoop(client, protocol, {
                   current.level > before.level ? '已升至 ' + current.level + ' 级' :
                   current.buildStartTime || current.buildFinishTime ? '已开工，当前 ' + before.level + ' 级' :
                   '服务器未确认升级，当前 ' + current.level + ' 级';
-                const title = id + '：' + detail;
+                const title = displayBuilding(config, before) + '：' + detail;
                 summary.world.upgrades.push(title);
-                stepLog('world')({ title, ok: true });
+                if (entry.ok) stepLog('world')({ title, ok: true });
               }
             }
             if (allowWorld('startProduce')) {
@@ -215,10 +311,12 @@ export async function runLoop(client, protocol, {
                   if (newlyFinished > 0) reasons.push('核对时已有 ' + newlyFinished + ' 件在本轮完工，腾出了生产格');
                   if (!reasons.length) reasons.push(factory ? '排产后队列数量与计划不一致，下轮重新核对' : '服务端未返回工厂状态');
                 }
-                const title = b.buildingId + ' 生产格 ' + before + ' → ' + (count ?? '?') + '/' + survey.factorySlots +
-                  (reasons.length ? '，' + [...new Set(reasons)].join('；') : '，已排满');
+                const queue = count === null ? '未能核对生产格' : count === survey.factorySlots
+                  ? '已排满 ' + count + ' 个生产格'
+                  : '正在生产 ' + count + ' 格，空闲 ' + Math.max(0, survey.factorySlots - count) + ' 格';
+                const title = displayBuilding(config, b) + '：' + queue + (reasons.length ? '。' + [...new Set(reasons)].join('；') : '');
                 summary.world.factories.push(title);
-                stepLog('world')({ title, ok: true });
+                if (count !== before || count !== survey.factorySlots) stepLog('world')({ title, ok: true });
               }
             }
           } catch (error) { phaseFailure('world', '核对海面建筑状态', error); }
@@ -254,7 +352,7 @@ export async function runLoop(client, protocol, {
           if (Date.now() >= nextRound) break;
           if (afkAt <= Date.now() && enabled('afk')) {
             afkDeadline = undefined;
-            await schedule(() => enabled('afk') && claimRewards(client, protocol, config, logReward, key => key === 'afk' && enabled(key), rememberDeadline));
+            await schedule(() => enabled('afk') && claimRewards(client, protocol, config, logReward, key => key === 'afk' && enabled(key), rememberDeadline, rewards, player));
             if (!afkDeadline || afkDeadline <= Date.now()) afkDeadline = Date.now() + 60_000;
           }
           const checkUpgrade = enabled('upgrade') && upgradeAt <= Date.now();
@@ -262,8 +360,9 @@ export async function runLoop(client, protocol, {
             await schedule(async () => {
               if (!enabled('collect') && !enabled('startProduce') && !enabled('upgrade')) return;
               try {
-                const survey = await surveyWorld(client, protocol, { config, player, includeWeekOrder: enabled('startProduce') || checkUpgrade,
-                  includeCargo: enabled('cargo') && (enabled('startProduce') || checkUpgrade) });
+                const holdForOrders = enabled('startProduce') || enabled('finishOrder') || checkUpgrade;
+                const survey = await surveyWorld(client, protocol, { config, player, includeWeekOrder: holdForOrders,
+                  includeCargo: enabled('cargo') && holdForOrders });
                 const orderRead = !survey.notes.some(note => note.startsWith('本轮未能读取周订单'));
                 const allow = kind => {
                   if (kind === 'gainFactory') return enabled('collect');
@@ -272,7 +371,9 @@ export async function runLoop(client, protocol, {
                   return kind === 'startProduce' && enabled('startProduce') && orderRead;
                 };
                 const plan = planWorld(survey, { config, enabled: allow });
-                await runWorld(client, protocol, plan, { allowMutate, enabled: allow, onStep: stepLog('world') });
+                const result = await runWorldRound(client, protocol, plan, { ...harvestOptions, allowMutate, enabled: allow, onStep: stepLog('world') });
+                summary.world.planned += result.results.length;
+                summary.world.results.push(...result.results);
                 const state = plan.actions.some(a => allow(a.kind)) ? normalize(await client.request('OnWaterRequest', {})).building : survey.factories;
                 factoryDeadline = nextFactoryCheck(state, client.serverClockOffsetMs || 0, enabled('collect'));
               } catch (error) {
@@ -293,14 +394,31 @@ export async function runLoop(client, protocol, {
   return { history, rejected };
 }
 
+export function formatLoopStep(entry) {
+  const category = entry.category ?? ({ tasks: '任务', dailies: '日常', world: '海面' })[entry.phase] ?? '挂机';
+  const title = entry.step?.label || entry.title || entry.label;
+  const action = [title, entry.note && entry.note !== title ? entry.note : null].filter(Boolean).join(' · ') || '检查任务';
+  const message = category + ' · ' + action;
+  if (entry.skipped) {
+    const reason = entry.reason || entry.error;
+    return message + '已跳过' + (reason ? '：' + reason : '');
+  }
+  if (entry.ok === false) return message + '失败：' + (entry.error || '未返回原因');
+  if ('sent' in entry) return message + '（已发送）';
+  return message;
+}
+
 export function formatLoopRound(summary) {
-  const ok = (results) => results.filter((entry) => entry.ok).length;
-  const failed = (results) => results.filter((entry) => entry.ok === false && !entry.skipped).length;
-  const line = (name, part) => `  ${name} 计划 ${part.planned}，成功 ${ok(part.results)}，失败 ${failed(part.results)}`;
-  return [
-    `第 ${summary.round} 轮`,
-    line('任务', summary.tasks),
-    line('日常', summary.dailies),
-    summary.world.population ? `${line('海面', summary.world)}  人口 ${summary.world.population}` : '海面 已暂停',
-  ].join('\n');
+  const results = [...summary.tasks.results, ...summary.dailies.results, ...summary.world.results];
+  const skipped = results.filter(entry => entry.skipped).length;
+  const failed = results.filter(entry => !entry.skipped && entry.ok === false).length;
+  const sent = results.filter(entry => !entry.skipped && entry.ok && 'sent' in entry).length;
+  const done = results.filter(entry => !entry.skipped && entry.ok && !('sent' in entry)).length;
+  const counts = [];
+  if (done) counts.push('完成 ' + done + ' 项');
+  if (sent) counts.push('已发送 ' + sent + ' 项');
+  if (skipped) counts.push('跳过 ' + skipped + ' 项');
+  if (failed) counts.push('失败 ' + failed + ' 项');
+  return '挂机第 ' + summary.round + ' 轮结束 · ' + (counts.join('，') || '本轮没有可执行的操作')
+    + (summary.world.population ? ' · 人口 ' + summary.world.population : '');
 }
