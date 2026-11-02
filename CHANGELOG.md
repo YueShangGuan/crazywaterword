@@ -6,6 +6,7 @@
 
 ### 控制台与挂机
 
+- 账号页新增「从电脑抖音添加」。采集就绪后，在电脑版抖音重新进入《疯狂水世界》，控制台会保存登录凭证，并在运行日志中显示角色验证结果。当前不支持手机扫码直接添加账号。
 - 重构本地控制台，将定时任务、单次操作和主线推关分开。每个账号可独立启停任务，暂停托管时会断开游戏连接。
 - 增加账号导出、英雄职位分配和试炼副本入口。挂机只扫荡免费次数，更高关卡由玩家手动挑战。
 
@@ -20,7 +21,7 @@
 - 补发登录完成通知，使控制台能收到节日活动目录。「鄂都诡事」接入驱邪除祟、罗盘达标领奖和酆都法旨解符。
 - 支持从电脑版微信的本地分包缓存加载协议定义，减少对手动解包文件的依赖。
 
-提交记录：[控制台与玩法更新](https://github.com/xutongxue233/crazywaterword/commit/a25fbfd) · [微信缓存协议加载](https://github.com/xutongxue233/crazywaterword/commit/4c84841)
+提交记录：[抖音账号采集](https://github.com/xutongxue233/crazywaterword/commit/727f351) · [控制台与玩法更新](https://github.com/xutongxue233/crazywaterword/commit/a25fbfd) · [微信缓存协议加载](https://github.com/xutongxue233/crazywaterword/commit/4c84841)
 
 ## 2026-10-10
 
