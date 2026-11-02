@@ -84,6 +84,7 @@ export function templates() {
   return renderToStaticMarkup(<>
     <template id="ui-table"><Table><TableHeader><TableRow><TableHead /></TableRow></TableHeader><TableBody><TableRow><TableCell /></TableRow></TableBody></Table></template>
     <template id="ui-button"><Button variant="outline" size="sm" /></template>
+    <template id="ui-select"><NativeSelect size="sm" /></template>
     <template id="ui-delete"><Button variant="destructive" size="sm" /></template>
     <template id="ui-badge"><Badge variant="outline" /></template>
   </>)

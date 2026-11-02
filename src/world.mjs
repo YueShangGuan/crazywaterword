@@ -430,6 +430,10 @@ export function planWorld(survey, {
   //    `0 == t.level ? BuildBuildingRequest : UpgradeBuildingRequest`，所以建造这一条与升级不是同一个请求。
   //    首建门槛、前置建筑和材料取自每个具体地块的 BuildingUnlockCfg。
   const builds = [];
+  const buildMaterials = new Map();
+  const produceRows = rowsOf(config, 'BuildingProduceCfg');
+  const craftable = new Set(produceRows.filter(row =>
+    survey.factories.some(b => b.type === row.buildType && b.level >= row.unlockLevel)).map(row => row.itemId));
   const unlocks = indexBy(config, 'BuildingUnlockCfg', 'buildingId');
   const levels = new Map(survey.buildings.map(b => [b.buildingId, b.level]));
   let plannedPopulation = survey.futurePopulation ?? survey.population;
@@ -459,7 +463,13 @@ export function planWorld(survey, {
     }
     const consume = (row.consume ?? []).map(([id, n]) => ({ id, num: Number(n) }));
     if (!consume.every((c) => free(c.id) >= c.num)) {
-      const short = consume.filter((c) => free(c.id) < c.num).map((c) => `${name(c.id)} ${free(c.id)}/${c.num}` + (config?.materialSources?.(c.id)?.length ? `（来源：${config.materialSources(c.id).join("、")}）` : "")).join(' ');
+      const missing = consume.filter(c => free(c.id) < c.num);
+      if (enabled('buildSupply') && enabled('startProduce') && missing.every(c => craftable.has(c.id))) {
+        for (const c of missing) {
+          if ((buildMaterials.get(c.id)?.num ?? 0) < c.num) buildMaterials.set(c.id, { num: c.num, name: buildingName(b) });
+        }
+      }
+      const short = missing.map((c) => `${name(c.id)} ${free(c.id)}/${c.num}` + (config?.materialSources?.(c.id)?.length ? `（来源：${config.materialSources(c.id).join("、")}）` : "")).join(' ');
       notes.push(`${buildingName(b)} 建造材料不足（${short}），不买材料，等下一轮`);
       continue;
     }
@@ -656,7 +666,8 @@ export function planWorld(survey, {
     for (const item of factory.finishedProducts ?? []) addIncoming(item.id, Number(item.num));
   }
   const factoryReasons = new Map();
-  const produceRows = rowsOf(config, 'BuildingProduceCfg');
+  const constructionGap = id => buildMaterials.has(id)
+    ? Math.max(0, buildMaterials.get(id).num - free(id) - (incoming.get(id) ?? 0)) : 0;
   for (const b of survey.factories) {
     if (!enabled('startProduce')) break;
     if (b.factory.autoProductId && survey.autoProduceEndTime > (survey.serverNow ?? now)) {
@@ -688,12 +699,14 @@ export function planWorld(survey, {
       const best = cand.sort((a, b2) => (weeklyGap.get(b2.itemId) ?? 0) - (weeklyGap.get(a.itemId) ?? 0)
         || (cargoGap.get(b2.itemId) ?? 0) - (cargoGap.get(a.itemId) ?? 0)
         || (demand.get(b2.itemId) ?? 0) - (demand.get(a.itemId) ?? 0)
+        || constructionGap(b2.itemId) - constructionGap(a.itemId)
         || projectedStock(a.itemId) - projectedStock(b2.itemId)
         || a.produceTime - b2.produceTime)[0];
       for (const [id, n] of best.costItem ?? []) reserve(id, n);
       const need = demand.get(best.itemId) ?? 0;
       const weeklyNeed = weeklyGap.get(best.itemId) ?? 0;
       const cargoNeed = cargoGap.get(best.itemId) ?? 0;
+      const buildNeed = constructionGap(best.itemId);
       const projected = projectedStock(best.itemId);
       // The account may already be at its storage limit. Only run a dependent
       // job after enough resident deliveries have actually freed that stock.
@@ -711,7 +724,7 @@ export function planWorld(survey, {
       const displayFactory = buildingName(b);
       const displayProduct = name(best.itemId);
       const reason = weeklyNeed ? `周订单缺 ${weeklyNeed} 件` + (needsConfirmedBorrow ? '，居民交单后补回' : '') : cargoNeed ? `贸易港缺 ${cargoNeed} 件`
-        : need ? `居民订单缺 ${need} 件` : `补库存，排入后预计共 ${projected + 1} 件（含待收和在产）`;
+        : need ? `居民订单缺 ${need} 件` : buildNeed ? `${buildMaterials.get(best.itemId).name}建造缺 ${buildNeed} 件` : `补库存，排入后预计共 ${projected + 1} 件（含待收和在产）`;
       actions.push({
         kind: 'startProduce',
         request: 'StartFactoryProduceRequest',

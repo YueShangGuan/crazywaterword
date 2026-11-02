@@ -8,6 +8,7 @@ import { claimCollection, collectFloaters } from './collections.mjs';
 import { serviceCargo } from './cargo.mjs';
 import { serviceBoats } from './boats.mjs';
 import { sweepTrials } from './trials.mjs';
+import { claimGuildWelfare } from './guild.mjs';
 import { fishOnce } from './fishing.mjs';
 import { upgradeFishingOnce } from './fishing-upgrade.mjs';
 import { serviceAntiqueRecruit } from './antique-recruit.mjs';
@@ -67,6 +68,7 @@ export async function runLoop(client, protocol, {
   let lastRecruitWait;
   let lastFishWait;
   let lastFishUpgradeWait;
+  let lastGuildWait;
   const antiqueWait = new Map();
   let residentWait = new Map();
   // rounds <= 0 表示一直跑，靠 stop.aborted（Ctrl-C 或网页停止按钮）退出。
@@ -159,6 +161,15 @@ export async function runLoop(client, protocol, {
           stepLog('dailies')({ ...entry, category: '试炼' });
         }, rewards);
       }
+      if (isEnabled && enabled('guildWelfare')) {
+        try {
+          const entry = await claimGuildWelfare(client, config, { player, enabled: () => enabled('guildWelfare'), scheduler: rewards });
+          summary.tasks.results.push(entry);
+          if (!entry.skipped) summary.tasks.planned++;
+          if (!entry.skipped || lastGuildWait !== entry.reason) logReward(entry, '联盟');
+          lastGuildWait = entry.reason;
+        } catch (error) { phaseFailure('tasks', '联盟福利礼包', error); }
+      } else if (!isEnabled?.('guildWelfare')) lastGuildWait = undefined;
       if (isEnabled && groupEnabled('藏品')) {
         try {
           await serviceAntiqueRecruit(client, config, { player, enabled, scheduler: rewards, report(entry) {

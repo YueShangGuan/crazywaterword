@@ -755,18 +755,25 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
   client.attributePrompt({ args: ['no chance left'] });
   assert.equal(only.state.settled, 'reject', 'without a watcher the oldest pending entry takes the prompt');
   assert.deepEqual(client.pending, [newer.entry]);
-  for (const names of [['GuildCityInfoRequest', 'HeroStarUpRequest'], ['HeroStarUpRequest', 'GuildAidListRequest']]) {
+  for (const names of [['GuildCityInfoRequest', 'HeroStarUpRequest'], ['HeroStarUpRequest', 'GuildAidListRequest'],
+    ['HeroStarUpRequest', 'GuildInfoRequest'], ['HeroStarUpRequest', 'GotGuildWelfarePackRequest']]) {
     client.pending.length = 0;
     const entries = names.map((name, index) => fake(name, index));
     client.pending.push(...entries.map(({ entry }) => entry));
     client.onMessage(codec.encode('PromptResponse', 0, { prompt: 95, style: 1 }));
-    const guild = entries.find(({ entry }) => entry.name.startsWith('Guild'));
+    const guild = entries.find(({ entry }) => entry.name !== 'HeroStarUpRequest');
     const hero = entries.find(({ entry }) => entry.name === 'HeroStarUpRequest');
     assert.match(guild.state.error.message, /NO_GUILD/);
     assert.deepEqual(client.pending, [hero.entry]);
     client.onMessage(codec.encode('HeroStarUpResponse', 0, { nextStar: { heroId: '瑞文', star: 3 } }));
     assert.equal(hero.state.settled, 'resolve');
   }
+  const unrelatedRead = fake('AllHeroRequest', 5), unrelatedWrite = fake('HeroLevelUpRequest', 6);
+  client.pending.push(unrelatedRead.entry);
+  client.watchers.push(unrelatedWrite.entry);
+  client.onMessage(codec.encode('PromptResponse', 0, { prompt: 95, style: 1 }));
+  assert.deepEqual(client.pending, [unrelatedRead.entry], '迟到的未入盟提示不能拒绝无关的查询');
+  assert.deepEqual(client.watchers, [unrelatedWrite.entry], '迟到的未入盟提示也不能拒绝无关的写请求');
 
   // 在飞请求比观察者发得更早时，它就比观察者更该认领这条 prompt。
   client.pending.length = 0;
@@ -837,6 +844,24 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
   };
 
   const weekly = surveyFor(60);
+  const construction = surveyFor(60);
+  construction.orders = [];
+  construction.factories[0].factory.factoryQ = [{ productId: '布匹' }];
+  construction.stock.set('布匹', 1);
+  construction.buildings.push({ buildingId: '待建工厂', type: '种子厂', level: 0, product: [] });
+  const buildingConfig = { materialName: id => id, tables: { ...config.tables,
+    BuildingUnlockCfg: { data: [{ buildingId: '待建工厂', playerLevel: 10, consume: [['布匹', 4]] }] },
+    BuildingProduceCfg: { data: [...config.tables.BuildingProduceCfg.data,
+      { buildType: '材料厂', itemId: '木板', unlockLevel: 1, produceTime: 1, costItem: [] }] },
+  } };
+  const jobsForBuild = setting => planWorld(construction, { config: buildingConfig,
+    enabled: key => key === 'build' || key === 'startProduce' || (key === 'buildSupply' && setting),
+  }).actions.filter(step => step.kind === 'startProduce');
+  assert.deepEqual(jobsForBuild(true).slice(0, 2).map(job => job.body.productId), ['布匹', '布匹']);
+  assert.equal(jobsForBuild(true).filter(job => job.label.includes('建造缺')).length, 2, '备料扣除库存和在产');
+  assert.equal(jobsForBuild(false)[0].body.productId, '木板', '关闭备料后恢复按库存排产');
+  construction.weekOrder = new Map([['木板', 1]]);
+  assert.equal(jobsForBuild(true)[0].body.productId, '木板', '周订单优先于建材');
   // reserve all 50 items for the weekly order: only a VIP stock bonus leaves
   // room to make more for the resident, without submitting either order.
   const capacityConfig = { tables: { ...config.tables,

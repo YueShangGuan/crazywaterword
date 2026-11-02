@@ -70,10 +70,9 @@ export function stagePanel() {
     </Card>
     <Card>
       <CardHeader><CardTitle>试炼副本</CardTitle><CardDescription>每次点击挑战下一关。通关后可在挂机页开启免费扫荡。</CardDescription></CardHeader>
-      <CardContent className="bar">
-        <Button id="trial-1" variant="outline">挑战英雄经验副本</Button>
-        <Button id="trial-2" variant="outline">挑战强化石副本</Button>
-        <Button id="trial-3" variant="outline">挑战海兽经验副本</Button>
+      <CardContent>
+        <div className="bar"><Button id="trial-refresh" variant="outline">刷新试炼进度</Button></div>
+        <div id="trial-view" className="progression-view" aria-live="polite" />
       </CardContent>
     </Card>
     </div>

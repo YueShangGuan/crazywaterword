@@ -32,6 +32,11 @@ section h2 { font-size:16px; margin:22px 0 9px; padding-top:12px; border-top:1px
 section h2:first-child { border-top:0; margin-top:0; padding-top:0 }
 .bar { margin:9px 0 }
 .bar .k { font-size:14px; font-weight:bold }
+.progression-view { display:grid; gap:10px; min-width:0 }
+.progression-row { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; padding:10px 0; border-bottom:1px solid var(--line) }
+.progression-row:last-child { border-bottom:0 }
+.choice-field { display:grid; gap:3px; max-width:100% }
+.choice-field select { max-width:100% }
 .task-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,175px),1fr)); gap:6px 22px }
 .task-setting { display:flex; align-items:center; justify-content:space-between; gap:8px; min-height:36px; border-bottom:1px solid var(--line) }
 .task-setting label { flex:1; cursor:pointer }

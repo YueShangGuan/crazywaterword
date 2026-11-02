@@ -3,7 +3,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { GameClient } from './client.mjs';
-import { challengeTrial } from './trials.mjs';
+import { challengeTrial, trialProgress } from './trials.mjs';
+import { readHeroEquipment, equipHeroEmptySlots, enhanceHeroEquipment } from './hero-equipment.mjs';
+import { readGuild, claimGuildWelfare } from './guild.mjs';
+import { readFleetFormations, initializeFleetFormation } from './fleet-formation.mjs';
 import { loadProtocol } from './proto.mjs';
 import { PAGE } from './page.mjs';
 import { listWorlds, enterWorld, describeRole } from './worlds.mjs';
@@ -11,7 +14,7 @@ import { collectState, summarize, formatState, ENTRY_QUERIES } from './game.mjs'
 import { claimRewards } from './claim-rewards.mjs';
 import { fishView, newbieView } from './collections.mjs';
 import { normalize } from './worlds.mjs';
-import { pirateTracker } from './pirates.mjs';
+import { pirateTracker, pirateHuntOptions, startPirateHunt } from './pirates.mjs';
 import { activityView } from './activities.mjs';
 import { displayMaterial, getConfig } from './config.mjs';
 import { planHeroes, runHeroPlan, formatHeroPlan } from './heroes.mjs';
@@ -121,6 +124,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       queueTail: null,
       appointmentJob: null,
       residentJobs: new Map(),
+      progressionJobs: new Map(),
       log: [],
       loop: {
         running: false,
@@ -134,6 +138,21 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         error: null,
       },
     };
+  }
+
+  // Share identical clicks until this account's queued operation has finished.
+  function progressionJob(session, account, key, label, action) {
+    if (!session.progressionJobs.has(key)) {
+      const generation = session.generation;
+      const job = enqueue(session, async () => {
+        const client = await ensureConnected(session, account);
+        const enabled = () => session.client === client && client.connected && !session.paused && generation === session.generation;
+        if (!enabled()) throw new Error('账号连接已变化，请刷新后再试');
+        return action(client, enabled);
+      }, label).finally(() => session.progressionJobs.delete(key));
+      session.progressionJobs.set(key, job);
+    }
+    return session.progressionJobs.get(key);
   }
 
   function sessionFor(id) {
@@ -154,6 +173,10 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
 
   function wire(session, instance) {
     instance.on('message', ({ name, body }) => {
+      if (session.client === instance && session.player) {
+        if (name === 'SCJoinGuild') session.player.guildId = body.guildId;
+        if (name === 'SCLeaveGuild') session.player.guildId = 0;
+      }
       // The loop keeps a reference to this login's player object. Update it in place
       // so crossing an unlock level takes effect without restarting the console.
       if (name === 'SCPlayerExpUpdate' && session.client === instance && session.player && body.level > 0) {
@@ -694,10 +717,61 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       }
       if (route === 'GET /api/pirates') {
         const { account, session } = scoped_(parsed);
-        const client = await ensureConnected(session, account);
-        const result = await pirateTracker(client, loadConfigSafe(), session.player);
+        const result = await progressionJob(session, account, route, null, client => pirateTracker(client, loadConfigSafe(), session.player));
         for (const message of result.errors) emit(session, 'warn', '海盗首杀查询：' + message);
         json(result);
+        return;
+      }
+      if (route === 'GET /api/trials' || route === 'GET /api/equipment' || route === 'GET /api/guild' || route === 'GET /api/pirates/hunt' || route === 'GET /api/fleets/formation') {
+        const { account, session } = scoped_(parsed);
+        json(await progressionJob(session, account, route, null, async client => {
+          const config = loadConfigSafe(), player = session.player;
+          if (route === 'GET /api/equipment') return readHeroEquipment(client, config, player.level);
+          if (route === 'GET /api/guild') {
+            const guild = await readGuild(client, config, player);
+            if (guild.aidError) emit(session, 'warn', '读取联盟求助失败：' + guild.aidError);
+            return guild;
+          }
+          if (route === 'GET /api/fleets/formation') return readFleetFormations(client, config, player);
+          if (route === 'GET /api/pirates/hunt') return pirateHuntOptions(client, config, player);
+          const rows = await trialProgress(client, config, player.level);
+          for (const row of rows.filter(r => r.failed)) emit(session, 'warn', row.name + '：' + row.reason);
+          return rows;
+        }));
+        return;
+      }
+      if (route === 'POST /api/equipment/wear' || route === 'POST /api/equipment/enhance' || route === 'POST /api/guild/welfare' || route === 'POST /api/pirates/hunt' || route === 'POST /api/fleets/formation') {
+        const { account, session } = scoped_(parsed);
+        const payload = jsonBody();
+        needConfirm(payload);
+        const label = operationLabels[parsed.pathname];
+        const key = JSON.stringify([route, payload.heroId, payload.uid, payload.expectedLevel, payload.maxCost, payload.targetKey, payload.fleetKey, payload.buildingId, payload.previewKey]);
+        json(await progressionJob(session, account, key, label, async (client, enabled) => {
+          const config = loadConfigSafe(), player = session.player;
+          if (route === 'POST /api/equipment/wear') {
+            const result = await equipHeroEmptySlots(client, config, player.level, payload.heroId, enabled);
+            for (const line of result.lines) emit(session, 'info', line);
+            return result;
+          }
+          if (route === 'POST /api/equipment/enhance') {
+            const result = await enhanceHeroEquipment(client, config, player.level, { ...payload, enabled });
+            emit(session, 'info', result.label);
+            return result;
+          }
+          if (route === 'POST /api/guild/welfare') {
+            const result = await claimGuildWelfare(client, config, { player, enabled });
+            emit(session, 'info', result.skipped ? result.reason : result.label);
+            return result;
+          }
+          if (route === 'POST /api/fleets/formation') {
+            const result = await initializeFleetFormation(client, config, player, { ...payload, enabled });
+            emit(session, 'info', result.label);
+            return result;
+          }
+          const result = await startPirateHunt(client, config, player, { ...payload, enabled, report: entry => emit(session, 'info', typeof entry === 'string' ? entry : entry.label) });
+          emit(session, 'info', result.label);
+          return result;
+        }));
         return;
       }
       if (route === 'GET /api/activities') {
@@ -803,12 +877,12 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       // ---- 写操作 ----
       if (route === 'POST /api/trials/challenge') {
         const { session, account } = scoped_(parsed);
-        const { raidId } = jsonBody();
-        const message = await enqueue(session, async () => {
-          const client = await ensureConnected(session, account);
-          return challengeTrial(client, loadConfigSafe(), session.player?.level ?? 0, raidId);
-        }, '试炼挑战');
-        emit(session, 'info', message);
+        const { raidId, stageId } = jsonBody();
+        const message = await progressionJob(session, account, JSON.stringify([route, raidId, stageId]), '试炼挑战', async (client, enabled) => {
+          const message = await challengeTrial(client, loadConfigSafe(), session.player?.level ?? 0, raidId, stageId, enabled);
+          emit(session, 'info', message);
+          return message;
+        });
         json({ message });
         return;
       }

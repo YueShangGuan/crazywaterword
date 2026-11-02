@@ -5,6 +5,7 @@ import { iconEntry } from './art.mjs';
 import { chrome, journal, dialogs, templates, overviewPage, manualPage, heroesPage, dailiesPage, activitiesPage, accountPage, idlePanel, stagePanel } from './ui/dist/console.mjs';
 const componentCss = readFileSync(new URL('./ui/dist/theme.css', import.meta.url), 'utf8');
 const consoleCss = readFileSync(new URL('./console.css', import.meta.url), 'utf8');
+const progressionScript = readFileSync(new URL('./ui/progression.js', import.meta.url), 'utf8');
 
 export const PAGE = `<!doctype html>
 <html lang="zh-CN">
@@ -266,8 +267,6 @@ function bindGameAction(id, action) {
 }
 
 // ---- 运行记录 --------------------------------------------------------------
-for (const raidId of [1, 2, 3]) bindGameAction('trial-' + raidId, () =>
-  call('/api/trials/challenge', { method: 'POST', body: JSON.stringify({ raidId }) }));
 const seen = new Set();
 const logTime = new Intl.DateTimeFormat('zh-CN', {
   hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
@@ -389,6 +388,7 @@ async function loadAccounts(reload) {
   if (current && !accounts.some((a) => a.id === current)) current = data.activeId;
   snapshot = accounts.find(a => a.id === current)?.status ?? {};
   renderAccountSelect();
+  if (previous !== current || reload) refreshProgression();
   if (previous !== current) refreshManualWorld();
   if (reload) {
     subscribe();
@@ -400,6 +400,7 @@ $('account').onchange = async () => {
   current = $('account').value;
   snapshot = accounts.find(a => a.id === current)?.status ?? {};
   renderAccountSelect();
+  refreshProgression();
   refreshManualWorld();
   refreshActivities();
   refreshStages();
@@ -420,6 +421,7 @@ $('account-pause').onclick = async () => {
     snapshot = status;
     if (!status.paused) disconnected.delete(account);
     renderAccountSelect();
+    refreshProgression();
     refreshManualWorld();
     refreshOverview();
     refreshLoop();
@@ -437,6 +439,7 @@ $('connect').onclick = async () => {
     refreshManualWorld();
     snapshot.connected = true;
     renderAccountSelect();
+    refreshProgression();
     refreshOverview();
     $('hint').textContent = '';
   } catch (error) {
@@ -447,6 +450,7 @@ $('connect').onclick = async () => {
 $('disconnect').onclick = async () => {
   const account = current;
   disconnected.add(account);
+  refreshProgression();
   refreshManualWorld();
   await call('/api/disconnect', { method: 'POST' });
   if (account !== current) return;
@@ -1159,7 +1163,7 @@ async function refreshActivities() {
     if (version === activitiesVersion && account === current) list.textContent = '读取失败，详情见运行日志';
   }
 }
-$('activities-refresh').onclick = refreshActivities;
+$('activities-refresh').onclick = () => { refreshActivities(); refreshProgression(); };
 
 function table(headers, rows) {
   const box = component('ui-table');
@@ -1451,6 +1455,7 @@ $('cap-stop').onclick = async () => {
 };
 
 // ---- 启动 ------------------------------------------------------------------
+${progressionScript}
 document.querySelectorAll('#tabs button').forEach((button) => {
   button.onclick = () => {
     for (const other of document.querySelectorAll('#tabs button')) other.removeAttribute('aria-current');
@@ -1459,6 +1464,7 @@ document.querySelectorAll('#tabs button').forEach((button) => {
       section.classList.toggle('hidden', section.id !== 'tab-' + button.dataset.tab);
     }
     $('page-title').textContent = button.textContent;
+    refreshProgression();
     if (button.dataset.tab === 'overview') refreshOverview();
     if (button.dataset.tab === 'account') {
       renderAccounts();

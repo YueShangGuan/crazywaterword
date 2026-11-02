@@ -34,7 +34,11 @@ export function activitiesPage() {
       <template id="ui-event-switch"><Switch className="p-0" /></template>
     </Panel>
     <Panel title="材料来源查询"><label htmlFor="source-query">游戏材料名称</label><Input id="source-query" placeholder="例如：有机土壤" /><div id="source-results" aria-live="polite" /></Panel>
-    <Panel title="海盗首杀"><div id="pirate-tracker" aria-live="polite" /></Panel>
+    <Panel title="海盗首杀">
+      <div id="pirate-tracker" aria-live="polite" />
+      <div id="formation-view" className="progression-view" aria-live="polite" />
+      <div id="hunt-view" className="progression-view" aria-live="polite" />
+    </Panel>
     <Panel title="周订单材料"><div id="activities-order" /></Panel>
   </div>)
 }
@@ -92,6 +96,10 @@ export function heroesPage() {
       <Button id="appoint-run" variant="default">一键任命</Button>
     </div>
     <div id="appoint-table" className="dim">按游戏内的职位优先顺序自动分配英雄，已有任命可能调整。</div></Panel>
+    <Panel title="英雄装备">
+      <div className="bar"><Button id="equipment-refresh" variant="outline">刷新装备</Button></div>
+      <div id="equipment-view" className="progression-view" aria-live="polite" />
+    </Panel>
   </div>)
 }
 
@@ -106,6 +114,10 @@ export function dailiesPage() {
     </div>
     <pre id="dailies-view">先「探测」看看现在能做哪些、为什么不能做。点金与折扣店默认跳过，勾上才会花钻石。</pre>
     <div id="dailies-table"></div></Panel>
+    <Panel title="联盟">
+      <div className="bar"><Button id="guild-refresh" variant="outline">刷新联盟</Button></div>
+      <div id="guild-view" className="progression-view" aria-live="polite" />
+    </Panel>
   </div>)
 }
 

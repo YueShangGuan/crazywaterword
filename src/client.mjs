@@ -3,6 +3,10 @@ import { createCodec } from './codec.mjs';
 
 export const MAX_SEQ = 2147483647;
 const HALF_SEQ = (MAX_SEQ - 1) / 2;
+const MEMBER_REQUESTS = new Set([
+  'GuildInfoRequest', 'GotGuildWelfarePackRequest', 'GuildAidListRequest', 'GuildCityInfoRequest',
+  'GuildTechInfoRequest', 'GuildOrderRequest', 'TradeGuildRadarRequest',
+]);
 
 export const TICK_INTERVAL_MS = 1000;
 export const PING_TIMEOUT_MS = 1000;
@@ -208,17 +212,19 @@ export class GameClient extends EventEmitter {
     });
   }
 
-  // PromptResponse has no request ID. Prefer a matching guild query for
-  // NO_GUILD; otherwise attribute it to the oldest outstanding send.
+  // PromptResponse has no request ID. NO_GUILD can only belong to an
+  // operation requiring membership. A late guild prompt need not match any
+  // current send. Other prompts keep their ordinary send-order attribution.
   attributePrompt(body) {
     const promptName = this.promptNames[body?.prompt];
     const reason = (body?.args ?? []).join(' ') || `prompt=${body?.prompt}${promptName ? ' ' + promptName : ''}${promptName === 'NO_GUILD' ? '（未加入联盟）' : ''}`;
     const error = new Error(`server prompt: ${reason}`);
     error.prompt = body;
-    const guildQuery = promptName === 'NO_GUILD' && this.pending.find((entry) =>
-      entry.name === 'GuildCityInfoRequest' || entry.name === 'GuildAidListRequest');
-    const pendingEntry = guildQuery || this.pending[0];
-    const watcher = !guildQuery && this.watchers.length && (!pendingEntry || this.watchers[0].order < pendingEntry.order) ? this.watchers[0] : null;
+    const firstEligible = entries => promptName === 'NO_GUILD'
+      ? entries.find(entry => MEMBER_REQUESTS.has(entry.name)) : entries[0];
+    const pendingEntry = firstEligible(this.pending);
+    const firstWatch = firstEligible(this.watchers);
+    const watcher = firstWatch && (!pendingEntry || firstWatch.order < pendingEntry.order) ? firstWatch : null;
     if (watcher) {
       this.watchers = this.watchers.filter((item) => item !== watcher);
       clearTimeout(watcher.timer);

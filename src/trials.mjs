@@ -1,19 +1,73 @@
+import { displayMaterial } from './config.mjs';
+
 async function readRaid(client, raidId) {
   const { raid } = await client.request('TrialRaidInfoRequest', { raidId });
   if (!raid || raid.raidId !== raidId) throw new Error('无法确认试炼副本进度');
   return raid;
 }
 
-export async function challengeTrial(client, config, level, raidId) {
+function raidStages(config, raidId) {
+  return config.tables.TrialRaidStageCfg.data.filter(row => row.raidId === raidId).sort((a, b) => a.stageLevel - b.stageLevel);
+}
+
+// V74 RaidItem uses buySweepTimes for the next price. sweepTimes and the
+// daily sweep limit are not a second pool of free attempts. The free button
+// exists only on the highest cleared stage and never crosses a paid tier.
+function freeSweepState(info, stages, level, prices) {
+  const passed = stages.find(stage => stage.stageId === info.passedStage);
+  if (info.passedStage && !passed) throw new Error('未能匹配已通关的试炼关卡');
+  const used = info.buySweepTimes ?? 0;
+  if (!Number.isSafeInteger(used) || used < 0) throw new Error('未能确认已使用的试炼扫荡次数');
+  const sweepable = Boolean(passed && level >= passed.openLevel);
+  let left = 0;
+  while (sweepable) {
+    const next = prices.filter(row => row.buyTimes === used + left + 1);
+    if (next.length !== 1 || next[0].costRuby !== 0) break;
+    left++;
+  }
+  return { passed, used, left, sweepable };
+}
+
+export async function trialProgress(client, config, level) {
+  if (!config?.tables?.TrialRaidCfg) throw new Error('缺少试炼副本配置');
+  const rows = [];
+  const prices = config.tables.TrialRaidBuySweepCfg?.data ?? [];
+  for (const raid of config.tables.TrialRaidCfg.data) {
+    const stages = raidStages(config, raid.raidId);
+    const first = stages[0];
+    if (!first) continue;
+    const row = { raidId: raid.raidId, name: raid.title, openLevel: first.openLevel };
+    rows.push(row);
+    if (level < first.openLevel) { row.reason = '角色 ' + first.openLevel + ' 级开放'; continue; }
+    try {
+      const info = await readRaid(client, raid.raidId);
+      const { passed, left } = freeSweepState(info, stages, level, prices);
+      const next = stages.find(stage => stage.stageId > (info.passedStage ?? 0));
+      row.passed = passed?.stageLevel ?? 0;
+      row.freeLeft = left;
+      row.sweepHint = !passed ? '首通第一关后可免费扫荡' : left ? '可扫荡已通关的第 ' + passed.stageLevel + ' 关' : '当前没有可用的免费扫荡';
+      row.sweepRewards = (passed?.sweepReward ?? []).map(([id, n]) => displayMaterial(config, id) + ' ×' + n).join('、');
+      if (!next) { row.reason = '已全部通关'; continue; }
+      row.next = { id: next.stageId, level: next.stageLevel, power: next.power,
+        rewards: next.reward.map(([id, n]) => displayMaterial(config, id) + ' ×' + n).join('、') };
+      if (level < next.openLevel) row.reason = '下一关需要角色 ' + next.openLevel + ' 级';
+    } catch (error) { row.reason = '读取失败：' + error.message; row.failed = true; }
+  }
+  return rows;
+}
+
+export async function challengeTrial(client, config, level, raidId, expectedStage, enabled = () => true) {
   const raid = config?.tables.TrialRaidCfg.data.find(row => row.raidId === raidId);
   if (!raid) throw new Error('未知试炼副本');
-  const stages = config.tables.TrialRaidStageCfg.data.filter(row => row.raidId === raidId).sort((a, b) => a.stageLevel - b.stageLevel);
+  const stages = raidStages(config, raidId);
   if (!stages.length) throw new Error(raid.title + '缺少关卡配置');
   if (level < stages[0].openLevel) throw new Error(raid.title + '需要角色 ' + stages[0].openLevel + ' 级');
   const info = await readRaid(client, raidId);
   const next = stages.find(row => row.stageId > (info.passedStage ?? 0));
   if (!next) return raid.title + '已全部通关';
+  if (expectedStage != null && next.stageId !== expectedStage) throw new Error('试炼进度已变化，请刷新后再挑战');
   if (level < next.openLevel) throw new Error(raid.title + '第 ' + next.stageLevel + ' 关需要角色 ' + next.openLevel + ' 级');
+  if (!enabled()) throw new Error('账号状态已变化，取消挑战试炼副本');
   await client.request('TrialRaidChallengeRequest', { raidId, stageId: next.stageId });
   const after = await readRaid(client, raidId);
   return raid.title + '第 ' + next.stageLevel + ' 关' + (after.passedStage >= next.stageId ? '已通关' : '未通关');
@@ -28,17 +82,15 @@ export async function sweepTrials(client, config, level, enabled, log, scheduler
     if (!enabled() || !stages.some(row => row.openLevel <= level)) continue;
     try {
       const midnight = scheduler?.nextDay();
-      let info = await readRaid(client, raid.raidId);
-      while (enabled() && stages.some(row => row.stageId === info.passedStage)) {
-        const next = (info.buySweepTimes ?? 0) + 1;
-        if (!prices.some(row => row.buyTimes === next && row.costRuby === 0)) break;
+      let state = freeSweepState(await readRaid(client, raid.raidId), stages, level, prices);
+      while (enabled() && state.left > 0 && (!scheduler || scheduler.now() < midnight)) {
+        const next = state.used + 1;
         await client.sendWatch('TrialRaidBuySweepRequest', { raidId: raid.raidId, useAdvCard: false });
-        info = await readRaid(client, raid.raidId);
-        if (!(info.buySweepTimes >= next)) throw new Error('服务端未确认扫荡次数，本轮停止');
+        state = freeSweepState(await readRaid(client, raid.raidId), stages, level, prices);
+        if (state.used < next) throw new Error('服务端未确认扫荡次数，本轮停止');
         log({ title: raid.title + '已免费扫荡', ok: true });
       }
-      const free = prices.filter(row => row.costRuby === 0);
-      if (scheduler && free.length && free.every(row => row.buyTimes <= info.buySweepTimes)) {
+      if (scheduler && state.sweepable && state.left === 0 && prices.length && scheduler.now() < midnight) {
         scheduler.defer(key, midnight);
       }
     } catch (error) {

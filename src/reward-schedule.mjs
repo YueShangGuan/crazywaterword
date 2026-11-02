@@ -45,6 +45,9 @@ export function rewardSchedule(client) {
         clearTask('weekGift');
         break;
       case 'SCNewEmail': clearTask('mail'); break;
+      case 'SCJoinGuild':
+      case 'SCLeaveGuild':
+      case 'SCNewGuildWelfarePack': clearTask('guildWelfare'); break;
       case 'SCOrderOfTheDay': clearTask('orderDaily'); break;
       case 'SCAllActivity':
         clearTask('weekGift');
