@@ -18,7 +18,8 @@ function emptyStore() {
 
 export function accountId(credential) {
   const id = credential?.login?.eworldParams?.openId;
-  return typeof id === 'string' && id ? id : null;
+  if (typeof id !== 'string' || !id) return null;
+  return credential.source === 'douyin-mitm' ? 'douyin:' + id : id;
 }
 
 // 网页和 CLI 要的都是这一小块，凭证本体不往外散。

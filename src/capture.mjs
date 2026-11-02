@@ -45,7 +45,7 @@ export function createCaptureController(dependencies = {}) {
     try { fingerprint = ca.caFingerprint(); } catch {}
     try { thumbprint = ca.caThumbprint(); } catch {}
     return {
-      running: state.running, phase: state.phase, error: state.error, port: state.port,
+      running: state.running, phase: state.phase, error: state.error, port: state.port, platform: state.platform ?? 'wechat',
       caInstalled, caQueryError, caInstalledBefore: state.caInstalledBefore,
       caAddedByCapture: state.caAddedByCapture,
       proxy, proxyOn: Number(proxy?.ProxyEnable) === 1,
@@ -159,7 +159,7 @@ export function createCaptureController(dependencies = {}) {
   }
 
   async function startCapture({
-    onLogin, onLog, port = defaultPort, keepCa = false, timeoutMs = DEFAULT_CAPTURE_TIMEOUT_MS,
+    onLogin, onLog, port = defaultPort, keepCa = false, timeoutMs = DEFAULT_CAPTURE_TIMEOUT_MS, platform = 'wechat',
   } = {}) {
     if (current) return captureState();
     let finishSetup;
@@ -173,7 +173,7 @@ export function createCaptureController(dependencies = {}) {
     current = run;
     latest = run;
     Object.assign(state, {
-      running: true, phase: 'starting', error: null, port, originalProxy: null,
+      running: true, phase: 'starting', error: null, port, originalProxy: null, platform,
       caAddedByCapture: false, caInstalledBefore: false,
       accountId: null, capturedAt: null, startedAt: now().toISOString(), log: [],
     });
@@ -255,7 +255,7 @@ export function createCaptureController(dependencies = {}) {
         run.proxySettings.enable();
         run.ready = true;
         state.phase = 'waiting';
-        note('采集已就绪，请在电脑微信中重新打开《疯狂水世界》。', run);
+        note('采集已就绪，请在电脑' + (platform === 'douyin' ? '抖音' : '微信') + '中重新打开《疯狂水世界》。', run);
       }
     } catch (error) {
       failed = true;

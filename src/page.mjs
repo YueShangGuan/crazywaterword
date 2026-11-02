@@ -1176,6 +1176,7 @@ function renderCapture(state) {
   const box = clear($('cap-box'));
   const cleanupPending = state.phase === 'error';
   $('cap-start').disabled = state.running || cleanupPending;
+  $('cap-douyin').disabled = state.running || cleanupPending;
   $('cap-stop').disabled = !state.running && !cleanupPending;
   hint.textContent = state.error ? '采集已停止，请查看运行日志' : (state.running ? '抓包中：' + (state.phase === 'waiting' ? '等待电脑游戏登录' : state.phase) : (state.accountId ? '凭证已保存，登录验证结果请查看日志' : ''));
   hint.className = state.error ? 'bad' : 'warn';
@@ -1183,7 +1184,7 @@ function renderCapture(state) {
   if (state.running) {
     const steps = el('ol', 'steps');
     const lines = [
-      '先用要添加的微信账号登录电脑版微信，再在电脑上打开《疯狂水世界》',
+      '先登录电脑版' + (state.platform === 'douyin' ? '抖音' : '微信') + '，再从该客户端打开《疯狂水世界》',
       '如果游戏已经打开，请完全退出后重新进入，让它重新发送登录请求',
       '捕获后保存凭证，并尝试读取角色验证登录；验证失败会显示在日志中',
       '完成、失败或等待超时后会自动恢复代理，只移除本次新安装的证书',
@@ -1191,13 +1192,13 @@ function renderCapture(state) {
     for (const text of lines) steps.appendChild(el('li', null, text));
     const qr = el('div', 'qr');
     const side = el('div', null, '');
-    if (state.qr && state.qr.kind === 'image') {
+    if (state.platform !== 'douyin' && state.qr && state.qr.kind === 'image') {
       const img = el('img');
       img.src = state.qr.url + '?t=' + Date.now();
       img.alt = '游戏入口码（非扫码登录授权）';
       qr.appendChild(img);
     }
-    side.appendChild(el('div', 'dim', state.qr?.note || '手机扫码不能向本机传回登录凭证，请在电脑微信中打开游戏。'));
+    if (state.platform !== 'douyin') side.appendChild(el('div', 'dim', state.qr?.note || '请在电脑微信中打开游戏。'));
     side.appendChild(steps);
     qr.appendChild(side);
     box.appendChild(qr);
@@ -1238,7 +1239,9 @@ async function pollCapture() {
 }
 
 
-$('cap-start').onclick = async () => {
+$('cap-start').onclick = () => beginCapture('wechat');
+$('cap-douyin').onclick = () => beginCapture('douyin');
+async function beginCapture(platform) {
   let state;
   try {
     state = await call('/api/capture');
@@ -1252,17 +1255,17 @@ $('cap-start').onclick = async () => {
     el('div', null, '1. 若缺少证书，Windows 会打开导入向导，目标已选定为当前用户的“受信任的根证书颁发机构”。点击“完成”；若出现安全警告，核对 CrazyWaterWorld Local Test CA 后选择“是”。'),
     el('div', null, '2. 把当前用户的系统代理指向 127.0.0.1:' + state.port + '（原来指向 ' + (state.proxy?.ProxyServer ?? '无') + '，结束后写回）'),
     el('div', null, '使用系统代理的其他程序也会临时经过本机代理；仅解密本游戏网关，结束后恢复原设置。随时可点「停止抓包」。'),
-    el('div', null, '点确认后请在电脑微信里打开《疯狂水世界》。手机扫码无法直接完成这里的登录。'),
+    el('div', null, '采集就绪后，请只在电脑' + (platform === 'douyin' ? '抖音' : '微信') + '里重新打开《疯狂水世界》。'),
     el('div', null, '捕获后会尝试连接游戏验证角色，可能让正在运行的游戏掉线一次。'),
   ];
   openConfirm('开始抓包（将修改当前用户的系统设置）', body, async () => {
     $('cap-hint').textContent = '请在 Windows 证书导入向导中完成导入，返回后会自动检查根证书库…';
-    const next = await call('/api/capture/start', { method: 'POST', body: JSON.stringify({ confirm: true }) });
+    const next = await call('/api/capture/start', { method: 'POST', body: JSON.stringify({ confirm: true, platform }) });
     renderCapture(next);
     if (capturePoll) clearInterval(capturePoll);
     capturePoll = setInterval(pollCapture, 1500);
   });
-};
+}
 
 $('cap-stop').onclick = async () => {
   const state = await call('/api/capture/stop', { method: 'POST', body: JSON.stringify({ confirm: true }) });

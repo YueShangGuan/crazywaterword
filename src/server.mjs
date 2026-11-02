@@ -380,8 +380,11 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
   }
 
   // 抓到登录包就落库；顺手连一次把昵称/等级/区服回填，账号列表才看得到人话。
-  async function addCapturedAccount({ url, body, rawFrameHex }) {
-    const credential = { url, login: body, loginFrameHex: rawFrameHex, source: 'mitm', capturedAt: new Date().toISOString() };
+  async function addCapturedAccount({ url, body, rawFrameHex }, platform) {
+    if (platform === 'douyin' && !['openId', 'token', 'sign', 'timestamp'].every(key => body?.eworldParams?.[key])) {
+      throw new Error('抖音游戏登录报文缺少凭证字段');
+    }
+    const credential = { url, login: body, loginFrameHex: rawFrameHex, source: platform === 'douyin' ? 'douyin-mitm' : 'mitm', capturedAt: new Date().toISOString() };
     const store = loadStore();
     const { account, created } = upsertAccount(store, credential);
     if (created) account.automation = { enabled: true, everySeconds: 60 };
@@ -613,11 +616,14 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         const payload = jsonBody();
         needConfirm(payload);
         if (captureState().running) throw new Error('已经在抓包了');
+        const platform = payload.platform ?? 'wechat';
+        if (!['wechat', 'douyin'].includes(platform)) throw new Error('未知的采集渠道');
         emit(null, 'info', `开始抓包：本地 CA 与系统代理（127.0.0.1:${DEFAULT_PROXY_PORT}）都是当前用户范围，抓到即自动还原`);
         await startCapture({
           port: DEFAULT_PROXY_PORT,
+          platform,
           onLog: (line) => emit(null, /失败|超时/.test(line) ? 'error' : 'info', line),
-          onLogin: async ({ url, body, rawFrameHex }) => addCapturedAccount({ url, body, rawFrameHex }),
+          onLogin: record => addCapturedAccount(record, platform),
         });
         json({ ...captureState(), qr: qrInfo() });
         return;

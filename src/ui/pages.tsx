@@ -137,6 +137,7 @@ export function accountPage() {
     <Panel title="添加账号">
     <div className="bar">
       <Button id="cap-start" variant="default">从电脑微信添加</Button>
+      <Button id="cap-douyin" variant="outline">从电脑抖音添加</Button>
       <Button id="cap-stop" variant="destructive">停止抓包</Button>
       <span id="cap-hint" className="warn"></span>
     </div>
