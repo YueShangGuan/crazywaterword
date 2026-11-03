@@ -1,0 +1,5340 @@
+[
+  {
+    "request": "AchievementInfoRequest",
+    "reference": [
+      "../sea666-afk/sea666_welfare.py:549"
+    ],
+    "implementation": [
+      "src/automation/service.mjs:118",
+      "src/automation/welfare.mjs:20",
+      "src/game.mjs:16",
+      "src/tasks.mjs:73"
+    ],
+    "fields": [],
+    "response": "AchievementInfoResponse",
+    "responses": [
+      "AchievementInfoResponse"
+    ]
+  },
+  {
+    "request": "ActivateAntiqueRequest",
+    "reference": [
+      "../sea666-afk/sea666_antique.py:387"
+    ],
+    "implementation": [
+      "src/automation/cultivation.mjs:155"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "id",
+        "kind": "scalar",
+        "type": "string",
+        "wire": "string",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "AfkInfoRequest",
+    "reference": [
+      "../sea666-afk/sea666_afk_once.py:100",
+      "../sea666-afk/sea666_proto_draft.py:24"
+    ],
+    "implementation": [
+      "src/app.mjs:23",
+      "src/automation/base.mjs:346",
+      "src/automation/base.mjs:350",
+      "src/automation/base.mjs:357",
+      "src/claim-rewards.mjs:51",
+      "src/dailies.mjs:192",
+      "src/dailies.mjs:195",
+      "src/game.mjs:21"
+    ],
+    "fields": [],
+    "response": "AfkInfoResponse",
+    "responses": [
+      "AfkInfoResponse"
+    ]
+  },
+  {
+    "request": "AllAntiqueRequest",
+    "reference": [
+      "../sea666-afk/sea666_antique.py:341",
+      "../sea666-afk/sea666_antique.py:544"
+    ],
+    "implementation": [
+      "src/automation/cultivation.mjs:153",
+      "src/automation/cultivation.mjs:155",
+      "src/automation/cultivation.mjs:159",
+      "src/automation/cultivation.mjs:167",
+      "src/automation/cultivation.mjs:174",
+      "src/automation/cultivation.mjs:190",
+      "src/game.mjs:23"
+    ],
+    "fields": [],
+    "response": "AllAntiqueResponse",
+    "responses": [
+      "AllAntiqueResponse"
+    ]
+  },
+  {
+    "request": "AllHeroRequest",
+    "reference": [
+      "../sea666-afk/sea666_battle.py:831",
+      "../sea666-afk/sea666_equip.py:329",
+      "../sea666-afk/sea666_hero.py:77",
+      "../sea666-afk/sea666_pet_museum.py:198"
+    ],
+    "implementation": [
+      "src/automation/battle.mjs:273",
+      "src/automation/cultivation.mjs:27",
+      "src/automation/cultivation.mjs:30",
+      "src/automation/cultivation.mjs:39",
+      "src/automation/cultivation.mjs:44",
+      "src/automation/cultivation.mjs:52",
+      "src/automation/cultivation.mjs:56",
+      "src/automation/cultivation.mjs:79",
+      "src/automation/cultivation.mjs:81",
+      "src/automation/cultivation.mjs:86",
+      "src/automation/cultivation.mjs:250",
+      "src/automation/cultivation.mjs:392",
+      "src/automation/guild.mjs:196",
+      "src/fleet-formation.mjs:28",
+      "src/game.mjs:10",
+      "src/hero-equipment.mjs:47",
+      "src/hero-show-rewards.mjs:8",
+      "src/server.mjs:898",
+      "src/server.mjs:1554"
+    ],
+    "fields": [],
+    "response": "AllHeroResponse",
+    "responses": [
+      "AllHeroResponse"
+    ]
+  },
+  {
+    "request": "AllItemRequest",
+    "reference": [
+      "../sea666-afk/sea666_bag.py:139"
+    ],
+    "implementation": [
+      "src/activities.mjs:24",
+      "src/activities.mjs:159",
+      "src/app.mjs:22",
+      "src/automation/context.mjs:157",
+      "src/boats.mjs:36",
+      "src/cargo.mjs:19",
+      "src/cargo.mjs:39",
+      "src/dailies.mjs:350",
+      "src/fishing.mjs:19",
+      "src/game.mjs:8",
+      "src/hero-equipment.mjs:48",
+      "src/log-errors.mjs:8",
+      "src/pirates.mjs:124",
+      "src/server.mjs:899",
+      "src/world.mjs:153"
+    ],
+    "fields": [],
+    "response": "AllItemResponse",
+    "responses": [
+      "AllItemResponse"
+    ]
+  },
+  {
+    "request": "AllPetRequest",
+    "reference": [
+      "../sea666-afk/sea666_pet.py:465"
+    ],
+    "implementation": [
+      "src/automation/cultivation.mjs:224",
+      "src/automation/cultivation.mjs:228",
+      "src/automation/cultivation.mjs:235",
+      "src/automation/cultivation.mjs:238",
+      "src/automation/cultivation.mjs:266",
+      "src/game.mjs:42"
+    ],
+    "fields": [],
+    "response": "AllPetResponse",
+    "responses": [
+      "AllPetResponse"
+    ]
+  },
+  {
+    "request": "AllPirateRequest",
+    "reference": [
+      "../sea666-afk/sea666_world.py:137"
+    ],
+    "implementation": [
+      "src/automation/world.mjs:319",
+      "src/automation/world.mjs:344",
+      "src/dailies.mjs:305",
+      "src/dailies.mjs:308",
+      "src/game.mjs:53",
+      "src/pirates.mjs:134"
+    ],
+    "fields": [],
+    "response": "AllPirateResponse",
+    "responses": [
+      "AllPirateResponse"
+    ]
+  },
+  {
+    "request": "AllResourceRequest",
+    "reference": [
+      "../sea666-afk/sea666_bag.py:152"
+    ],
+    "implementation": [
+      "src/app.mjs:21",
+      "src/automation/context.mjs:158",
+      "src/boats.mjs:21",
+      "src/dailies.mjs:356",
+      "src/fishing-upgrade.mjs:36",
+      "src/game.mjs:9",
+      "src/world.mjs:154"
+    ],
+    "fields": [],
+    "response": "AllResourceResponse",
+    "responses": [
+      "AllResourceResponse"
+    ]
+  },
+  {
+    "request": "AntiqueRecruitRequest",
+    "reference": [
+      "../sea666-afk/sea666_antique.py:508",
+      "../sea666-afk/sea666_gather.py:184"
+    ],
+    "implementation": [
+      "src/antique-recruit.mjs:43",
+      "src/automation/base.mjs:311",
+      "src/automation/cultivation.mjs:127"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "type",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      },
+      {
+        "number": 2,
+        "name": "way",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": "AntiqueRecruitResponse",
+    "responses": [
+      "AntiqueRecruitResponse"
+    ]
+  },
+  {
+    "request": "AntiqueStarUpRequest",
+    "reference": [
+      "../sea666-afk/sea666_antique.py:406"
+    ],
+    "implementation": [
+      "src/automation/cultivation.mjs:167"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "id",
+        "kind": "scalar",
+        "type": "string",
+        "wire": "string",
+        "required": true,
+        "optional": false
+      },
+      {
+        "number": 2,
+        "name": "universal",
+        "kind": "scalar",
+        "type": "bool",
+        "wire": "bool",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "AntiqueSuitLevelUpRequest",
+    "reference": [
+      "../sea666-afk/sea666_antique.py:431",
+      "../sea666-afk/sea666_antique.py:462"
+    ],
+    "implementation": [
+      "src/automation/cultivation.mjs:190"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "id",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "AppointHeroRequest",
+    "reference": [
+      "../sea666-afk/sea666_hero.py:784",
+      "../sea666-afk/sea666_hero.py:797"
+    ],
+    "implementation": [
+      "src/automation/cultivation.mjs:105"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "heroId",
+        "kind": "scalar",
+        "type": "string",
+        "wire": "string",
+        "required": true,
+        "optional": false
+      },
+      {
+        "number": 2,
+        "name": "posId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "AppointInfoRequest",
+    "reference": [
+      "../sea666-afk/sea666_hero.py:672"
+    ],
+    "implementation": [
+      "src/appointments.mjs:22",
+      "src/automation/cultivation.mjs:105",
+      "src/game.mjs:29"
+    ],
+    "fields": [],
+    "response": "AppointInfoResponse",
+    "responses": [
+      "AppointInfoResponse"
+    ]
+  },
+  {
+    "request": "ArenaChallengeRequest",
+    "reference": [
+      "../sea666-afk/sea666_battle.py:527"
+    ],
+    "implementation": [
+      "src/automation/battle.mjs:190",
+      "src/dailies.mjs:216"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "rank",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      },
+      {
+        "number": 2,
+        "name": "challengeId",
+        "kind": "scalar",
+        "type": "int64",
+        "wire": "int64",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": "ArenaChallengeResponse",
+    "responses": [
+      "ArenaChallengeResponse"
+    ]
+  },
+  {
+    "request": "ArenaInfoRequest",
+    "reference": [
+      "../sea666-afk/sea666_battle.py:375"
+    ],
+    "implementation": [
+      "src/app.mjs:25",
+      "src/automation/battle.mjs:183",
+      "src/automation/battle.mjs:186",
+      "src/automation/service.mjs:129",
+      "src/dailies.mjs:207",
+      "src/dailies.mjs:210"
+    ],
+    "fields": [],
+    "response": "ArenaInfoResponse",
+    "responses": [
+      "ArenaInfoResponse"
+    ]
+  },
+  {
+    "request": "ArenaSweepRequest",
+    "reference": [
+      "../sea666-afk/sea666_battle.py:439"
+    ],
+    "implementation": [
+      "src/automation/battle.mjs:186"
+    ],
+    "fields": [],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "AutoAppointRequest",
+    "reference": [
+      "../sea666-afk/sea666_hero.py:754",
+      "../sea666-afk/sea666_hero.py:766"
+    ],
+    "implementation": [
+      "src/automation/cultivation.mjs:105"
+    ],
+    "equivalent": "按显式选择的英雄与位置逐条委任；不让服务端自动选择未授权英雄",
+    "fields": [
+      {
+        "number": 1,
+        "name": "posId",
+        "kind": "repeated",
+        "type": "int32",
+        "wire": "int32",
+        "required": false,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "BadgesRequest",
+    "reference": [
+      "../sea666-afk/sea666_hero.py:320"
+    ],
+    "implementation": [
+      "src/automation/cultivation.mjs:98",
+      "src/game.mjs:14"
+    ],
+    "fields": [],
+    "response": "BadgesResponse",
+    "responses": [
+      "BadgesResponse"
+    ]
+  },
+  {
+    "request": "BattlePassGotRewardRequest",
+    "reference": [
+      "../sea666-afk/sea666_activity.py:940",
+      "../sea666-afk/sea666_battle.py:792",
+      "../sea666-afk/sea666_snap.py:886"
+    ],
+    "implementation": [
+      "src/automation/battle.mjs:77"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "type",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": "BattlePassGotRewardResponse",
+    "responses": [
+      "BattlePassGotRewardResponse"
+    ]
+  },
+  {
+    "request": "BattlePassRequest",
+    "reference": [
+      "../sea666-afk/sea666_activity.py:911",
+      "../sea666-afk/sea666_battle.py:757",
+      "../sea666-afk/sea666_snap.py:857"
+    ],
+    "implementation": [
+      "src/automation/battle.mjs:75",
+      "src/automation/battle.mjs:77"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "type",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": "BattlePassResponse",
+    "responses": [
+      "BattlePassResponse"
+    ]
+  },
+  {
+    "request": "BlindBoxDetailRequest",
+    "reference": [
+      "../sea666-afk/sea666_activity.py:405"
+    ],
+    "implementation": [
+      "src/automation/activity.mjs:149",
+      "src/automation/activity.mjs:155",
+      "src/automation/activity.mjs:167",
+      "src/automation/activity.mjs:170"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "activityId",
+        "kind": "scalar",
+        "type": "int64",
+        "wire": "int64",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": "BlindBoxDetailResponse",
+    "responses": [
+      "BlindBoxDetailResponse"
+    ]
+  },
+  {
+    "request": "BlindBoxOpenRequest",
+    "reference": [
+      "../sea666-afk/sea666_activity.py:511"
+    ],
+    "implementation": [
+      "src/automation/activity.mjs:160"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "activityId",
+        "kind": "scalar",
+        "type": "int64",
+        "wire": "int64",
+        "required": false,
+        "optional": true
+      },
+      {
+        "number": 2,
+        "name": "boxIndex",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": "BlindBoxOpenResponse",
+    "responses": [
+      "BlindBoxOpenResponse"
+    ]
+  },
+  {
+    "request": "BlindBoxStartRequest",
+    "reference": [
+      "../sea666-afk/sea666_activity.py:583"
+    ],
+    "implementation": [
+      "src/automation/activity.mjs:152"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "activityId",
+        "kind": "scalar",
+        "type": "int64",
+        "wire": "int64",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": "BlindBoxStartResponse",
+    "responses": [
+      "BlindBoxStartResponse"
+    ]
+  },
+  {
+    "request": "BuildBuildingRequest",
+    "reference": [
+      "../sea666-afk/sea666_island_once.py:231"
+    ],
+    "implementation": [
+      "src/actions.mjs:204",
+      "src/automation/service.mjs:143",
+      "src/world.mjs:506"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "buildingId",
+        "kind": "scalar",
+        "type": "string",
+        "wire": "string",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "CampaignReportsRequest",
+    "reference": [
+      "../sea666-afk/sea666_world.py:187"
+    ],
+    "implementation": [
+      "src/automation/world.mjs:162",
+      "src/automation/world.mjs:164"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "pageNo",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": "CampaignReportsResponse",
+    "responses": [
+      "CampaignReportsResponse"
+    ]
+  },
+  {
+    "request": "CancelFactoryAutoProduceRequest",
+    "reference": [
+      "../sea666-afk/sea666_factory.py:146",
+      "../sea666-afk/sea666_factory.py:153"
+    ],
+    "implementation": [
+      "src/automation/base.mjs:132",
+      "src/automation/production.mjs:88"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "buildingId",
+        "kind": "scalar",
+        "type": "string",
+        "wire": "string",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "CargoShipsRequest",
+    "reference": [
+      "../sea666-afk/sea666_cargo.py:85"
+    ],
+    "implementation": [
+      "src/automation/base.mjs:80",
+      "src/automation/base.mjs:253",
+      "src/cargo.mjs:7",
+      "src/dailies.mjs:284",
+      "src/dailies.mjs:287",
+      "src/game.mjs:26",
+      "src/world.mjs:262"
+    ],
+    "fields": [],
+    "response": "CargoShipsResponse",
+    "responses": [
+      "CargoShipsResponse"
+    ]
+  },
+  {
+    "request": "CatcherEndRequest",
+    "reference": [
+      "../sea666-afk/sea666_activity.py:983"
+    ],
+    "implementation": [
+      "src/automation/activity.mjs:207"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "activityId",
+        "kind": "scalar",
+        "type": "int64",
+        "wire": "int64",
+        "required": false,
+        "optional": true
+      },
+      {
+        "number": 2,
+        "name": "stage",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": false,
+        "optional": true
+      },
+      {
+        "number": 3,
+        "name": "hookedRewardIds",
+        "kind": "repeated",
+        "type": "int32",
+        "wire": "int32",
+        "required": false,
+        "optional": false
+      },
+      {
+        "number": 4,
+        "name": "hookedObstacleIds",
+        "kind": "repeated",
+        "type": "int32",
+        "wire": "int32",
+        "required": false,
+        "optional": false
+      },
+      {
+        "number": 5,
+        "name": "hookedStarIds",
+        "kind": "repeated",
+        "type": "int32",
+        "wire": "int32",
+        "required": false,
+        "optional": false
+      },
+      {
+        "number": 6,
+        "name": "hookedObjectIds",
+        "kind": "repeated",
+        "type": "int32",
+        "wire": "int32",
+        "required": false,
+        "optional": false
+      }
+    ],
+    "response": "CatcherEndResponse",
+    "responses": [
+      "CatcherEndResponse"
+    ]
+  },
+  {
+    "request": "CatcherInfoRequest",
+    "reference": [
+      "../sea666-afk/sea666_activity.py:863"
+    ],
+    "implementation": [
+      "src/automation/activity.mjs:180"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "activityId",
+        "kind": "scalar",
+        "type": "int64",
+        "wire": "int64",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": "CatcherInfoResponse",
+    "responses": [
+      "CatcherInfoResponse"
+    ]
+  },
+  {
+    "request": "CatcherStartRequest",
+    "reference": [
+      "../sea666-afk/sea666_activity.py:1026"
+    ],
+    "implementation": [
+      "src/automation/activity.mjs:194"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "activityId",
+        "kind": "scalar",
+        "type": "int64",
+        "wire": "int64",
+        "required": false,
+        "optional": true
+      },
+      {
+        "number": 2,
+        "name": "stage",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": "CatcherStartResponse",
+    "responses": [
+      "CatcherStartResponse"
+    ]
+  },
+  {
+    "request": "CatcherSweepRequest",
+    "reference": [
+      "../sea666-afk/sea666_activity.py:1087"
+    ],
+    "implementation": [
+      "src/automation/activity.mjs:189"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "activityId",
+        "kind": "scalar",
+        "type": "int64",
+        "wire": "int64",
+        "required": false,
+        "optional": true
+      },
+      {
+        "number": 2,
+        "name": "stage",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": "CatcherSweepResponse",
+    "responses": [
+      "CatcherSweepResponse"
+    ]
+  },
+  {
+    "request": "CelebrationBoostRequest",
+    "reference": [
+      "../sea666-afk/sea666_blessing.py:154"
+    ],
+    "implementation": [
+      "src/automation/activity.mjs:248"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "activityId",
+        "kind": "scalar",
+        "type": "int64",
+        "wire": "int64",
+        "required": false,
+        "optional": true
+      },
+      {
+        "number": 2,
+        "name": "skinId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": false,
+        "optional": true
+      },
+      {
+        "number": 3,
+        "name": "times",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": "CelebrationBoostResponse",
+    "responses": [
+      "CelebrationBoostResponse"
+    ]
+  },
+  {
+    "request": "CelebrationDetailRequest",
+    "reference": [
+      "../sea666-afk/sea666_blessing.py:100"
+    ],
+    "implementation": [
+      "src/automation/activity.mjs:244",
+      "src/automation/activity.mjs:251",
+      "src/automation/activity.mjs:254"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "activityId",
+        "kind": "scalar",
+        "type": "int64",
+        "wire": "int64",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": "CelebrationDetailResponse",
+    "responses": [
+      "CelebrationDetailResponse"
+    ]
+  },
+  {
+    "request": "ChallengePirateRequest",
+    "reference": [
+      "../sea666-afk/sea666_world.py:630"
+    ],
+    "implementation": [
+      "src/automation/world.mjs:334",
+      "src/pirates.mjs:202",
+      "src/pirates.mjs:204"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "uid",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": false,
+        "optional": true
+      },
+      {
+        "number": 2,
+        "name": "fleetBuildingIds",
+        "kind": "repeated",
+        "type": "string",
+        "wire": "string",
+        "required": false,
+        "optional": false
+      },
+      {
+        "number": 3,
+        "name": "cityId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "ChallengeStageRequest",
+    "reference": [
+      "../sea666-afk/sea666_battle.py:284"
+    ],
+    "implementation": [
+      "src/automation/battle.mjs:92",
+      "src/stages.mjs:34"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "stage",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": "ChallengeStageResponse",
+    "responses": [
+      "ChallengeStageResponse"
+    ]
+  },
+  {
+    "request": "ChallengeWorldBossRequest",
+    "reference": [
+      "../sea666-afk/sea666_world_ext.py:667"
+    ],
+    "implementation": [
+      "src/automation/world.mjs:212"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "bossId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      },
+      {
+        "number": 2,
+        "name": "fleetBuildingIds",
+        "kind": "repeated",
+        "type": "string",
+        "wire": "string",
+        "required": false,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "ChannelRewardInfoRequest",
+    "reference": [
+      "../sea666-afk/sea666_welfare.py:510"
+    ],
+    "implementation": [
+      "src/automation/welfare.mjs:51",
+      "src/automation/welfare.mjs:52",
+      "src/game.mjs:50"
+    ],
+    "fields": [],
+    "response": "ChannelRewardInfoResponse",
+    "responses": [
+      "ChannelRewardInfoResponse"
+    ]
+  },
+  {
+    "request": "ChipMineListRequest",
+    "reference": [
+      "../sea666-afk/sea666_world_ext.py:143"
+    ],
+    "implementation": [
+      "src/automation/world.mjs:444"
+    ],
+    "fields": [],
+    "response": "ChipMineListResponse",
+    "responses": [
+      "ChipMineListResponse"
+    ]
+  },
+  {
+    "request": "ChipMineRequest",
+    "reference": [
+      "../sea666-afk/sea666_world_ext.py:155"
+    ],
+    "implementation": [
+      "src/automation/world.mjs:447"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "gridId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": "ChipMineResponse",
+    "responses": [
+      "ChipMineResponse"
+    ]
+  },
+  {
+    "request": "ChipMineRewardRequest",
+    "reference": [
+      "../sea666-afk/sea666_world_ext.py:182"
+    ],
+    "implementation": [
+      "src/automation/world.mjs:439"
+    ],
+    "fields": [],
+    "response": "ChipMineRewardResponse",
+    "responses": [
+      "ChipMineRewardResponse"
+    ]
+  },
+  {
+    "request": "ChipMineSendFleetRequest",
+    "reference": [
+      "../sea666-afk/sea666_world_ext.py:270"
+    ],
+    "implementation": [
+      "src/automation/world.mjs:451"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "gridId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      },
+      {
+        "number": 2,
+        "name": "index",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      },
+      {
+        "number": 3,
+        "name": "fleetId",
+        "kind": "scalar",
+        "type": "string",
+        "wire": "string",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "CityDefenceRequest",
+    "reference": [
+      "../sea666-afk/sea666_world_ext.py:534"
+    ],
+    "implementation": [
+      "src/automation/world.mjs:501"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "cityId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": "CityDefenceResponse",
+    "responses": [
+      "CityDefenceResponse"
+    ]
+  },
+  {
+    "request": "CityRecruitDefenceRequest",
+    "reference": [
+      "../sea666-afk/sea666_world_ext.py:543"
+    ],
+    "implementation": [
+      "src/automation/world.mjs:501"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "cityId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "ClaimActivityDailyActiveRewardRequest",
+    "reference": [
+      "../sea666-afk/sea666_activity.py:359"
+    ],
+    "implementation": [
+      "src/automation/activity.mjs:48"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "activityId",
+        "kind": "scalar",
+        "type": "int64",
+        "wire": "int64",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": "ClaimActivityDailyActiveRewardResponse",
+    "responses": [
+      "ClaimActivityDailyActiveRewardResponse"
+    ]
+  },
+  {
+    "request": "ClaimActivityDailyCheckInRewardRequest",
+    "reference": [
+      "../sea666-afk/sea666_activity.py:289"
+    ],
+    "implementation": [
+      "src/automation/activity.mjs:43"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "activityId",
+        "kind": "scalar",
+        "type": "int64",
+        "wire": "int64",
+        "required": false,
+        "optional": true
+      },
+      {
+        "number": 2,
+        "name": "checkId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": "ClaimActivityDailyCheckInRewardResponse",
+    "responses": [
+      "ClaimActivityDailyCheckInRewardResponse"
+    ]
+  },
+  {
+    "request": "ClaimBlindBoxScoreRewardRequest",
+    "reference": [
+      "../sea666-afk/sea666_activity.py:463"
+    ],
+    "implementation": [
+      "src/automation/activity.mjs:170"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "activityId",
+        "kind": "scalar",
+        "type": "int64",
+        "wire": "int64",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "ClaimCelebrationRewardRequest",
+    "reference": [
+      "../sea666-afk/sea666_blessing.py:215"
+    ],
+    "implementation": [
+      "src/automation/activity.mjs:254"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "activityId",
+        "kind": "scalar",
+        "type": "int64",
+        "wire": "int64",
+        "required": false,
+        "optional": true
+      },
+      {
+        "number": 2,
+        "name": "skinId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "ClaimDailyCombGiftRequest",
+    "reference": [
+      "../sea666-afk/sea666_activity.py:319"
+    ],
+    "implementation": [
+      "src/automation/activity.mjs:55"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "activityId",
+        "kind": "scalar",
+        "type": "int64",
+        "wire": "int64",
+        "required": false,
+        "optional": true
+      },
+      {
+        "number": 2,
+        "name": "giftId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "ClaimFreeSelectGiftRequest",
+    "reference": [
+      "../sea666-afk/sea666_activity.py:432"
+    ],
+    "implementation": [
+      "src/automation/activity.mjs:146"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "activityId",
+        "kind": "scalar",
+        "type": "int64",
+        "wire": "int64",
+        "required": false,
+        "optional": true
+      },
+      {
+        "number": 2,
+        "name": "giftId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "CollectBuildingProductRequest",
+    "reference": [
+      "../sea666-afk/sea666_island_once.py:459",
+      "../sea666-afk/sea666_island_once.py:465"
+    ],
+    "implementation": [
+      "src/actions.mjs:58",
+      "src/world.mjs:407"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "buildingId",
+        "kind": "repeated",
+        "type": "string",
+        "wire": "string",
+        "required": false,
+        "optional": false
+      }
+    ],
+    "response": "CollectBuildingProductResponse",
+    "responses": [
+      "CollectBuildingProductResponse"
+    ]
+  },
+  {
+    "request": "ComicDramaGotDailyRequest",
+    "reference": [
+      "../sea666-afk/sea666_welfare.py:635"
+    ],
+    "implementation": [
+      "src/automation/welfare.mjs:55"
+    ],
+    "fields": [],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "CommonBuyGoodsRequest",
+    "reference": [
+      "../sea666-afk/sea666_week_order.py:209"
+    ],
+    "implementation": [
+      "src/automation/activity.mjs:278"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "goods",
+        "kind": "repeated",
+        "type": "CommonGoods",
+        "required": false,
+        "optional": false
+      }
+    ],
+    "response": "CommonBuyGoodsResponse",
+    "responses": [
+      "CommonBuyGoodsResponse"
+    ]
+  },
+  {
+    "request": "CounterInfoRequest",
+    "reference": [
+      "../sea666-afk/sea666_guild.py:347"
+    ],
+    "implementation": [
+      "src/automation/guild.mjs:56",
+      "src/automation/guild.mjs:75",
+      "src/automation/guild.mjs:98",
+      "src/automation/guild.mjs:130",
+      "src/game.mjs:47"
+    ],
+    "fields": [],
+    "response": "CounterInfoResponse",
+    "responses": [
+      "CounterInfoResponse"
+    ]
+  },
+  {
+    "request": "DailyGiftPackRequest",
+    "reference": [
+      "../sea666-afk/sea666_welfare.py:596"
+    ],
+    "implementation": [
+      "src/automation/service.mjs:125",
+      "src/automation/welfare.mjs:41",
+      "src/automation/welfare.mjs:43",
+      "src/dailies.mjs:411",
+      "src/dailies.mjs:563",
+      "src/dailies.mjs:574",
+      "src/game.mjs:18"
+    ],
+    "fields": [],
+    "response": "DailyGiftPackResponse",
+    "responses": [
+      "DailyGiftPackResponse"
+    ]
+  },
+  {
+    "request": "DailyTaskInfoRequest",
+    "reference": [
+      "../sea666-afk/sea666_welfare.py:176"
+    ],
+    "implementation": [
+      "src/app.mjs:24",
+      "src/automation/service.mjs:123",
+      "src/automation/service.mjs:124",
+      "src/automation/welfare.mjs:26",
+      "src/automation/welfare.mjs:28",
+      "src/automation/welfare.mjs:29",
+      "src/dailies.mjs:347",
+      "src/dailies.mjs:503",
+      "src/game.mjs:17",
+      "src/log-errors.mjs:4"
+    ],
+    "fields": [],
+    "response": "DailyTaskInfoResponse",
+    "responses": [
+      "DailyTaskInfoResponse"
+    ]
+  },
+  {
+    "request": "DecomposeEquipRequest",
+    "reference": [
+      "../sea666-afk/sea666_equip.py:400"
+    ],
+    "implementation": [
+      "src/automation/cultivation.mjs:272"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "uid",
+        "kind": "repeated",
+        "type": "int64",
+        "wire": "int64",
+        "required": false,
+        "optional": false
+      }
+    ],
+    "response": "DecomposeEquipResponse",
+    "responses": [
+      "DecomposeEquipResponse"
+    ]
+  },
+  {
+    "request": "DivingLevelUpRequest",
+    "reference": [
+      "../sea666-afk/sea666_gather.py:363"
+    ],
+    "implementation": [
+      "src/automation/base.mjs:gather"
+    ],
+    "fields": [],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "DivingRequest",
+    "reference": [
+      "../sea666-afk/sea666_gather.py:210"
+    ],
+    "implementation": [
+      "src/automation/base.mjs:320",
+      "src/boats.mjs:55"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "reward",
+        "kind": "message",
+        "type": "DisplayAssetPackage",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": "DivingResponse",
+    "responses": [
+      "DivingResponse"
+    ]
+  },
+  {
+    "request": "DrawAfkLevelRewardRequest",
+    "reference": [
+      "../sea666-afk/sea666_afk_once.py:236",
+      "../sea666-afk/sea666_afk_once.py:244",
+      "../sea666-afk/sea666_proto_draft.py:35"
+    ],
+    "implementation": [
+      "src/actions.mjs:34",
+      "src/automation/base.mjs:357"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "level",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": "DrawAfkLevelRewardResponse",
+    "responses": [
+      "DrawAfkLevelRewardResponse"
+    ]
+  },
+  {
+    "request": "DrawAfkRewardRequest",
+    "reference": [
+      "../sea666-afk/sea666_afk_once.py:134",
+      "../sea666-afk/sea666_afk_once.py:304",
+      "../sea666-afk/sea666_proto_draft.py:16",
+      "../sea666-afk/sea666_proto_draft.py:1821"
+    ],
+    "implementation": [
+      "src/actions.mjs:27",
+      "src/automation/base.mjs:348",
+      "src/dailies.mjs:200"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "useAdvCard",
+        "kind": "scalar",
+        "type": "bool",
+        "wire": "bool",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": "DrawAfkRewardResponse",
+    "responses": [
+      "DrawAfkRewardResponse"
+    ]
+  },
+  {
+    "request": "DrawDailyRewardRequest",
+    "reference": [
+      "../sea666-afk/sea666_welfare.py:251",
+      "../sea666-afk/sea666_welfare.py:268"
+    ],
+    "implementation": [
+      "src/actions.mjs:116",
+      "src/dailies.mjs:81"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "index",
+        "kind": "repeated",
+        "type": "int32",
+        "wire": "int32",
+        "required": false,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "DrawDailyTaskRewardRequest",
+    "reference": [
+      "../sea666-afk/sea666_welfare.py:212"
+    ],
+    "implementation": [
+      "src/actions.mjs:91",
+      "src/automation/welfare.mjs:27",
+      "src/dailies.mjs:516",
+      "src/server.mjs:1581"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "id",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": "DrawDailyTaskRewardResponse",
+    "responses": [
+      "DrawDailyTaskRewardResponse"
+    ]
+  },
+  {
+    "request": "DrawMainTaskRewardRequest",
+    "reference": [
+      "../sea666-afk/sea666_welfare.py:345"
+    ],
+    "implementation": [
+      "src/actions.mjs:149",
+      "src/tasks.mjs:101"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "taskId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "DrawNewbieLoginRewardRequest",
+    "reference": [
+      "../sea666-afk/sea666_welfare.py:650"
+    ],
+    "implementation": [
+      "src/automation/welfare.mjs:80",
+      "src/collections.mjs:71"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "day",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "DrawShipRewardRequest",
+    "reference": [
+      "../sea666-afk/sea666_cargo.py:153",
+      "../sea666-afk/sea666_cargo.py:165"
+    ],
+    "implementation": [
+      "src/automation/base.mjs:255",
+      "src/cargo.mjs:49"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "index",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": "DrawShipRewardResponse",
+    "responses": [
+      "DrawShipRewardResponse"
+    ]
+  },
+  {
+    "request": "DrawWeeklyRewardRequest",
+    "reference": [
+      "../sea666-afk/sea666_welfare.py:286",
+      "../sea666-afk/sea666_welfare.py:301"
+    ],
+    "implementation": [
+      "src/actions.mjs:124",
+      "src/app.mjs:197",
+      "src/dailies.mjs:90",
+      "src/dailies.mjs:548"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "index",
+        "kind": "repeated",
+        "type": "int32",
+        "wire": "int32",
+        "required": false,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "EmailBoxRequest",
+    "reference": [
+      "../sea666-afk/sea666_welfare.py:134"
+    ],
+    "implementation": [
+      "src/automation/service.mjs:133",
+      "src/automation/welfare.mjs:32",
+      "src/automation/welfare.mjs:34",
+      "src/claim-rewards.mjs:46",
+      "src/game.mjs:12"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "pageNo",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": "EmailBoxResponse",
+    "responses": [
+      "EmailBoxResponse"
+    ]
+  },
+  {
+    "request": "EndSalvageRequest",
+    "reference": [
+      "../sea666-afk/sea666_gather.py:228"
+    ],
+    "implementation": [
+      "src/automation/base.mjs:330",
+      "src/boats.mjs:51"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "pickedFloaters",
+        "kind": "repeated",
+        "type": "DispWaterFloater",
+        "required": false,
+        "optional": false
+      }
+    ],
+    "response": "EndSalvageResponse",
+    "responses": [
+      "EndSalvageResponse"
+    ]
+  },
+  {
+    "request": "EnhanceBadgeRequest",
+    "reference": [
+      "../sea666-afk/sea666_hero.py:415"
+    ],
+    "implementation": [
+      "src/automation/cultivation.mjs:98"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "uid",
+        "kind": "scalar",
+        "type": "int64",
+        "wire": "int64",
+        "required": true,
+        "optional": false
+      },
+      {
+        "number": 2,
+        "name": "decomposeUid",
+        "kind": "repeated",
+        "type": "int64",
+        "wire": "int64",
+        "required": false,
+        "optional": false
+      },
+      {
+        "number": 3,
+        "name": "expItemNum",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": "EnhanceBadgeResponse",
+    "responses": [
+      "EnhanceBadgeResponse"
+    ]
+  },
+  {
+    "request": "EnhanceEquipRequest",
+    "reference": [
+      "../sea666-afk/sea666_hero.py:353"
+    ],
+    "implementation": [
+      "src/automation/cultivation.mjs:92",
+      "src/hero-equipment.mjs:118"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "uid",
+        "kind": "scalar",
+        "type": "int64",
+        "wire": "int64",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "EquipsRequest",
+    "reference": [
+      "../sea666-afk/sea666_equip.py:342",
+      "../sea666-afk/sea666_hero.py:311"
+    ],
+    "implementation": [
+      "src/automation/cultivation.mjs:92",
+      "src/automation/cultivation.mjs:266",
+      "src/game.mjs:13",
+      "src/hero-equipment.mjs:46",
+      "src/hero-equipment.mjs:119"
+    ],
+    "fields": [],
+    "response": "EquipsResponse",
+    "responses": [
+      "EquipsResponse"
+    ]
+  },
+  {
+    "request": "ExpeditionChallengeRequest",
+    "reference": [
+      "../sea666-afk/sea666_battle.py:1004"
+    ],
+    "implementation": [
+      "src/automation/battle.mjs:290"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "raidId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      },
+      {
+        "number": 2,
+        "name": "stageId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": "ExpeditionChallengeResponse",
+    "responses": [
+      "ExpeditionChallengeResponse"
+    ]
+  },
+  {
+    "request": "ExpeditionChooseBuffRequest",
+    "reference": [
+      "../sea666-afk/sea666_battle.py:893"
+    ],
+    "implementation": [
+      "src/automation/battle.mjs:287"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "raidId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      },
+      {
+        "number": 2,
+        "name": "buffId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": "ExpeditionChooseBuffResponse",
+    "responses": [
+      "ExpeditionChooseBuffResponse"
+    ]
+  },
+  {
+    "request": "ExpeditionChooseRaidRequest",
+    "reference": [
+      "../sea666-afk/sea666_battle.py:945"
+    ],
+    "implementation": [
+      "src/automation/battle.mjs:275"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "raidId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      },
+      {
+        "number": 2,
+        "name": "heroId",
+        "kind": "repeated",
+        "type": "string",
+        "wire": "string",
+        "required": false,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "ExpeditionGotFinalRewardRequest",
+    "reference": [
+      "../sea666-afk/sea666_battle.py:682"
+    ],
+    "implementation": [
+      "src/automation/battle.mjs:295"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "raidId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "ExpeditionInfoRequest",
+    "reference": [
+      "../sea666-afk/sea666_battle.py:581"
+    ],
+    "implementation": [
+      "src/automation/battle.mjs:266",
+      "src/automation/battle.mjs:275",
+      "src/automation/battle.mjs:283",
+      "src/automation/battle.mjs:290",
+      "src/automation/battle.mjs:293",
+      "src/automation/battle.mjs:295",
+      "src/automation/cultivation.mjs:262"
+    ],
+    "fields": [],
+    "response": "ExpeditionInfoResponse",
+    "responses": [
+      "ExpeditionInfoResponse"
+    ]
+  },
+  {
+    "request": "ExpeditionSweepRequest",
+    "reference": [
+      "../sea666-afk/sea666_battle.py:637"
+    ],
+    "implementation": [
+      "src/automation/battle.mjs:268"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "raidId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": "ExpeditionSweepResponse",
+    "responses": [
+      "ExpeditionSweepResponse"
+    ]
+  },
+  {
+    "request": "FarmHarvestRequest",
+    "reference": [
+      "../sea666-afk/sea666_farm.py:281",
+      "../sea666-afk/sea666_farm.py:282",
+      "../sea666-afk/sea666_farm.py:289",
+      "../sea666-afk/sea666_farm.py:292",
+      "../sea666-afk/sea666_island_once.py:484",
+      "../sea666-afk/sea666_island_once.py:488"
+    ],
+    "implementation": [
+      "src/automation/base.mjs:171",
+      "src/world.mjs:523",
+      "src/world.mjs:853",
+      "src/world.mjs:858"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "buildingId",
+        "kind": "repeated",
+        "type": "string",
+        "wire": "string",
+        "required": false,
+        "optional": false
+      }
+    ],
+    "response": "FarmHarvestResponse",
+    "responses": [
+      "FarmHarvestResponse"
+    ]
+  },
+  {
+    "request": "FarmPlantRequest",
+    "reference": [
+      "../sea666-afk/sea666_farm.py:377",
+      "../sea666-afk/sea666_farm.py:395",
+      "../sea666-afk/sea666_farm.py:408",
+      "../sea666-afk/sea666_farm.py:417",
+      "../sea666-afk/sea666_farm.py:436"
+    ],
+    "implementation": [
+      "src/automation/base.mjs:211",
+      "src/world.mjs:653"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "args",
+        "kind": "repeated",
+        "type": "PlantArg",
+        "required": false,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "FarmSpeedUpRequest",
+    "reference": [
+      "../sea666-afk/sea666_farm.py:471",
+      "../sea666-afk/sea666_farm.py:487"
+    ],
+    "implementation": [
+      "src/automation/base.mjs:217"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "buildingId",
+        "kind": "scalar",
+        "type": "string",
+        "wire": "string",
+        "required": true,
+        "optional": false
+      },
+      {
+        "number": 2,
+        "name": "param",
+        "kind": "message",
+        "type": "SpeedUpCostParam",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "FillCargoShipRequest",
+    "reference": [
+      "../sea666-afk/sea666_cargo.py:220",
+      "../sea666-afk/sea666_cargo.py:233"
+    ],
+    "implementation": [
+      "src/automation/base.mjs:257",
+      "src/cargo.mjs:33"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "shipIndex",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      },
+      {
+        "number": 2,
+        "name": "cargoIndex",
+        "kind": "repeated",
+        "type": "int32",
+        "wire": "int32",
+        "required": false,
+        "optional": false
+      }
+    ],
+    "response": "FillCargoShipResponse",
+    "responses": [
+      "FillCargoShipResponse"
+    ]
+  },
+  {
+    "request": "FinishGuildOrderRequest",
+    "reference": [
+      "../sea666-afk/sea666_guild.py:444"
+    ],
+    "implementation": [
+      "src/automation/guild.mjs:62"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "cityId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": "FinishGuildOrderResponse",
+    "responses": [
+      "FinishGuildOrderResponse"
+    ]
+  },
+  {
+    "request": "FinishUpgradeBuildingRequest",
+    "reference": [
+      "../sea666-afk/sea666_island_once.py:215"
+    ],
+    "implementation": [
+      "src/actions.mjs:67",
+      "src/world.mjs:419"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "buildingId",
+        "kind": "scalar",
+        "type": "string",
+        "wire": "string",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "FinishWeekOrderRequest",
+    "reference": [
+      "../sea666-afk/sea666_week_order.py:232"
+    ],
+    "implementation": [
+      "src/automation/activity.mjs:281"
+    ],
+    "fields": [],
+    "response": "FinishWeekOrderResponse",
+    "responses": [
+      "FinishWeekOrderResponse"
+    ]
+  },
+  {
+    "request": "FinishWorkerOrderRequest",
+    "reference": [
+      "../sea666-afk/sea666_resident.py:334",
+      "../sea666-afk/sea666_resident.py:347"
+    ],
+    "implementation": [
+      "src/actions.mjs:172",
+      "src/automation/base.mjs:239",
+      "src/automation/service.mjs:155",
+      "src/world.mjs:573",
+      "src/world.mjs:935"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "index",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": "FinishWorkerOrderResponse",
+    "responses": [
+      "FinishWorkerOrderResponse"
+    ]
+  },
+  {
+    "request": "FishingLevelUpRequest",
+    "reference": [
+      "../sea666-afk/sea666_gather.py:355"
+    ],
+    "implementation": [
+      "src/automation/base.mjs:gather"
+    ],
+    "fields": [],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "FreePetRequest",
+    "reference": [
+      "../sea666-afk/sea666_pet.py:525"
+    ],
+    "implementation": [
+      "src/automation/cultivation.mjs:272"
+    ],
+    "fields": [
+      {
+        "number": 2,
+        "name": "petUid",
+        "kind": "repeated",
+        "type": "int64",
+        "wire": "int64",
+        "required": false,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "GainBigFishRequest",
+    "reference": [
+      "../sea666-afk/sea666_gather.py:115"
+    ],
+    "implementation": [
+      "src/automation/base.mjs:308",
+      "src/fishing.mjs:30"
+    ],
+    "fields": [],
+    "response": "GainBigResponse",
+    "responses": [
+      "GainBigResponse"
+    ]
+  },
+  {
+    "request": "GainFactoryProduceRequest",
+    "reference": [
+      "../sea666-afk/sea666_factory.py:112",
+      "../sea666-afk/sea666_factory.py:127",
+      "../sea666-afk/sea666_farm.py:168",
+      "../sea666-afk/sea666_farm.py:173",
+      "../sea666-afk/sea666_island_once.py:472",
+      "../sea666-afk/sea666_island_once.py:477",
+      "../sea666-afk/sea666_workshop.py:263"
+    ],
+    "implementation": [
+      "src/actions.mjs:50",
+      "src/automation/activity.mjs:221",
+      "src/automation/production.mjs:109",
+      "src/world.mjs:395"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "buildingId",
+        "kind": "scalar",
+        "type": "string",
+        "wire": "string",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": "GainFactoryProduceResponse",
+    "responses": [
+      "GainFactoryProduceResponse"
+    ]
+  },
+  {
+    "request": "GetFormationRequest",
+    "reference": [
+      "../sea666-afk/sea666_pet_museum.py:188"
+    ],
+    "implementation": [
+      "src/automation/cultivation.mjs:259",
+      "src/automation/cultivation.mjs:384",
+      "src/game.mjs:11"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "module",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": "GetFormationResponse",
+    "responses": [
+      "GetFormationResponse"
+    ]
+  },
+  {
+    "request": "GetMaturePetRequest",
+    "reference": [
+      "../sea666-afk/sea666_pet.py:304",
+      "../sea666-afk/sea666_pet_museum.py:103"
+    ],
+    "implementation": [
+      "src/automation/cultivation.mjs:198"
+    ],
+    "fields": [],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "GetNextOrderOTDRewardRequest",
+    "reference": [
+      "../sea666-afk/sea666_resident.py:425",
+      "../sea666-afk/sea666_resident.py:437"
+    ],
+    "implementation": [
+      "src/actions.mjs:165",
+      "src/automation/base.mjs:247",
+      "src/tasks.mjs:195"
+    ],
+    "fields": [],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "GiveUpResFieldRequest",
+    "reference": [
+      "../sea666-afk/sea666_world.py:1073",
+      "../sea666-afk/sea666_world.py:1134"
+    ],
+    "implementation": [
+      "src/actions.mjs:243",
+      "src/automation/world.mjs:432",
+      "src/world.mjs:1162"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "resFieldGridIdx",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "GotAchievementRewardRequest",
+    "reference": [
+      "../sea666-afk/sea666_welfare.py:572"
+    ],
+    "implementation": [
+      "src/actions.mjs:99",
+      "src/tasks.mjs:153"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "id",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "GotChannelRewardRequest",
+    "reference": [
+      "../sea666-afk/sea666_welfare.py:530"
+    ],
+    "implementation": [
+      "src/automation/welfare.mjs:52"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "rewardId",
+        "kind": "scalar",
+        "type": "string",
+        "wire": "string",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "GotFreeDailyPackRequest",
+    "reference": [
+      "../sea666-afk/sea666_welfare.py:614"
+    ],
+    "implementation": [
+      "src/actions.mjs:132",
+      "src/automation/welfare.mjs:43",
+      "src/dailies.mjs:128"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "packId",
+        "kind": "scalar",
+        "type": "string",
+        "wire": "string",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "GotGuildTitleRewardRequest",
+    "reference": [
+      "../sea666-afk/sea666_guild.py:331"
+    ],
+    "implementation": [
+      "src/automation/guild.mjs:12"
+    ],
+    "fields": [],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "GotGuildWelfarePackRequest",
+    "reference": [
+      "../sea666-afk/sea666_guild.py:313",
+      "../sea666-afk/sea666_welfare.py:634"
+    ],
+    "implementation": [
+      "src/automation/guild.mjs:41",
+      "src/client.mjs:7",
+      "src/guild.mjs:85"
+    ],
+    "fields": [],
+    "response": "GotGuildWelfarePackResponse",
+    "responses": [
+      "GotGuildWelfarePackResponse"
+    ]
+  },
+  {
+    "request": "GotHeroRecruitTaskRequest",
+    "reference": [
+      "../sea666-afk/sea666_hero.py:572"
+    ],
+    "implementation": [
+      "src/automation/cultivation.mjs:146"
+    ],
+    "fields": [],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "GotLeagueBonusItemRequest",
+    "reference": [
+      "../sea666-afk/sea666_league.py:212"
+    ],
+    "implementation": [
+      "src/automation/battle.mjs:226"
+    ],
+    "fields": [],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "GotMyGuildAidRequest",
+    "reference": [
+      "../sea666-afk/sea666_guild.py:295"
+    ],
+    "implementation": [
+      "src/automation/guild.mjs:70"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "type",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "GotTradeAchievementRequest",
+    "reference": [
+      "../sea666-afk/sea666_world.py:807"
+    ],
+    "implementation": [
+      "src/automation/world.mjs:583"
+    ],
+    "fields": [],
+    "response": "GotTradeAchievementResponse",
+    "responses": [
+      "GotTradeAchievementResponse"
+    ]
+  },
+  {
+    "request": "GotTradeReportRequest",
+    "reference": [
+      "../sea666-afk/sea666_world.py:794"
+    ],
+    "implementation": [
+      "src/automation/world.mjs:582"
+    ],
+    "fields": [],
+    "response": "GotTTradeReportResponse",
+    "responses": [
+      "GotTTradeReportResponse"
+    ]
+  },
+  {
+    "request": "GotUniqueLotteryFreeRequest",
+    "reference": [
+      "../sea666-afk/sea666_welfare.py:637"
+    ],
+    "implementation": [
+      "src/automation/welfare.mjs:73"
+    ],
+    "fields": [],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "GotVipDailyRewardRequest",
+    "reference": [
+      "../sea666-afk/sea666_welfare.py:470"
+    ],
+    "implementation": [
+      "src/automation/welfare.mjs:48"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "vipLevel",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "GotWorldOnlineRwdRequest",
+    "reference": [
+      "../sea666-afk/sea666_welfare.py:638",
+      "../sea666-afk/sea666_world_ext.py:395"
+    ],
+    "implementation": [
+      "src/automation/world.mjs:485"
+    ],
+    "fields": [],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "GuildAidAskRequest",
+    "reference": [
+      "../sea666-afk/sea666_guild.py:497"
+    ],
+    "implementation": [
+      "src/automation/guild.mjs:112"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "reqItemId",
+        "kind": "scalar",
+        "type": "string",
+        "wire": "string",
+        "required": true,
+        "optional": false
+      },
+      {
+        "number": 2,
+        "name": "type",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "GuildAidHelpRequest",
+    "reference": [
+      "../sea666-afk/sea666_guild.py:248",
+      "../sea666-afk/sea666_guild.py:271"
+    ],
+    "implementation": [
+      "src/automation/guild.mjs:126"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "reqId",
+        "kind": "repeated",
+        "type": "int64",
+        "wire": "int64",
+        "required": false,
+        "optional": false
+      },
+      {
+        "number": 2,
+        "name": "type",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "GuildAidListRequest",
+    "reference": [
+      "../sea666-afk/sea666_guild.py:140"
+    ],
+    "implementation": [
+      "src/automation/guild.mjs:73",
+      "src/automation/guild.mjs:133",
+      "src/client.mjs:7",
+      "src/dailies.mjs:324",
+      "src/guild.mjs:53"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "type",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": "GuildAidListResponse",
+    "responses": [
+      "GuildAidListResponse"
+    ]
+  },
+  {
+    "request": "GuildCityInfoRequest",
+    "reference": [
+      "../sea666-afk/sea666_guild.py:367"
+    ],
+    "implementation": [
+      "src/automation/guild.mjs:53",
+      "src/client.mjs:7",
+      "src/dailies.mjs:323"
+    ],
+    "fields": [],
+    "response": "GuildCityInfoResponse",
+    "responses": [
+      "GuildCityInfoResponse"
+    ]
+  },
+  {
+    "request": "GuildOrderRequest",
+    "reference": [
+      "../sea666-afk/sea666_guild.py:356"
+    ],
+    "implementation": [
+      "src/automation/base.mjs:81",
+      "src/automation/guild.mjs:59",
+      "src/client.mjs:8",
+      "src/game.mjs:37"
+    ],
+    "fields": [],
+    "response": "GuildOrderResponse",
+    "responses": [
+      "GuildOrderResponse"
+    ]
+  },
+  {
+    "request": "GuildShipOrderRequest",
+    "reference": [
+      "../sea666-afk/sea666_guild.py:756"
+    ],
+    "implementation": [
+      "src/automation/guild.mjs:203"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "shipId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      },
+      {
+        "number": 2,
+        "name": "crewId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "GuildShipRequest",
+    "reference": [
+      "../sea666-afk/sea666_guild.py:597"
+    ],
+    "implementation": [
+      "src/automation/guild.mjs:183",
+      "src/automation/guild.mjs:203",
+      "src/automation/guild.mjs:209"
+    ],
+    "fields": [],
+    "response": "GuildShipResponse",
+    "responses": [
+      "GuildShipResponse"
+    ]
+  },
+  {
+    "request": "GuildShipSeekRequest",
+    "reference": [
+      "../sea666-afk/sea666_guild.py:805"
+    ],
+    "implementation": [
+      "src/automation/guild.mjs:209"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "shipId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "GuildTechInfoRequest",
+    "reference": [
+      "../sea666-afk/sea666_guild.py:523"
+    ],
+    "implementation": [
+      "src/automation/guild.mjs:16",
+      "src/client.mjs:8",
+      "src/game.mjs:36"
+    ],
+    "fields": [],
+    "response": "GuildTechInfoResponse",
+    "responses": [
+      "GuildTechInfoResponse"
+    ]
+  },
+  {
+    "request": "HeroExclusiveLevelUpRequest",
+    "reference": [
+      "../sea666-afk/sea666_hero.py:189"
+    ],
+    "implementation": [
+      "src/automation/cultivation.mjs:54"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "heroId",
+        "kind": "scalar",
+        "type": "string",
+        "wire": "string",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": "HeroExclusiveNextUpResponse",
+    "responses": [
+      "HeroExclusiveNextUpResponse"
+    ]
+  },
+  {
+    "request": "HeroExclusiveStarUpRequest",
+    "reference": [
+      "../sea666-afk/sea666_hero.py:212"
+    ],
+    "implementation": [
+      "src/automation/cultivation.mjs:54"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "heroId",
+        "kind": "scalar",
+        "type": "string",
+        "wire": "string",
+        "required": true,
+        "optional": false
+      },
+      {
+        "number": 2,
+        "name": "universal",
+        "kind": "scalar",
+        "type": "bool",
+        "wire": "bool",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": "HeroExclusiveNextUpResponse",
+    "responses": [
+      "HeroExclusiveNextUpResponse"
+    ]
+  },
+  {
+    "request": "HeroLevelUpRequest",
+    "reference": [
+      "../sea666-afk/sea666_hero.py:110"
+    ],
+    "implementation": [
+      "src/automation/cultivation.mjs:41",
+      "src/heroes.mjs:258"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "heroId",
+        "kind": "scalar",
+        "type": "string",
+        "wire": "string",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "HeroRecruitRequest",
+    "reference": [
+      "../sea666-afk/sea666_hero.py:641"
+    ],
+    "implementation": [
+      "src/automation/cultivation.mjs:30"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "heroId",
+        "kind": "scalar",
+        "type": "string",
+        "wire": "string",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "HeroSkillLevelUpRequest",
+    "reference": [
+      "../sea666-afk/sea666_hero.py:147"
+    ],
+    "implementation": [
+      "src/automation/cultivation.mjs:41",
+      "src/heroes.mjs:261"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "heroId",
+        "kind": "scalar",
+        "type": "string",
+        "wire": "string",
+        "required": true,
+        "optional": false
+      },
+      {
+        "number": 2,
+        "name": "skillIdx",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "HeroSkillUpgradeRequest",
+    "reference": [
+      "../sea666-afk/sea666_hero.py:171"
+    ],
+    "implementation": [
+      "src/automation/cultivation.mjs:86"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "heroId",
+        "kind": "scalar",
+        "type": "string",
+        "wire": "string",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "HeroStarUpRequest",
+    "reference": [
+      "../sea666-afk/sea666_hero.py:125"
+    ],
+    "implementation": [
+      "src/automation/cultivation.mjs:41",
+      "src/heroes.mjs:260",
+      "src/heroes.mjs:263",
+      "src/log-errors.mjs:10"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "heroId",
+        "kind": "scalar",
+        "type": "string",
+        "wire": "string",
+        "required": true,
+        "optional": false
+      },
+      {
+        "number": 2,
+        "name": "universal",
+        "kind": "scalar",
+        "type": "bool",
+        "wire": "bool",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": "HeroStarUpResponse",
+    "responses": [
+      "HeroStarUpResponse"
+    ]
+  },
+  {
+    "request": "LeagueBattlePassInfoRequest",
+    "reference": [
+      "../sea666-afk/sea666_league.py:290"
+    ],
+    "implementation": [
+      "src/automation/battle.mjs:233"
+    ],
+    "fields": [],
+    "response": "LeagueBattlePassInfoResponse",
+    "responses": [
+      "LeagueBattlePassInfoResponse"
+    ]
+  },
+  {
+    "request": "LeagueFightRequest",
+    "reference": [
+      "../sea666-afk/sea666_league.py:377"
+    ],
+    "implementation": [
+      "src/automation/battle.mjs:245"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "playerId",
+        "kind": "scalar",
+        "type": "int64",
+        "wire": "int64",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": "LeagueFightResponse",
+    "responses": [
+      "LeagueFightResponse"
+    ]
+  },
+  {
+    "request": "LeagueGotBonusDanRequest",
+    "reference": [
+      "../sea666-afk/sea666_league.py:253"
+    ],
+    "implementation": [
+      "src/automation/battle.mjs:230"
+    ],
+    "fields": [],
+    "response": "LeagueGotBonusDanResponse",
+    "responses": [
+      "LeagueGotBonusDanResponse"
+    ]
+  },
+  {
+    "request": "LeagueGotPassRewardRequest",
+    "reference": [
+      "../sea666-afk/sea666_league.py:312"
+    ],
+    "implementation": [
+      "src/automation/battle.mjs:235"
+    ],
+    "fields": [],
+    "response": "LeagueGotPassRewardResponse",
+    "responses": [
+      "LeagueGotPassRewardResponse"
+    ]
+  },
+  {
+    "request": "LeagueInfoRequest",
+    "reference": [
+      "../sea666-afk/sea666_league.py:159"
+    ],
+    "implementation": [
+      "src/automation/battle.mjs:225",
+      "src/automation/battle.mjs:226",
+      "src/automation/battle.mjs:228",
+      "src/automation/battle.mjs:241",
+      "src/automation/cultivation.mjs:261",
+      "src/dailies.mjs:328"
+    ],
+    "fields": [],
+    "response": "LeagueInfoResponse",
+    "responses": [
+      "LeagueInfoResponse"
+    ]
+  },
+  {
+    "request": "LeagueRefreshRivalRequest",
+    "reference": [
+      "../sea666-afk/sea666_league.py:175"
+    ],
+    "implementation": [
+      "src/automation/battle.mjs:242"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "isRefresh",
+        "kind": "scalar",
+        "type": "bool",
+        "wire": "bool",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": "LeagueRefreshRivalResponse",
+    "responses": [
+      "LeagueRefreshRivalResponse"
+    ]
+  },
+  {
+    "request": "LimitedBossGetRewardRequest",
+    "reference": [
+      "../sea666-afk/sea666_world_ext.py:759"
+    ],
+    "implementation": [
+      "src/automation/world.mjs:222"
+    ],
+    "fields": [],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "LimitedBossInfoRequest",
+    "reference": [
+      "../sea666-afk/sea666_world_ext.py:744"
+    ],
+    "implementation": [
+      "src/automation/world.mjs:220"
+    ],
+    "fields": [],
+    "response": "LimitedBossInfoResponse",
+    "responses": [
+      "LimitedBossInfoResponse"
+    ]
+  },
+  {
+    "request": "LimitedBossOpenRequest",
+    "reference": [
+      "../sea666-afk/sea666_world_ext.py:718"
+    ],
+    "implementation": [
+      "src/automation/world.mjs:219",
+      "src/automation/world.mjs:222",
+      "src/game.mjs:41"
+    ],
+    "fields": [],
+    "response": "LimitedBossOpenResponse",
+    "responses": [
+      "LimitedBossOpenResponse"
+    ]
+  },
+  {
+    "request": "LimitedBossSendFleetsRequest",
+    "reference": [
+      "../sea666-afk/sea666_world_ext.py:797"
+    ],
+    "implementation": [
+      "src/automation/world.mjs:226"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "fleetBuildingIds",
+        "kind": "repeated",
+        "type": "string",
+        "wire": "string",
+        "required": false,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "LoginFinishRequest",
+    "reference": [
+      "../sea666-afk/sea666_activity.py:224"
+    ],
+    "implementation": [
+      "src/automation/base.mjs:16",
+      "src/automation/welfare.mjs:8",
+      "src/server.mjs:628"
+    ],
+    "fields": [],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "LoginRequest",
+    "reference": [
+      "../sea666-afk/sea666_proto_draft.py:41",
+      "../sea666-afk/sea666_proto_draft.py:1845",
+      "../sea666-afk/sea666_session.py:210"
+    ],
+    "implementation": [
+      "src/capture.mjs:217",
+      "src/client.mjs:88",
+      "src/client.mjs:103"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "testAccount",
+        "kind": "scalar",
+        "type": "string",
+        "wire": "string",
+        "required": false,
+        "optional": true
+      },
+      {
+        "number": 4,
+        "name": "language",
+        "kind": "scalar",
+        "type": "string",
+        "wire": "string",
+        "required": false,
+        "optional": true
+      },
+      {
+        "number": 5,
+        "name": "superToken",
+        "kind": "scalar",
+        "type": "string",
+        "wire": "string",
+        "required": false,
+        "optional": true
+      },
+      {
+        "number": 6,
+        "name": "eworldParams",
+        "kind": "message",
+        "type": "EworldLoginParams",
+        "required": false,
+        "optional": true
+      },
+      {
+        "number": 7,
+        "name": "eworldClientInfo",
+        "kind": "message",
+        "type": "EworldClientInfo",
+        "required": false,
+        "optional": true
+      },
+      {
+        "number": 8,
+        "name": "worldId",
+        "kind": "scalar",
+        "type": "int64",
+        "wire": "int64",
+        "required": false,
+        "optional": true
+      },
+      {
+        "number": 9,
+        "name": "systemLanguage",
+        "kind": "scalar",
+        "type": "string",
+        "wire": "string",
+        "required": false,
+        "optional": true
+      },
+      {
+        "number": 10,
+        "name": "loginRateType",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": "LoginResponse",
+    "responses": [
+      "LoginResponse"
+    ]
+  },
+  {
+    "request": "MainTaskInfoRequest",
+    "reference": [
+      "../sea666-afk/sea666_welfare.py:317"
+    ],
+    "implementation": [
+      "src/automation/service.mjs:119",
+      "src/automation/service.mjs:121",
+      "src/automation/welfare.mjs:20",
+      "src/automation/welfare.mjs:53",
+      "src/automation/welfare.mjs:55",
+      "src/game.mjs:19",
+      "src/log-errors.mjs:5",
+      "src/tasks.mjs:72"
+    ],
+    "fields": [],
+    "response": "MainTaskInfoResponse",
+    "responses": [
+      "MainTaskInfoResponse"
+    ]
+  },
+  {
+    "request": "MakeEquipRequest",
+    "reference": [
+      "../sea666-afk/sea666_equip.py:264"
+    ],
+    "implementation": [
+      "src/automation/cultivation.mjs:287"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "buildingId",
+        "kind": "scalar",
+        "type": "string",
+        "wire": "string",
+        "required": true,
+        "optional": false
+      },
+      {
+        "number": 2,
+        "name": "makeId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      },
+      {
+        "number": 3,
+        "name": "universal",
+        "kind": "scalar",
+        "type": "bool",
+        "wire": "bool",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "MonthCardDailyRewardRequest",
+    "reference": [
+      "../sea666-afk/sea666_welfare.py:412"
+    ],
+    "implementation": [
+      "src/actions.mjs:140",
+      "src/automation/welfare.mjs:38"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "type",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "MonthCardRequest",
+    "reference": [
+      "../sea666-afk/sea666_welfare.py:384"
+    ],
+    "implementation": [
+      "src/automation/service.mjs:127",
+      "src/automation/welfare.mjs:37",
+      "src/automation/welfare.mjs:38",
+      "src/game.mjs:22"
+    ],
+    "fields": [],
+    "response": "MonthCardResponse",
+    "responses": [
+      "MonthCardResponse"
+    ]
+  },
+  {
+    "request": "MoveFleetsToCityRequest",
+    "reference": [
+      "../sea666-afk/sea666_world_ext.py:514",
+      "../sea666-afk/sea666_world_ext.py:563"
+    ],
+    "implementation": [
+      "src/automation/world.mjs:503"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "buildingId",
+        "kind": "repeated",
+        "type": "string",
+        "wire": "string",
+        "required": false,
+        "optional": false
+      },
+      {
+        "number": 2,
+        "name": "cityId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "MuseumCollectRevenueRequest",
+    "reference": [
+      "../sea666-afk/sea666_pet_museum.py:151"
+    ],
+    "implementation": [
+      "src/automation/cultivation.mjs:367"
+    ],
+    "fields": [],
+    "response": "MuseumCollectRevenueResponse",
+    "responses": [
+      "MuseumCollectRevenueResponse"
+    ]
+  },
+  {
+    "request": "MuseumCompleteExploreRequest",
+    "reference": [
+      "../sea666-afk/sea666_pet_museum.py:270",
+      "../sea666-afk/sea666_pet_museum.py:300"
+    ],
+    "implementation": [
+      "src/automation/cultivation.mjs:377"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "stageId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": "MuseumCompleteExploreResponse",
+    "responses": [
+      "MuseumCompleteExploreResponse"
+    ]
+  },
+  {
+    "request": "MuseumInfoRequest",
+    "reference": [
+      "../sea666-afk/sea666_pet_museum.py:122"
+    ],
+    "implementation": [
+      "src/automation/cultivation.mjs:366",
+      "src/automation/cultivation.mjs:374",
+      "src/automation/cultivation.mjs:386",
+      "src/automation/service.mjs:131",
+      "src/dailies.mjs:327"
+    ],
+    "fields": [],
+    "response": "MuseumInfoResponse",
+    "responses": [
+      "MuseumInfoResponse"
+    ]
+  },
+  {
+    "request": "MuseumRewardRequest",
+    "reference": [
+      "../sea666-afk/sea666_pet_museum.py:278"
+    ],
+    "implementation": [
+      "src/automation/cultivation.mjs:378"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "stageId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": "MuseumRewardResponse",
+    "responses": [
+      "MuseumRewardResponse"
+    ]
+  },
+  {
+    "request": "MuseumSpeedUpExploreRequest",
+    "reference": [
+      "../sea666-afk/sea666_pet_museum.py:291"
+    ],
+    "implementation": [
+      "src/automation/cultivation.mjs:372"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "stageId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      },
+      {
+        "number": 2,
+        "name": "useNum",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": "MuseumSpeedUpExploreResponse",
+    "responses": [
+      "MuseumSpeedUpExploreResponse"
+    ]
+  },
+  {
+    "request": "MuseumStartExploreRequest",
+    "reference": [
+      "../sea666-afk/sea666_pet_museum.py:340"
+    ],
+    "implementation": [
+      "src/automation/cultivation.mjs:413"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "stageId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      },
+      {
+        "number": 2,
+        "name": "heroIds",
+        "kind": "repeated",
+        "type": "string",
+        "wire": "string",
+        "required": false,
+        "optional": false
+      },
+      {
+        "number": 3,
+        "name": "factor",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": "MuseumStartExploreResponse",
+    "responses": [
+      "MuseumStartExploreResponse"
+    ]
+  },
+  {
+    "request": "MyFleetsRequest",
+    "reference": [
+      "../sea666-afk/sea666_world.py:207",
+      "../sea666-afk/sea666_world_ext.py:89"
+    ],
+    "implementation": [
+      "src/automation/common.mjs:69",
+      "src/automation/cultivation.mjs:256",
+      "src/automation/world.mjs:65",
+      "src/automation/world.mjs:84",
+      "src/automation/world.mjs:113",
+      "src/automation/world.mjs:141",
+      "src/automation/world.mjs:151",
+      "src/automation/world.mjs:171",
+      "src/fleet-formation.mjs:27",
+      "src/fleet-formation.mjs:75",
+      "src/game.mjs:33",
+      "src/pirates.mjs:135",
+      "src/world.mjs:156"
+    ],
+    "fields": [],
+    "response": "MyFleetsResponse",
+    "responses": [
+      "MyFleetsResponse"
+    ]
+  },
+  {
+    "request": "MyResFieldsRequest",
+    "reference": [
+      "../sea666-afk/sea666_world.py:1022"
+    ],
+    "implementation": [
+      "src/automation/service.mjs:134",
+      "src/automation/service.mjs:135",
+      "src/automation/world.mjs:417",
+      "src/automation/world.mjs:432",
+      "src/game.mjs:35",
+      "src/world.mjs:155"
+    ],
+    "fields": [],
+    "response": "MyResFieldsResponse",
+    "responses": [
+      "MyResFieldsResponse"
+    ]
+  },
+  {
+    "request": "OnWaterRequest",
+    "reference": [
+      "../sea666-afk/sea666_activity.py:222",
+      "../sea666-afk/sea666_choice_event.py:72",
+      "../sea666-afk/sea666_equip.py:149",
+      "../sea666-afk/sea666_gather.py:68",
+      "../sea666-afk/sea666_island_once.py:55",
+      "../sea666-afk/sea666_pet.py:143",
+      "../sea666-afk/sea666_resident.py:202"
+    ],
+    "implementation": [
+      "src/antique-recruit.mjs:103",
+      "src/automation/activity.mjs:216",
+      "src/automation/activity.mjs:224",
+      "src/automation/activity.mjs:227",
+      "src/automation/activity.mjs:230",
+      "src/automation/activity.mjs:232",
+      "src/automation/base.mjs:79",
+      "src/automation/base.mjs:89",
+      "src/automation/base.mjs:119",
+      "src/automation/base.mjs:125",
+      "src/automation/base.mjs:132",
+      "src/automation/base.mjs:144",
+      "src/automation/base.mjs:150",
+      "src/automation/base.mjs:159",
+      "src/automation/base.mjs:168",
+      "src/automation/base.mjs:172",
+      "src/automation/base.mjs:181",
+      "src/automation/base.mjs:193",
+      "src/automation/base.mjs:205",
+      "src/automation/base.mjs:211",
+      "src/automation/base.mjs:217",
+      "src/automation/base.mjs:223",
+      "src/automation/base.mjs:236",
+      "src/automation/base.mjs:243",
+      "src/automation/base.mjs:247",
+      "src/automation/base.mjs:269",
+      "src/automation/base.mjs:285",
+      "src/automation/base.mjs:290",
+      "src/automation/base.mjs:300",
+      "src/automation/base.mjs:336",
+      "src/automation/base.mjs:340",
+      "src/automation/battle.mjs:159",
+      "src/automation/cultivation.mjs:114",
+      "src/automation/cultivation.mjs:115",
+      "src/automation/cultivation.mjs:133",
+      "src/automation/cultivation.mjs:134",
+      "src/automation/cultivation.mjs:197",
+      "src/automation/cultivation.mjs:198",
+      "src/automation/cultivation.mjs:199",
+      "src/automation/cultivation.mjs:206",
+      "src/automation/cultivation.mjs:219",
+      "src/automation/cultivation.mjs:232",
+      "src/automation/cultivation.mjs:237",
+      "src/automation/cultivation.mjs:251",
+      "src/automation/cultivation.mjs:277",
+      "src/automation/cultivation.mjs:282",
+      "src/automation/cultivation.mjs:284",
+      "src/automation/cultivation.mjs:287",
+      "src/automation/production.mjs:82",
+      "src/automation/production.mjs:89",
+      "src/automation/production.mjs:96",
+      "src/automation/production.mjs:110",
+      "src/automation/production.mjs:124",
+      "src/automation/production.mjs:144",
+      "src/automation/production.mjs:153",
+      "src/automation/production.mjs:172",
+      "src/automation/service.mjs:122",
+      "src/automation/service.mjs:132",
+      "src/automation/service.mjs:138",
+      "src/automation/service.mjs:144",
+      "src/automation/service.mjs:155",
+      "src/boats.mjs:62",
+      "src/dailies.mjs:151",
+      "src/dailies.mjs:151",
+      "src/dailies.mjs:155",
+      "src/fishing-upgrade.mjs:15",
+      "src/fishing.mjs:10",
+      "src/fleet-formation.mjs:22",
+      "src/fleet-formation.mjs:71",
+      "src/game.mjs:24",
+      "src/log-errors.mjs:9",
+      "src/loop.mjs:345",
+      "src/loop.mjs:451",
+      "src/pirates.mjs:111",
+      "src/server.mjs:1405",
+      "src/tasks.mjs:167",
+      "src/world.mjs:150"
+    ],
+    "fields": [],
+    "response": "OnWaterResponse",
+    "responses": [
+      "OnWaterResponse"
+    ]
+  },
+  {
+    "request": "PassStageGotRewardRequest",
+    "reference": [
+      "../sea666-afk/sea666_battle.py:234"
+    ],
+    "implementation": [
+      "src/automation/battle.mjs:55",
+      "src/automation/battle.mjs:60",
+      "src/automation/battle.mjs:117"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "stage",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": "PassStageGotRewardResponse",
+    "responses": [
+      "PassStageGotRewardResponse"
+    ]
+  },
+  {
+    "request": "PassStageRequest",
+    "reference": [
+      "../sea666-afk/sea666_battle.py:188",
+      "../sea666-afk/sea666_battle.py:216"
+    ],
+    "implementation": [
+      "src/automation/battle.mjs:112",
+      "src/automation/battle.mjs:117"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "stage",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": "PassStageResponse",
+    "responses": [
+      "PassStageResponse"
+    ]
+  },
+  {
+    "request": "PassStageStateRequest",
+    "reference": [
+      "../sea666-afk/sea666_battle.py:163"
+    ],
+    "implementation": [
+      "src/automation/battle.mjs:108",
+      "src/game.mjs:45"
+    ],
+    "fields": [],
+    "response": "PassStageStateResponse",
+    "responses": [
+      "PassStageStateResponse"
+    ]
+  },
+  {
+    "request": "PetBreedRequest",
+    "reference": [
+      "../sea666-afk/sea666_pet.py:443"
+    ],
+    "implementation": [
+      "src/automation/cultivation.mjs:219"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "petId",
+        "kind": "scalar",
+        "type": "string",
+        "wire": "string",
+        "required": true,
+        "optional": false
+      },
+      {
+        "number": 2,
+        "name": "universal",
+        "kind": "scalar",
+        "type": "bool",
+        "wire": "bool",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "PetFeedRequest",
+    "reference": [
+      "../sea666-afk/sea666_pet.py:335"
+    ],
+    "implementation": [
+      "src/automation/cultivation.mjs:206"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "jobIdx",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "PetLevelUpRequest",
+    "reference": [
+      "../sea666-afk/sea666_pet.py:568"
+    ],
+    "implementation": [
+      "src/automation/cultivation.mjs:228"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "buildingId",
+        "kind": "scalar",
+        "type": "string",
+        "wire": "string",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "PetUpgradeFeedRequest",
+    "reference": [
+      "../sea666-afk/sea666_pet.py:236"
+    ],
+    "implementation": [
+      "src/automation/cultivation.mjs:235"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "buildingId",
+        "kind": "scalar",
+        "type": "string",
+        "wire": "string",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "PetUpgradeRequest",
+    "reference": [
+      "../sea666-afk/sea666_pet.py:273"
+    ],
+    "implementation": [
+      "src/automation/cultivation.mjs:238"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "buildingId",
+        "kind": "scalar",
+        "type": "string",
+        "wire": "string",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "PickMadeEquipRequest",
+    "reference": [
+      "../sea666-afk/sea666_equip.py:199"
+    ],
+    "implementation": [
+      "src/automation/cultivation.mjs:283"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "buildingId",
+        "kind": "scalar",
+        "type": "string",
+        "wire": "string",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": "PickMadeEquipResponse",
+    "responses": [
+      "PickMadeEquipResponse"
+    ]
+  },
+  {
+    "request": "PickUpFloaterRequest",
+    "reference": [
+      "../sea666-afk/sea666_gather.py:158"
+    ],
+    "implementation": [
+      "src/automation/base.mjs:306",
+      "src/collections.mjs:48"
+    ],
+    "fields": [
+      {
+        "number": 2,
+        "name": "floaterId",
+        "kind": "repeated",
+        "type": "string",
+        "wire": "string",
+        "required": false,
+        "optional": false
+      }
+    ],
+    "response": "PickUpFloaterResponse",
+    "responses": [
+      "PickUpFloaterResponse"
+    ]
+  },
+  {
+    "request": "PingRequest",
+    "reference": [
+      "../sea666-afk/sea666_session.py:233"
+    ],
+    "implementation": [
+      "src/client.mjs:263"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "clientTimestamp",
+        "kind": "scalar",
+        "type": "int64",
+        "wire": "int64",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": "PingResponse",
+    "responses": [
+      "PingResponse"
+    ]
+  },
+  {
+    "request": "PirateKillRecordRequest",
+    "reference": [
+      "../sea666-afk/sea666_world.py:154"
+    ],
+    "implementation": [
+      "src/automation/world.mjs:318",
+      "src/game.mjs:34",
+      "src/pirates.mjs:133"
+    ],
+    "fields": [],
+    "response": "PirateKillRecordResponse",
+    "responses": [
+      "PirateKillRecordResponse"
+    ]
+  },
+  {
+    "request": "PirateSweepRequest",
+    "reference": [
+      "../sea666-afk/sea666_world.py:759"
+    ],
+    "implementation": [
+      "src/automation/world.mjs:344",
+      "src/dailies.mjs:312"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "uid",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": false,
+        "optional": true
+      },
+      {
+        "number": 2,
+        "name": "cityId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "QuickGotCampaignReportRequest",
+    "reference": [
+      "../sea666-afk/sea666_world.py:326"
+    ],
+    "implementation": [
+      "src/automation/world.mjs:164"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "campaignId",
+        "kind": "repeated",
+        "type": "int64",
+        "wire": "int64",
+        "required": false,
+        "optional": false
+      },
+      {
+        "number": 2,
+        "name": "all",
+        "kind": "scalar",
+        "type": "bool",
+        "wire": "bool",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "QuickGotReadEmailRequest",
+    "reference": [
+      "../sea666-afk/sea666_welfare.py:150"
+    ],
+    "implementation": [
+      "src/actions.mjs:107",
+      "src/automation/welfare.mjs:34"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "emailId",
+        "kind": "repeated",
+        "type": "int64",
+        "wire": "int64",
+        "required": false,
+        "optional": false
+      },
+      {
+        "number": 2,
+        "name": "all",
+        "kind": "scalar",
+        "type": "bool",
+        "wire": "bool",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "RadarGetAllRewardsRequest",
+    "reference": [
+      "../sea666-afk/sea666_world.py:1226"
+    ],
+    "implementation": [
+      "src/automation/world.mjs:358"
+    ],
+    "equivalent": "按当前事件状态与用户选择类型逐条领取，避免领取被排除类型",
+    "fields": [],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "RadarGetRewardRequest",
+    "reference": [
+      "../sea666-afk/sea666_world.py:1249"
+    ],
+    "implementation": [
+      "src/automation/world.mjs:358"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "uid",
+        "kind": "scalar",
+        "type": "int64",
+        "wire": "int64",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "RadarInfoRequest",
+    "reference": [
+      "../sea666-afk/sea666_world.py:228"
+    ],
+    "implementation": [
+      "src/automation/world.mjs:355",
+      "src/automation/world.mjs:358",
+      "src/automation/world.mjs:359",
+      "src/game.mjs:48"
+    ],
+    "fields": [],
+    "response": "RadarInfoResponse",
+    "responses": [
+      "RadarInfoResponse"
+    ]
+  },
+  {
+    "request": "RadarSendFleetsRequest",
+    "reference": [
+      "../sea666-afk/sea666_world.py:1312"
+    ],
+    "implementation": [
+      "src/automation/world.mjs:372"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "uid",
+        "kind": "scalar",
+        "type": "int64",
+        "wire": "int64",
+        "required": false,
+        "optional": true
+      },
+      {
+        "number": 2,
+        "name": "fleetBuildingIds",
+        "kind": "repeated",
+        "type": "string",
+        "wire": "string",
+        "required": false,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "RecruitInfoRequest",
+    "reference": [
+      "../sea666-afk/sea666_hero.py:458"
+    ],
+    "implementation": [
+      "src/antique-recruit.mjs:16",
+      "src/automation/cultivation.mjs:125",
+      "src/automation/cultivation.mjs:143",
+      "src/automation/cultivation.mjs:146",
+      "src/automation/service.mjs:128",
+      "src/dailies.mjs:151",
+      "src/dailies.mjs:157",
+      "src/dailies.mjs:420",
+      "src/game.mjs:15"
+    ],
+    "fields": [],
+    "response": "RecruitInfoResponse",
+    "responses": [
+      "RecruitInfoResponse"
+    ]
+  },
+  {
+    "request": "RecruitStartRequest",
+    "reference": [
+      "../sea666-afk/sea666_hero.py:503",
+      "../sea666-afk/sea666_hero.py:537"
+    ],
+    "implementation": [
+      "src/automation/cultivation.mjs:127",
+      "src/automation/service.mjs:162",
+      "src/dailies.mjs:161",
+      "src/dailies.mjs:167",
+      "src/log-errors.mjs:36",
+      "src/loop.mjs:195"
+    ],
+    "fields": [
+      {
+        "number": 2,
+        "name": "way",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": "RecruitStartResponse",
+    "responses": [
+      "RecruitStartResponse"
+    ]
+  },
+  {
+    "request": "RedPointRequest",
+    "reference": [
+      "../sea666-afk/sea666_activity.py:223"
+    ],
+    "implementation": [
+      "src/game.mjs:63"
+    ],
+    "fields": [],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "RepairFleetRequest",
+    "reference": [
+      "../sea666-afk/sea666_world.py:409"
+    ],
+    "implementation": [
+      "src/automation/world.mjs:177"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "buildingId",
+        "kind": "scalar",
+        "type": "string",
+        "wire": "string",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "SalvageLevelUpRequest",
+    "reference": [
+      "../sea666-afk/sea666_gather.py:371"
+    ],
+    "implementation": [
+      "src/automation/base.mjs:gather"
+    ],
+    "fields": [],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "SeasonCardGotDailyRequest",
+    "reference": [
+      "../sea666-afk/sea666_welfare.py:450"
+    ],
+    "implementation": [
+      "src/automation/welfare.mjs:40"
+    ],
+    "fields": [],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "SeasonCardRequest",
+    "reference": [
+      "../sea666-afk/sea666_welfare.py:430"
+    ],
+    "implementation": [
+      "src/automation/welfare.mjs:39",
+      "src/automation/welfare.mjs:40",
+      "src/game.mjs:52"
+    ],
+    "fields": [],
+    "response": "SeasonCardResponse",
+    "responses": [
+      "SeasonCardResponse"
+    ]
+  },
+  {
+    "request": "SelectChoiceRequest",
+    "reference": [
+      "../sea666-afk/sea666_choice_event.py:94",
+      "../sea666-afk/sea666_choice_event.py:180"
+    ],
+    "implementation": [
+      "src/automation/base.mjs:276",
+      "src/automation/base.mjs:289"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "uid",
+        "kind": "scalar",
+        "type": "int64",
+        "wire": "int64",
+        "required": true,
+        "optional": false
+      },
+      {
+        "number": 2,
+        "name": "optionIndex",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "SetAssembleCityRequest",
+    "reference": [
+      "../sea666-afk/sea666_world_ext.py:482"
+    ],
+    "implementation": [
+      "src/automation/world.mjs:490"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "cityId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": "SCAssembleCity",
+    "responses": [
+      "SCAssembleCity"
+    ]
+  },
+  {
+    "request": "SetAutoFarmingRequest",
+    "reference": [
+      "../sea666-afk/sea666_farm.py:302",
+      "../sea666-afk/sea666_farm.py:305"
+    ],
+    "implementation": [
+      "src/automation/base.mjs:181"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "isOn",
+        "kind": "scalar",
+        "type": "bool",
+        "wire": "bool",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "SetFactoryAutoProduceRequest",
+    "reference": [
+      "../sea666-afk/sea666_factory.py:190",
+      "../sea666-afk/sea666_farm.py:181",
+      "../sea666-afk/sea666_farm.py:187"
+    ],
+    "implementation": [
+      "src/actions.mjs:83",
+      "src/automation/base.mjs:150",
+      "src/automation/service.mjs:111"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "buildingId",
+        "kind": "scalar",
+        "type": "string",
+        "wire": "string",
+        "required": true,
+        "optional": false
+      },
+      {
+        "number": 2,
+        "name": "productId",
+        "kind": "scalar",
+        "type": "string",
+        "wire": "string",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "SnapCancelMatchmakingRequest",
+    "reference": [
+      "../sea666-afk/sea666_snap.py:676"
+    ],
+    "implementation": [
+      "src/automation/snap.mjs:43"
+    ],
+    "fields": [],
+    "response": "SCSnapMatchmakingFinished",
+    "responses": [
+      "SCSnapMatchmakingFinished"
+    ]
+  },
+  {
+    "request": "SnapEndRoundRequest",
+    "reference": [
+      "../sea666-afk/sea666_snap.py:394",
+      "../sea666-afk/sea666_snap.py:480"
+    ],
+    "implementation": [
+      "src/automation/snap.mjs:98",
+      "src/automation/snap.mjs:118"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "placements",
+        "kind": "repeated",
+        "type": "SnapPlacement",
+        "required": false,
+        "optional": false
+      },
+      {
+        "number": 2,
+        "name": "round",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": "SnapEndRoundResponse",
+    "responses": [
+      "SnapEndRoundResponse",
+      "SCSnapPvpRoundResult"
+    ]
+  },
+  {
+    "request": "SnapGiveUpRequest",
+    "reference": [
+      "../sea666-afk/sea666_snap.py:435"
+    ],
+    "implementation": [
+      "src/automation/snap.mjs:48"
+    ],
+    "fields": [],
+    "response": "SnapMatchStateResponse",
+    "responses": [
+      "SnapMatchStateResponse"
+    ]
+  },
+  {
+    "request": "SnapInfoRequest",
+    "reference": [
+      "../sea666-afk/sea666_snap.py:259"
+    ],
+    "implementation": [
+      "src/automation/snap.mjs:41",
+      "src/automation/snap.mjs:43",
+      "src/automation/snap.mjs:47",
+      "src/automation/snap.mjs:48",
+      "src/automation/snap.mjs:53",
+      "src/automation/snap.mjs:60",
+      "src/automation/snap.mjs:63",
+      "src/automation/snap.mjs:72",
+      "src/automation/snap.mjs:81",
+      "src/automation/snap.mjs:85",
+      "src/automation/snap.mjs:98",
+      "src/automation/snap.mjs:101",
+      "src/automation/snap.mjs:110",
+      "src/automation/snap.mjs:114",
+      "src/automation/snap.mjs:121",
+      "src/automation/snap.mjs:127",
+      "src/automation/snap.mjs:137",
+      "src/automation/snap.mjs:143"
+    ],
+    "fields": [],
+    "response": "SnapInfoResponse",
+    "responses": [
+      "SnapInfoResponse"
+    ]
+  },
+  {
+    "request": "SnapPvpToggleTrusteeRequest",
+    "reference": [
+      "../sea666-afk/sea666_snap.py:466"
+    ],
+    "implementation": [
+      "src/automation/snap.mjs:110",
+      "src/automation/snap.mjs:137"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "trustee",
+        "kind": "scalar",
+        "type": "bool",
+        "wire": "bool",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "SnapStartMatchmakingRequest",
+    "reference": [
+      "../sea666-afk/sea666_snap.py:738"
+    ],
+    "implementation": [
+      "src/automation/snap.mjs:81"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "useDiamond",
+        "kind": "scalar",
+        "type": "bool",
+        "wire": "bool",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": "SCSnapMatchmakingFinished",
+    "responses": [
+      "SCSnapMatchmakingFinished"
+    ]
+  },
+  {
+    "request": "SnapStartRequest",
+    "reference": [
+      "../sea666-afk/sea666_snap.py:591"
+    ],
+    "implementation": [
+      "src/automation/snap.mjs:60"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "rate",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": "SnapMatchStateResponse",
+    "responses": [
+      "SnapMatchStateResponse"
+    ]
+  },
+  {
+    "request": "SpeedMakeEquipRequest",
+    "reference": [
+      "../sea666-afk/sea666_equip.py:312"
+    ],
+    "implementation": [
+      "src/automation/cultivation.mjs:281"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "buildingId",
+        "kind": "scalar",
+        "type": "string",
+        "wire": "string",
+        "required": true,
+        "optional": false
+      },
+      {
+        "number": 2,
+        "name": "speedUp",
+        "kind": "message",
+        "type": "SpeedUpCostParam",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": "SpeedMakeEquipResponse",
+    "responses": [
+      "SpeedMakeEquipResponse"
+    ]
+  },
+  {
+    "request": "SpeedUpFactoryProduceRequest",
+    "reference": [
+      "../sea666-afk/sea666_factory.py:256",
+      "../sea666-afk/sea666_factory.py:277",
+      "../sea666-afk/sea666_workshop.py:339"
+    ],
+    "implementation": [
+      "src/actions.mjs:220",
+      "src/automation/activity.mjs:232",
+      "src/automation/production.mjs:122",
+      "src/world.mjs:828"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "buildingId",
+        "kind": "scalar",
+        "type": "string",
+        "wire": "string",
+        "required": true,
+        "optional": false
+      },
+      {
+        "number": 2,
+        "name": "speedUp",
+        "kind": "message",
+        "type": "SpeedUpCostParam",
+        "required": true,
+        "optional": false
+      },
+      {
+        "number": 3,
+        "name": "index",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "SpeedUpRepairRequest",
+    "reference": [
+      "../sea666-afk/sea666_world.py:455"
+    ],
+    "implementation": [
+      "src/automation/world.mjs:81",
+      "src/automation/world.mjs:113"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "buildingId",
+        "kind": "scalar",
+        "type": "string",
+        "wire": "string",
+        "required": true,
+        "optional": false
+      },
+      {
+        "number": 2,
+        "name": "speedUp",
+        "kind": "message",
+        "type": "SpeedUpCostParam",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "SpeedUpUpgradeBuildingRequest",
+    "reference": [
+      "../sea666-afk/sea666_island_once.py:282"
+    ],
+    "implementation": [
+      "src/actions.mjs:212",
+      "src/world.mjs:813"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "buildingId",
+        "kind": "scalar",
+        "type": "string",
+        "wire": "string",
+        "required": true,
+        "optional": false
+      },
+      {
+        "number": 2,
+        "name": "speedUp",
+        "kind": "message",
+        "type": "SpeedUpCostParam",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "StartFactoryProduceRequest",
+    "reference": [
+      "../sea666-afk/sea666_factory.py:206",
+      "../sea666-afk/sea666_factory.py:224",
+      "../sea666-afk/sea666_factory.py:387",
+      "../sea666-afk/sea666_factory.py:436",
+      "../sea666-afk/sea666_factory.py:458",
+      "../sea666-afk/sea666_farm.py:197",
+      "../sea666-afk/sea666_farm.py:204",
+      "../sea666-afk/sea666_workshop.py:309"
+    ],
+    "implementation": [
+      "src/actions.mjs:188",
+      "src/automation/activity.mjs:227",
+      "src/automation/base.mjs:159",
+      "src/automation/base.mjs:205",
+      "src/automation/production.mjs:170",
+      "src/automation/service.mjs:111",
+      "src/automation/service.mjs:150",
+      "src/world.mjs:729"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "buildingId",
+        "kind": "scalar",
+        "type": "string",
+        "wire": "string",
+        "required": false,
+        "optional": true
+      },
+      {
+        "number": 2,
+        "name": "productId",
+        "kind": "scalar",
+        "type": "string",
+        "wire": "string",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "StartFishingRequest",
+    "reference": [
+      "../sea666-afk/sea666_gather.py:92"
+    ],
+    "implementation": [
+      "src/automation/base.mjs:308",
+      "src/fishing.mjs:23"
+    ],
+    "fields": [],
+    "response": "StartFishingResponse",
+    "responses": [
+      "StartFishingResponse"
+    ]
+  },
+  {
+    "request": "TradeBuyRequest",
+    "reference": [
+      "../sea666-afk/sea666_world.py:985"
+    ],
+    "implementation": [
+      "src/automation/world.mjs:628"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "cityId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      },
+      {
+        "number": 2,
+        "name": "goodsId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      },
+      {
+        "number": 3,
+        "name": "buyNum",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": "TradeBuyResponse",
+    "responses": [
+      "TradeBuyResponse"
+    ]
+  },
+  {
+    "request": "TradeCargoUpgradeRequest",
+    "reference": [
+      "../sea666-afk/sea666_world.py:875"
+    ],
+    "implementation": [
+      "src/automation/world.mjs:591"
+    ],
+    "fields": [],
+    "response": "TradeCargoUpgradeResponse",
+    "responses": [
+      "TradeCargoUpgradeResponse"
+    ]
+  },
+  {
+    "request": "TradeCityRequest",
+    "reference": [
+      "../sea666-afk/sea666_world.py:823"
+    ],
+    "implementation": [
+      "src/automation/world.mjs:605",
+      "src/automation/world.mjs:607",
+      "src/automation/world.mjs:609"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "cityId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": "TradeCityResponse",
+    "responses": [
+      "TradeCityResponse"
+    ]
+  },
+  {
+    "request": "TradeInfoRequest",
+    "reference": [
+      "../sea666-afk/sea666_world.py:170"
+    ],
+    "implementation": [
+      "src/automation/world.mjs:461",
+      "src/automation/world.mjs:580",
+      "src/automation/world.mjs:582",
+      "src/automation/world.mjs:583",
+      "src/automation/world.mjs:591",
+      "src/automation/world.mjs:594",
+      "src/automation/world.mjs:615",
+      "src/automation/world.mjs:629",
+      "src/game.mjs:27"
+    ],
+    "fields": [],
+    "response": "TradeInfoResponse",
+    "responses": [
+      "TradeInfoResponse"
+    ]
+  },
+  {
+    "request": "TradeSellRequest",
+    "reference": [
+      "../sea666-afk/sea666_world.py:944"
+    ],
+    "implementation": [
+      "src/automation/world.mjs:611"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "cityId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      },
+      {
+        "number": 2,
+        "name": "pid",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      },
+      {
+        "number": 3,
+        "name": "sellNum",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": "TradeSellResponse",
+    "responses": [
+      "TradeSellResponse"
+    ]
+  },
+  {
+    "request": "TradeSpeedRequest",
+    "reference": [
+      "../sea666-afk/sea666_world.py:907"
+    ],
+    "implementation": [
+      "src/automation/world.mjs:598"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "useNum",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": "TradeSpeedResponse",
+    "responses": [
+      "TradeSpeedResponse"
+    ]
+  },
+  {
+    "request": "TreasureLootListRequest",
+    "reference": [
+      "../sea666-afk/sea666_world_ext.py:317"
+    ],
+    "implementation": [
+      "src/automation/world.mjs:290",
+      "src/automation/world.mjs:467"
+    ],
+    "fields": [],
+    "response": "TreasureLootListResponse",
+    "responses": [
+      "TreasureLootListResponse"
+    ]
+  },
+  {
+    "request": "TreasureLootSendFleetsRequest",
+    "reference": [
+      "../sea666-afk/sea666_world_ext.py:359"
+    ],
+    "implementation": [
+      "src/automation/world.mjs:300",
+      "src/automation/world.mjs:471"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "uid",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      },
+      {
+        "number": 2,
+        "name": "fleetBuildingIds",
+        "kind": "repeated",
+        "type": "string",
+        "wire": "string",
+        "required": false,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "TrialRaidBuySweepRequest",
+    "reference": [
+      "../sea666-afk/sea666_trial.py:360"
+    ],
+    "implementation": [
+      "src/automation/battle.mjs:174",
+      "src/automation/battle.mjs:219",
+      "src/trials.mjs:88"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "raidId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      },
+      {
+        "number": 2,
+        "name": "useAdvCard",
+        "kind": "scalar",
+        "type": "bool",
+        "wire": "bool",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "TrialRaidChallengeRequest",
+    "reference": [
+      "../sea666-afk/sea666_trial.py:267"
+    ],
+    "implementation": [
+      "src/automation/battle.mjs:203",
+      "src/trials.mjs:71"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "raidId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      },
+      {
+        "number": 2,
+        "name": "stageId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": "TrialRaidChallengeResponse",
+    "responses": [
+      "TrialRaidChallengeResponse"
+    ]
+  },
+  {
+    "request": "TrialRaidInfoRequest",
+    "reference": [
+      "../sea666-afk/sea666_trial.py:211"
+    ],
+    "implementation": [
+      "src/automation/battle.mjs:157",
+      "src/automation/battle.mjs:198",
+      "src/automation/battle.mjs:203",
+      "src/automation/battle.mjs:213",
+      "src/automation/battle.mjs:219",
+      "src/automation/service.mjs:130",
+      "src/trials.mjs:4"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "raidId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": "TrialRaidInfoResponse",
+    "responses": [
+      "TrialRaidInfoResponse"
+    ]
+  },
+  {
+    "request": "UpgradeAfkLevelRequest",
+    "reference": [
+      "../sea666-afk/sea666_afk_once.py:177",
+      "../sea666-afk/sea666_afk_once.py:184",
+      "../sea666-afk/sea666_proto_draft.py:38"
+    ],
+    "implementation": [
+      "src/actions.mjs:42",
+      "src/automation/base.mjs:355",
+      "src/automation/service.mjs:156"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "level",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": "UpgradeAfkLevelResponse",
+    "responses": [
+      "UpgradeAfkLevelResponse"
+    ]
+  },
+  {
+    "request": "UpgradeBuildingRequest",
+    "reference": [
+      "../sea666-afk/sea666_island_once.py:248"
+    ],
+    "implementation": [
+      "src/actions.mjs:196",
+      "src/automation/service.mjs:143",
+      "src/world.mjs:792"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "buildingId",
+        "kind": "scalar",
+        "type": "string",
+        "wire": "string",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "UpgradeGuildTechRequest",
+    "reference": [
+      "../sea666-afk/sea666_guild.py:569"
+    ],
+    "implementation": [
+      "src/automation/guild.mjs:23"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "techId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": "UpgradeGuildTechResponse",
+    "responses": [
+      "UpgradeGuildTechResponse"
+    ]
+  },
+  {
+    "request": "WarDeclarationRequest",
+    "reference": [
+      "../sea666-afk/sea666_world_ext.py:415"
+    ],
+    "implementation": [
+      "src/automation/world.mjs:482"
+    ],
+    "fields": [],
+    "response": "WarDeclarationResponse",
+    "responses": [
+      "WarDeclarationResponse"
+    ]
+  },
+  {
+    "request": "WatchAdvRequest",
+    "reference": [
+      "../sea666-afk/sea666_hero.py:833",
+      "../sea666-afk/sea666_hero.py:852"
+    ],
+    "implementation": [
+      "src/ad-shop.mjs:81",
+      "src/automation/battle.mjs:168",
+      "src/automation/cultivation.mjs:115",
+      "src/automation/cultivation.mjs:134"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "type",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      },
+      {
+        "number": 2,
+        "name": "id",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "WeekLotteryFreePackRequest",
+    "reference": [
+      "../sea666-afk/sea666_welfare.py:636"
+    ],
+    "implementation": [
+      "src/activities.mjs:251",
+      "src/automation/welfare.mjs:62"
+    ],
+    "fields": [],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "WeekLotteryInfoRequest",
+    "reference": [
+      "../sea666-afk/sea666_welfare.py:677"
+    ],
+    "implementation": [
+      "src/activities.mjs:151",
+      "src/activities.mjs:194",
+      "src/automation/activity.mjs:299",
+      "src/automation/welfare.mjs:59"
+    ],
+    "fields": [],
+    "response": "WeekLotteryInfoResponse",
+    "responses": [
+      "WeekLotteryInfoResponse"
+    ]
+  },
+  {
+    "request": "WeekLotteryPrizeRequest",
+    "reference": [
+      "../sea666-afk/sea666_welfare.py:764"
+    ],
+    "implementation": [
+      "src/automation/activity.mjs:296"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "times",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": "WeekLotteryPrizeResponse",
+    "responses": [
+      "WeekLotteryPrizeResponse"
+    ]
+  },
+  {
+    "request": "WeekLotteryTimesRewardRequest",
+    "reference": [
+      "../sea666-afk/sea666_welfare.py:706"
+    ],
+    "implementation": [
+      "src/activities.mjs:200",
+      "src/automation/activity.mjs:302"
+    ],
+    "fields": [],
+    "response": "WeekLotteryTimesRewardResponse",
+    "responses": [
+      "WeekLotteryTimesRewardResponse"
+    ]
+  },
+  {
+    "request": "WeekOrderGotFinalRequest",
+    "reference": [
+      "../sea666-afk/sea666_week_order.py:253"
+    ],
+    "implementation": [
+      "src/automation/activity.mjs:285"
+    ],
+    "fields": [],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "WeekOrderInfoRequest",
+    "reference": [
+      "../sea666-afk/sea666_week_order.py:148"
+    ],
+    "implementation": [
+      "src/activities.mjs:108",
+      "src/automation/activity.mjs:265",
+      "src/automation/activity.mjs:283",
+      "src/automation/activity.mjs:285",
+      "src/game.mjs:46",
+      "src/log-errors.mjs:7"
+    ],
+    "fields": [],
+    "response": "WeekOrderInfoResponse",
+    "responses": [
+      "WeekOrderInfoResponse"
+    ]
+  },
+  {
+    "request": "WorldBossGetDamageRewardRequest",
+    "reference": [
+      "../sea666-afk/sea666_world_ext.py:632"
+    ],
+    "implementation": [
+      "src/automation/world.mjs:207"
+    ],
+    "fields": [],
+    "response": null,
+    "responses": []
+  },
+  {
+    "request": "WorldBossInfoRequest",
+    "reference": [
+      "../sea666-afk/sea666_world_ext.py:612"
+    ],
+    "implementation": [
+      "src/automation/world.mjs:204",
+      "src/automation/world.mjs:207",
+      "src/game.mjs:40"
+    ],
+    "fields": [],
+    "response": "WorldBossInfoResponse",
+    "responses": [
+      "WorldBossInfoResponse"
+    ]
+  }
+]
