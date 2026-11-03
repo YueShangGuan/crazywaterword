@@ -103,11 +103,15 @@ function makeFrameReader(onMessage) {
 // onLogin 收到 { url, name, body, rawFrameHex }，只会在本次运行里触发一次。
 // rawLogin 仅保留原始报文，body 为 null，不代表已验证账号或支持抖音登录。
 // onFrame 可选，用来把下行帧也记下来（调试用）。
+/** 创建本地采集代理；指定既有 HTTP 代理时全部出站流量走 CONNECT，不降低 TLS 校验。 */
 export function createProxy({
   port = DEFAULT_PROXY_PORT, onLogin, onFrame, log = () => {}, interceptPorts,
   rawLogin = false, interceptHosts,
-  certificateFor = leafFor, caIsInstalled = isInstalled, upstreamCa,
+  certificateFor = leafFor, caIsInstalled = isInstalled, upstreamCa, upstreamProxy,
 } = {}) {
+  if (upstreamProxy && (!/^[\w.:-]+$/.test(upstreamProxy.host) || !Number.isInteger(upstreamProxy.port) || upstreamProxy.port < 1 || upstreamProxy.port > 65535)) {
+    throw new Error('上游 HTTP 代理地址无效');
+  }
   // Fail before changing any settings in decoded mode; raw mode needs no game bundle.
   const decoder = rawLogin ? null : defaultCodec();
   const hosts = interceptHosts === undefined ? null
@@ -116,6 +120,7 @@ export function createProxy({
   const tlsServers = new Map();
   const liveSockets = new Set();
   const requests = new Set();
+  const tunnelAgents = new Map();
   let captured = false;
   let started = false;
 
@@ -135,6 +140,63 @@ export function createProxy({
     request.on('close', () => requests.delete(request));
     request.on('socket', trackSocket);
     return request;
+  }
+
+  /** 既有代理不可用时直接失败，禁止悄悄切换直连而改变用户的网络路径。 */
+  function connectTarget(host, targetPort, done) {
+    if (!upstreamProxy) {
+      const socket = trackSocket(net.connect(targetPort, host));
+      socket.once('connect', () => done(null, socket));
+      socket.once('error', done);
+      return;
+    }
+    const authority = `${host.includes(':') ? `[${host}]` : host}:${targetPort}`;
+    const request = trackRequest(http.request({ host: upstreamProxy.host, port: upstreamProxy.port,
+      method: 'CONNECT', path: authority, headers: { host: authority }, agent: false, maxHeaderSize: 16384 }));
+    let settled = false;
+    /** 连接握手只能完成一次，避免超时和错误把同一回调触发两遍。 */
+    const finish = (error, socket) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) request.destroy();
+      done(error, socket);
+    };
+    const timer = setTimeout(() => finish(new Error('上游代理连接超时')), 15000);
+    request.once('connect', (response, socket, head) => {
+      trackSocket(socket);
+      if (response.statusCode !== 200) { socket.destroy(); finish(new Error('上游代理拒绝隧道')); return; }
+      if (head.length) socket.unshift(head);
+      finish(null, socket);
+    });
+    request.once('response', response => { response.resume(); finish(new Error('上游代理未建立隧道')); });
+    request.once('error', error => finish(error));
+    request.once('close', () => { if (!settled) finish(new Error('上游代理握手中断')); });
+    request.end();
+  }
+
+  /** HTTP 和 WebSocket 共用隧道 Agent，TLS 仍校验目标主机及信任链。 */
+  function requestAgent(secure) {
+    if (!upstreamProxy) return undefined;
+    if (tunnelAgents.has(secure)) return tunnelAgents.get(secure);
+    const agent = secure ? new https.Agent({ keepAlive: false }) : new http.Agent({ keepAlive: false });
+    agent.createConnection = (options, callback) => {
+      connectTarget(options.host, Number(options.port), (error, socket) => {
+        if (error) { callback(error); return; }
+        if (!secure) { callback(null, socket); return; }
+        const secured = trackSocket(tls.connect({ ...options, socket, rejectUnauthorized: true,
+          ...(upstreamCa ? { ca: upstreamCa } : {}) }));
+        // 建连成功后错误由 HTTP 请求接管，不能再次触发 Agent 的建连回调。
+        const onHandshakeError = error => callback(error);
+        secured.once('error', onHandshakeError);
+        secured.once('secureConnect', () => {
+          secured.off('error', onHandshakeError);
+          callback(null, secured);
+        });
+      });
+    };
+    tunnelAgents.set(secure, agent);
+    return agent;
   }
 
   function handleLogin(url, name, body, rawFrame) {
@@ -181,6 +243,7 @@ export function createProxy({
     return server;
   }
 
+  /** 仅解密允许的游戏主机；其他 CONNECT 同样沿原代理路径透明转发。 */
   function onConnect(req, clientSocket, head) {
     let target;
     try { target = new URL(`https://${req.url}`); }
@@ -193,14 +256,15 @@ export function createProxy({
 
     // 只解密我们要的端口，其它流量原样隧道转发，免得影响无关程序。
     if (!intercept.has(targetPort) || (hosts && !hosts.has(host.toLowerCase()))) {
-      const upstream = trackSocket(net.connect(targetPort, host, () => {
+      connectTarget(host, targetPort, (error, upstream) => {
+        if (error || clientSocket.destroyed) { upstream?.destroy(); clientSocket.destroy(); return; }
         clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
         if (head && head.length) upstream.write(head);
         clientSocket.pipe(upstream);
         upstream.pipe(clientSocket);
-      }));
-      upstream.on('error', () => clientSocket.destroy());
-      clientSocket.on('close', () => upstream.destroy());
+        upstream.on('error', () => clientSocket.destroy());
+        clientSocket.on('close', () => upstream.destroy());
+      });
       return;
     }
 
@@ -210,6 +274,7 @@ export function createProxy({
     catch (error) { log('tls', `生成目标证书失败: ${error.message}`); clientSocket.destroy(); }
   }
 
+  /** HTTP 请求使用统一出站 Agent，错误不会触发直连重试或关闭证书校验。 */
   function onRequest(req, res) {
     let target = req.socket._target;
     let requestPath = req.url;
@@ -230,6 +295,7 @@ export function createProxy({
     const upstream = trackRequest(transport.request({
       host: target.host,
       port: target.port,
+      agent: requestAgent(secure),
       path: requestPath,
       method: req.method,
       headers: req.headers,
@@ -249,6 +315,7 @@ export function createProxy({
     req.pipe(upstream);
   }
 
+  /** WebSocket 升级沿同一 TLS 隧道转发，保留首帧和停止时的连接清理。 */
   function onUpgrade(req, clientSocket, head) {
     const target = req.socket._target;
     if (!target) {
@@ -266,6 +333,7 @@ export function createProxy({
     const upstream = trackRequest(transport.request({
       host: target.host,
       port: target.port,
+      agent: requestAgent(secure),
       path: req.url,
       method: 'GET',
       headers,
@@ -324,6 +392,8 @@ export function createProxy({
       const closed = new Promise((resolve) => httpServer.close(() => resolve()));
       for (const request of requests) request.destroy();
       requests.clear();
+      for (const agent of tunnelAgents.values()) agent.destroy();
+      tunnelAgents.clear();
       for (const socket of liveSockets) socket.destroy();
       liveSockets.clear();
       for (const server of tlsServers.values()) server.close();

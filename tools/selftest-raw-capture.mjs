@@ -284,7 +284,8 @@ try {
   const upstreamPort = await listen(upstream, 'localhost');
   const echoPort = await listen(net.createServer((socket) => socket.pipe(socket)), '127.0.0.1');
   let certificateCalls = 0;
-  async function startProxy(records, interceptPorts = [upstreamPort, echoPort]) {
+  /** 仅创建随机端口本地代理；可注入离线中继来验证原出站路径保留。 */
+  async function startProxy(records, interceptPorts = [upstreamPort, echoPort], options = {}) {
     const proxy = createProxy({
       port: 0,
       rawLogin: true,
@@ -298,6 +299,7 @@ try {
       },
       caIsInstalled: () => true,
       onLogin: (record) => records.push(record),
+      ...options,
     });
     proxies.push(proxy);
     await proxy.listen();
@@ -364,6 +366,45 @@ try {
   const transparent = await connectTunnel(fragmentProxy.port, '127.0.0.1', echoPort, rawPayload);
   assert.deepEqual(await transparent.reader.bytes(rawPayload.length), rawPayload, 'non-target host passes through even on an intercepted port');
   assert.equal(certificateCalls, callsBeforeTunnel, 'non-target host does not request a certificate');
+
+  // 模拟用户已有的 HTTP 代理，所有目标均限制为本测试启动的本机服务。
+  const relayed = [];
+  const relay = http.createServer();
+  relay.on('connect', (req, client, head) => {
+    const target = new URL(`http://${req.url}`);
+    assert(['localhost', '127.0.0.1'].includes(target.hostname));
+    relayed.push(req.url);
+    const remote = track(net.connect(Number(target.port), target.hostname, () => {
+      client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+      if (head.length) remote.write(head);
+      client.pipe(remote).pipe(client);
+    }));
+    client.on('error', () => remote.destroy());
+    client.on('close', () => remote.destroy());
+    remote.on('error', () => client.destroy());
+    remote.on('close', () => client.destroy());
+  });
+  const relayPort = await listen(relay, '127.0.0.1');
+  const relayProxy = await startProxy([], undefined, { upstreamProxy: { host: '127.0.0.1', port: relayPort } });
+  const relayTunnel = await connectTunnel(relayProxy.port, '127.0.0.1', echoPort, rawPayload);
+  assert.deepEqual(await relayTunnel.reader.bytes(rawPayload.length), rawPayload);
+  const relayWs = await connectWs(relayProxy.port, upstreamPort, cert, initialWsFrame);
+  assert.deepEqual(await relayWs.reader.bytes(initialWsFrame.length), initialWsFrame);
+  await new Promise((resolve, reject) => {
+    http.get({ host: '127.0.0.1', port: relayProxy.port, path: `https://localhost:${upstreamPort}/relay` }, res => {
+      assert.equal(res.statusCode, 200);
+      res.resume().once('end', resolve);
+    }).once('error', reject);
+  });
+  assert(relayed.includes(`127.0.0.1:${echoPort}`));
+  assert.equal(relayed.filter(target => target === `localhost:${upstreamPort}`).length, 2, 'WebSocket 与 HTTPS 均通过原代理');
+  const untrusted = await startProxy([], undefined, { upstreamProxy: { host: '127.0.0.1', port: relayPort }, upstreamCa: undefined });
+  await new Promise((resolve, reject) => {
+    http.get({ host: '127.0.0.1', port: untrusted.port, path: `https://localhost:${upstreamPort}/untrusted` }, res => {
+      assert.equal(res.statusCode, 502, '中继模式仍拒绝未受信任的 TLS 证书');
+      res.resume().once('end', resolve);
+    }).once('error', reject);
+  });
 
   // An upstream may accept TLS and Upgrade but never send its HTTP 101 response.
   // Stopping the proxy must close that pending request and both ends of its socket.

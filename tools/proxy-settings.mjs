@@ -74,6 +74,28 @@ export function readCurrent() {
   return values;
 }
 
+/**
+ * Returns the active WinINET proxy as an unauthenticated HTTP CONNECT upstream.
+ *
+ * The local capture proxy must keep using the user's existing outbound route while
+ * it temporarily replaces the system proxy. Windows supports richer proxy rules,
+ * but this tool only accepts the single `host:port` form it can preserve exactly.
+ *
+ * @param {Record<string, string>} values WinINET proxy values captured before replacement.
+ * @returns {{host: string, port: number} | null} The enabled HTTP proxy, or null when disabled.
+ */
+export function httpProxyFrom(values = readCurrent()) {
+  if (Number(values.ProxyEnable) !== 1) return null;
+  const source = values.ProxyServer?.trim();
+  if (!source) throw new Error('系统代理已打开，但没有 ProxyServer 地址');
+  const match = source.match(/^([^:;=\s]+):(\d{1,5})$/);
+  const port = Number(match?.[2]);
+  if (!match || port < 1 || port > 65535) {
+    throw new Error('当前系统代理不是可转发的单一 HTTP 代理地址（需要 主机:端口）');
+  }
+  return { host: match[1], port };
+}
+
 export function backup(values = readCurrent()) {
   fs.mkdirSync(path.dirname(BACKUP), { recursive: true });
   fs.writeFileSync(BACKUP, JSON.stringify({ key: KEY, values, savedAt: new Date().toISOString() }, null, 2));

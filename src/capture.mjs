@@ -2,12 +2,13 @@
 import * as defaultCa from '../tools/mitm-ca.mjs';
 import * as defaultSettings from '../tools/proxy-settings.mjs';
 import { createProxy as defaultCreateProxy, DEFAULT_PROXY_PORT } from '../tools/mitm-proxy.mjs';
-import { pointsToCapture, prepareCaptureProxy } from '../tools/proxy-settings.mjs';
+import { pointsToCapture, prepareCaptureProxy, httpProxyFrom } from '../tools/proxy-settings.mjs';
 import { acquireCaptureLock } from '../tools/capture-lock.mjs';
 import { DEFAULT_GATEWAY } from './client.mjs';
 
 export const DEFAULT_CAPTURE_TIMEOUT_MS = 5 * 60 * 1000;
 const GATEWAY = new URL(DEFAULT_GATEWAY);
+/** 管理一次采集的代理、证书及回滚；既有出站代理仅用于转发，不输出其完整配置。 */
 export function createCaptureController(dependencies = {}) {
   const acquireLock = dependencies.acquireLock ?? acquireCaptureLock;
   const ca = dependencies.ca ?? defaultCa;
@@ -50,6 +51,7 @@ export function createCaptureController(dependencies = {}) {
       caAddedByCapture: state.caAddedByCapture,
       proxy, proxyOn: Number(proxy?.ProxyEnable) === 1,
       originalProxy: state.originalProxy ? { ...state.originalProxy } : null,
+      upstreamProxy: state.upstreamProxy ? { ...state.upstreamProxy } : null,
       accountId: state.accountId, capturedAt: state.capturedAt, startedAt: state.startedAt,
       log: state.log.slice(-40).map((entry) => entry.line),
       ca: { cn: ca.CA_CN, crt: ca.CA_CRT, fingerprint, thumbprint },
@@ -158,6 +160,7 @@ export function createCaptureController(dependencies = {}) {
     for (const [event, handler] of run.handlers) runtime.on(event, handler);
   }
 
+  /** 启动前固定原始出站路径，再安装本地采集代理；失败仍由同一生命周期回滚。 */
   async function startCapture({
     onLogin, onLog, port = defaultPort, keepCa = false, timeoutMs = DEFAULT_CAPTURE_TIMEOUT_MS, platform = 'wechat',
   } = {}) {
@@ -173,7 +176,7 @@ export function createCaptureController(dependencies = {}) {
     current = run;
     latest = run;
     Object.assign(state, {
-      running: true, phase: 'starting', error: null, port, originalProxy: null, platform,
+      running: true, phase: 'starting', error: null, port, originalProxy: null, upstreamProxy: null, platform,
       caAddedByCapture: false, caInstalledBefore: false,
       accountId: null, capturedAt: null, startedAt: now().toISOString(), log: [],
     });
@@ -188,6 +191,8 @@ export function createCaptureController(dependencies = {}) {
       if (pointsToCapture(state.originalProxy, port)) {
         throw new Error('系统代理已指向本机采集端口；请先恢复上次的代理设置，避免覆盖原始备份');
       }
+      const upstreamProxy = httpProxyFrom(state.originalProxy);
+      state.upstreamProxy = upstreamProxy;
       state.caInstalledBefore = ca.isInstalled();
       installHooks(run);
       run.timer = later(() => {
@@ -199,6 +204,7 @@ export function createCaptureController(dependencies = {}) {
       // Constructing decoded-mode proxy checks the extracted game protocol before trust changes.
       stage = '加载游戏协议';
       run.proxy = createProxy({
+        upstreamProxy,
         port, interceptHosts: [GATEWAY.hostname], interceptPorts: [Number(GATEWAY.port || 443)],
         log: (kind) => {
           if (kind === 'upgrade') note('正在检查游戏网关的 WebSocket 登录报文。', run);
