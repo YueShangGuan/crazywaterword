@@ -5,7 +5,9 @@ import { iconEntry } from './art.mjs';
 import { chrome, journal, dialogs, templates, overviewPage, manualPage, heroesPage, dailiesPage, activitiesPage, accountPage, idlePanel, stagePanel } from './ui/dist/console.mjs';
 const componentCss = readFileSync(new URL('./ui/dist/theme.css', import.meta.url), 'utf8');
 const consoleCss = readFileSync(new URL('./console.css', import.meta.url), 'utf8');
+const automationCss = readFileSync(new URL('./automation.css', import.meta.url), 'utf8');
 const progressionScript = readFileSync(new URL('./ui/progression.js', import.meta.url), 'utf8');
+import { AUTOMATION_SCRIPT } from './automation-ui.mjs';
 
 export const PAGE = `<!doctype html>
 <html lang="zh-CN">
@@ -14,7 +16,7 @@ export const PAGE = `<!doctype html>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect fill='%23102d39' width='40' height='40' rx='8'/%3E%3Cpath fill='%23ffbd77' d='m20 3 4 13 13 4-13 4-4 13-4-13-13-4 13-4z'/%3E%3C/svg%3E">
 <title>疯狂水世界</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<style>@layer theme, legacy, utilities; @layer legacy { ${consoleCss} } ${componentCss}</style>
+<style>@layer theme, legacy, utilities; @layer legacy { ${consoleCss} ${automationCss} } ${componentCss}</style>
 </head>
 <body>
 ${chrome(iconEntry)}
@@ -47,6 +49,16 @@ ${chrome(iconEntry)}
     ${dailiesPage()}
   </section>
 
+  <section id="tab-automation" class="hidden">
+    <div class="bar"><button id="automation-load">重新加载设置</button><button id="automation-save">保存设置</button><span id="automation-hint" class="warn"></span></div>
+    <p class="dim">设置按账号保存，日记录按角色和上海日期隔离。赛季 0 会跳过需要赛季配置的功能。钻石消费需同时开启功能、总开关、每日总额度及模块额度，并满足保留量；“每日”均按上海自然日，“保留量”是当前角色的实时余额下限，不是每日可用额度。所有新模块默认关闭。</p>
+    <div class="bar"><select id="automation-select"></select><button id="automation-plan">计划预览</button><button id="automation-run" class="primary">执行一轮</button><button id="automation-stop" class="danger">停止</button></div>
+    <div class="bar log-heading"><span class="k">自动化运行日志</span><button id="automation-log-copy">一键复制当前日志</button><span id="automation-log-copy-hint" class="dim"></span></div>
+    <pre id="automation-view">预览会查询当前游戏状态；执行需确认。结果不明的写请求会保留预留额度并停止后续动作。</pre>
+    <details class="automation-group"><summary>循环模块选择</summary><div id="automation-loop-modules"></div><div class="bar"><label>轮数 <input id="automation-rounds" type="number" min="0" value="1" style="width:72px"></label><label>间隔秒 <input id="automation-every" type="number" min="1" value="60" style="width:72px"></label><button id="automation-loop" class="primary">开始循环</button></div></details>
+    <div id="automation-settings"></div>
+  </section>
+
   <section id="tab-account" class="hidden">
     ${accountPage()}
   </section>
@@ -64,6 +76,12 @@ const operationNames = ${JSON.stringify(operationLabels)};
 let current = null;
 let accounts = [];
 let stream = null;
+let heroSelectionAccount = null;
+let activeBusinessRequests = 0;
+let messageTab = 'world';
+let messageStore = { world: [], notice: [], private: [], guild: [] };
+let messageErrors = [];
+const MESSAGE_TAB_LABELS = { world: '世界', notice: '通知', private: '私聊', guild: '联盟' };
 
 function num(v) {
   if (v == null || typeof v !== 'object') return v;
@@ -82,12 +100,15 @@ function when(iso) {
   return d.toLocaleString('zh-CN', { hour12: false });
 }
 
+/** 统计当前页面的业务调用，后台总览轮询等待写入结束后再读取。 */
 async function call(path, options) {
   const opts = options || {};
   let url = path;
   if (current && url.indexOf('/api/') === 0 && url.indexOf('account=') < 0) {
     url += (url.indexOf('?') < 0 ? '?' : '&') + 'account=' + encodeURIComponent(current);
   }
+  const business = ['heroes','dailies','tasks','world','overview','automation/plan','automation/run'].some(name => path.startsWith('/api/'+name));
+  if (business) activeBusinessRequests++;
   const account = current;
   try {
     const res = await fetch(url, opts);
@@ -104,7 +125,7 @@ async function call(path, options) {
     if (!error.logged && account === current) reportError(error, path);
     error.logged = true;
     throw error;
-  }
+  } finally { if (business) activeBusinessRequests--; }
 }
 
 function el(tag, cls, text) {
@@ -268,6 +289,54 @@ function bindGameAction(id, action) {
 
 // ---- 运行记录 --------------------------------------------------------------
 const seen = new Set();
+let logPointerActive = false;
+
+/** 判断当前文字选区是否位于运行记录容器内，避免复制时改动选区依附的节点。 */
+function hasLogSelection() {
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return false;
+  const anchor = selection.anchorNode;
+  const focus = selection.focusNode;
+  return !!anchor && !!focus && (logEl.contains(anchor) || logEl.contains(focus));
+}
+
+/**
+ * 判断日志是否正处于拖选或复制状态。
+ * 指针按下到浏览器建立 Selection 之间也要暂停更新，避免新日志抢走拖选的起点。
+ */
+function isLogInteractionProtected() {
+  return logPointerActive || hasLogSelection();
+}
+
+/** 判断用户是否仍停留在日志底部，只有这种状态才允许新日志推动视口。 */
+function isLogNearBottom() {
+  return logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight <= 8;
+}
+
+/** 将自动化结果面板当前显示的运行日志写入系统剪贴板，并反馈本次复制结果。 */
+async function copyAutomationLog() {
+  const automationLog = $('automation-view');
+  const text = automationLog.innerText;
+  if (!text) {
+    $('automation-log-copy-hint').textContent = '当前没有日志可复制';
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    $('automation-log-copy-hint').textContent = '已复制当前自动化日志';
+  } catch (error) {
+    // 剪贴板权限由浏览器和页面访问方式控制，不能将未复制成功误报为成功。
+    $('automation-log-copy-hint').textContent = '复制失败，请检查浏览器剪贴板权限';
+  }
+}
+
+// 拖选开始时选区仍可能是折叠状态；先锁住日志，直到释放指针或窗口失焦。
+logEl.addEventListener('pointerdown', () => { logPointerActive = true; });
+window.addEventListener('pointerup', () => { logPointerActive = false; });
+window.addEventListener('pointercancel', () => { logPointerActive = false; });
+window.addEventListener('blur', () => { logPointerActive = false; });
+$('automation-log-copy').onclick = copyAutomationLog;
+
 const logTime = new Intl.DateTimeFormat('zh-CN', {
   hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
 });
@@ -279,14 +348,16 @@ function updateLogSummary() {
   $('log-empty').hidden = count > 0;
   $('log-empty').textContent = onlyIssues ? '没有警告或错误' : '还没有运行记录';
 }
+/** 批量绘制运行日志，但用户选择文字期间不得替换或裁剪其 DOM 节点。 */
 function appendLog(entry) {
   if (entry.account && entry.account !== current) return;
   if (entry.id && seen.has(entry.id)) return;
   if (entry.id) seen.add(entry.id);
-  const atEnd = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 30;
+  const protectInteraction = isLogInteractionProtected();
+  const atEnd = !protectInteraction && isLogNearBottom();
   const batch = entry.extra?.batch;
   const last = logEl.lastElementChild;
-  if (batch && last?.dataset.batch === batch && last.logIds.length < 32) {
+  if (!protectInteraction && batch && last?.dataset.batch === batch && last.logIds.length < 32) {
     last.logIds.push(entry.id);
     const timestamp = logTime.format(entry.t);
     last.querySelector('time').textContent = timestamp;
@@ -313,9 +384,9 @@ function appendLog(entry) {
     row.appendChild(body);
     logEl.appendChild(row);
   }
-  while (logEl.childElementCount > 400) {
+  while (!protectInteraction && logEl.childElementCount > 400) {
     for (const id of logEl.firstChild.logIds) seen.delete(id);
-    logEl.firstChild.remove();
+    logEl.removeChild(logEl.firstChild);
   }
   updateLogSummary();
   if (atEnd) logEl.scrollTop = logEl.scrollHeight;
@@ -340,6 +411,7 @@ for (const [id, filtered] of [['log-all', false], ['log-issues', true]]) {
     updateLogSummary();
   };
 }
+/** 订阅当前账号事件，分别更新上游业务视图与新版消息缓存。 */
 function subscribe() {
   if (stream) stream.close();
   if (logAccount !== current) {
@@ -348,16 +420,88 @@ function subscribe() {
   stream = new EventSource('/api/events' + (current ? '?account=' + encodeURIComponent(current) : ''));
   stream.onmessage = (event) => {
     const entry = JSON.parse(event.data);
+    if (entry.kind === 'game-message') {
+      if (entry.account !== current || !entry.message) return;
+      appendMessageToPage(entry.message);
+      return;
+    }
     appendLog(entry);
     if (entry.extra?.pauseChanged && entry.account === current) void loadAccounts(false);
     if (entry.extra?.worldUpdated && entry.account === current && Date.now() - entry.t < 10_000) refreshManualWorld();
   };
 }
 
+/** 把服务端推送的一条消息写入页面缓存，并保持每个 tab 最近 100 条。 */
+function appendMessageToPage(message) {
+  const list = messageStore[message.kind];
+  if (!list || list.some((entry) => entry.id === message.id)) return;
+  list.push(message);
+  list.sort((left, right) => left.at - right.at);
+  while (list.length > 100) list.shift();
+  renderMessages();
+}
+
+/** 更新消息面板状态文案，保留断开后仍可查看的进程内缓存。 */
+function renderMessagesStatus(connected, errors = []) {
+  const parts = [];
+  if (connected) parts.push('已连接，实时接收中');
+  else parts.push(messageStore[messageTab].length ? '已断开，显示内存消息' : '未连接');
+  if (errors.length) parts.push('历史加载部分失败：' + errors.map((entry) => entry.source).join('、'));
+  $('messages-status').textContent = parts.join(' · ');
+}
+
+/** 渲染当前消息 tab；消息正文全部通过文本节点插入，避免协议内容成为 HTML。 */
+function renderMessages({ connected = snapshot.connected, errors = messageErrors } = {}) {
+  const list = clear($('message-list'));
+  const messages = messageStore[messageTab] || [];
+  if (!messages.length) {
+    list.appendChild(el('div', 'message-empty', connected ? '暂时没有消息' : '未连接，暂无内存消息'));
+    renderMessagesStatus(connected, errors);
+    return;
+  }
+  for (const message of messages) {
+    const row = el('div', 'message-row');
+    row.appendChild(el('span', 'ts', new Date(message.at).toLocaleTimeString('zh-CN', { hour12: false })));
+    row.appendChild(el('span', 'sender', message.sender?.nickname || (message.kind === 'notice' ? '系统' : '未知')));
+    row.appendChild(el('span', 'body', message.text || '（无文本消息）'));
+    list.appendChild(row);
+  }
+  list.scrollTop = list.scrollHeight;
+  renderMessagesStatus(connected, errors);
+}
+
+/** 从服务端读取当前账号的内存消息快照。 */
+async function loadMessages() {
+  if (!current) return;
+  const data = await call('/api/messages');
+  messageStore = {
+    world: Array.isArray(data.messages?.world) ? data.messages.world : [],
+    notice: Array.isArray(data.messages?.notice) ? data.messages.notice : [],
+    private: Array.isArray(data.messages?.private) ? data.messages.private : [],
+    guild: Array.isArray(data.messages?.guild) ? data.messages.guild : [],
+  };
+  messageErrors = data.errors || [];
+  renderMessages({ connected: data.connected });
+}
+
+/** 切换消息面板频道并刷新当前频道的显示内容。 */
+function selectMessageTab(kind) {
+  if (!MESSAGE_TAB_LABELS[kind]) return;
+  messageTab = kind;
+  document.querySelectorAll('#message-tabs button').forEach((button) => button.classList.toggle('on', button.dataset.messageTab === kind));
+  renderMessages();
+}
+
+document.querySelectorAll('#message-tabs button').forEach((button) => {
+  button.onclick = () => selectMessageTab(button.dataset.messageTab);
+});
+
 // ---- 账号 ------------------------------------------------------------------
 let snapshot = { connected: false, state: 'IDLE', busy: null, looping: false };
 const disconnected = new Set();
+let overviewRefreshing = false;
 
+/** 根据账号连接快照更新账号选择器、连接按钮和总览手动刷新按钮。 */
 function renderAccountSelect() {
   const box = clear($('account'));
   if (!accounts.length) {
@@ -378,8 +522,11 @@ function renderAccountSelect() {
   $('busy').textContent = snapshot.paused ? '已暂停 · 可自行上号' : snapshot.connected ? '已连接' : '未连接';
   $('connect').disabled = snapshot.paused || snapshot.connected || !accounts.length;
   $('disconnect').disabled = !snapshot.connected;
+  $('overview-refresh').disabled = !snapshot.connected || overviewRefreshing;
+  $('overview-refresh').textContent = overviewRefreshing ? '刷新中...' : '刷新数据';
 }
 
+/** 从本地服务同步账号及连接快照，使按钮和后台轮询共用当前账号的真实状态。 */
 async function loadAccounts(reload) {
   const data = await call('/api/accounts');
   const previous = current;
@@ -393,9 +540,11 @@ async function loadAccounts(reload) {
   if (reload) {
     subscribe();
     refreshOverview();
+    loadMessages().catch((error) => { $('messages-status').textContent = '消息加载失败：' + error.message; });
   }
 }
 
+/** 账号切换清除英雄选择并重新加载当前账号的自动化表单。 */
 $('account').onchange = async () => {
   current = $('account').value;
   snapshot = accounts.find(a => a.id === current)?.status ?? {};
@@ -405,8 +554,13 @@ $('account').onchange = async () => {
   refreshActivities();
   refreshStages();
   refreshLoop();
+  heroSelectionAccount = null;
+  $('hero-run').disabled = true;
+  clear($('hero-selection'));
   await call('/api/accounts/active', { method: 'POST', body: JSON.stringify({ confirm: true, id: current }) });
   subscribe();
+  await loadMessages();
+  if (!$('tab-automation').classList.contains('hidden')) await loadAutomation();
   refreshOverview();
 };
 
@@ -430,7 +584,6 @@ $('account-pause').onclick = async () => {
     if (current === account) $('account-pause').disabled = false;
   }
 };
-
 $('connect').onclick = async () => {
   $('hint').textContent = '正在连接 ...';
   try {
@@ -441,12 +594,14 @@ $('connect').onclick = async () => {
     renderAccountSelect();
     refreshProgression();
     refreshOverview();
+    await loadMessages();
     $('hint').textContent = '';
   } catch (error) {
     $('hint').textContent = '';
     reportError(error);
   }
 };
+/** 主动断开后刷新本机状态，停止总览采集并清除页面上的旧连接数据。 */
 $('disconnect').onclick = async () => {
   const account = current;
   disconnected.add(account);
@@ -457,6 +612,8 @@ $('disconnect').onclick = async () => {
   snapshot.connected = false;
   $('busy').textContent = '未连接';
   renderAccountSelect();
+  await refreshOverview();
+  await loadMessages();
 };
 
 // ---- 总览 ------------------------------------------------------------------
@@ -489,6 +646,299 @@ function renderWho(view) {
   }
 }
 
+/** 创建总览中的状态卡片，并把值写入文本节点以避免协议内容被当作 HTML。 */
+function renderOverviewCard(id, title, rows, { wide = false } = {}) {
+  const card = clear($(id));
+  // 卡片宽度在静态模板中已声明；这里保留参数只用于表达调用方的布局意图，
+  // 也让最小化的离线 DOM 测试不需要实现完整的 classList API。
+  void wide;
+  card.appendChild(el('h3', null, title));
+  const lines = rows.filter((row) => row && row[1] !== undefined && row[1] !== null && row[1] !== '');
+  if (!lines.length) {
+    card.appendChild(el('div', 'empty', '暂无数据'));
+    return card;
+  }
+  const body = el('div', 'overview-lines');
+  for (const [label, value] of lines) {
+    const line = el('div', 'overview-line');
+    line.appendChild(el('span', 'label', label));
+    // 复杂状态允许返回原生 DOM（例如可展开的商情明细），普通字段仍按文本节点渲染。
+    const valueNode = typeof value === 'function' ? value() : el('span', 'value', String(value));
+    if (typeof value === 'function') valueNode.classList.add('value');
+    line.appendChild(valueNode);
+    body.appendChild(line);
+  }
+  card.appendChild(body);
+  return card;
+}
+
+/** 把联盟商情渲染成可键盘展开的城市明细，展示城市、特产、紧缺商品与共享人。 */
+function tradeRadarDisclosure(radar) {
+  const details = el('details', 'trade-radar-disclosure');
+  details.appendChild(el('summary', null, radar.length + ' 个城市'));
+  const list = el('div', 'trade-radar-list');
+  for (const entry of radar) {
+    const row = el('div', 'trade-radar-row');
+    row.appendChild(el('strong', null, (entry.cityName || '未知城市') + ' #' + (entry.cityId ?? '-')));
+    const field = (label, name, id) => {
+      const cell = el('div', 'trade-radar-field');
+      cell.appendChild(el('small', null, label));
+      cell.appendChild(document.createTextNode((name || '未知') + ' #' + (id ?? '-')));
+      return cell;
+    };
+    row.append(field('特产', entry.specGoodsName, entry.specGoodsId));
+    row.append(field('紧缺', entry.rareGoodsName, entry.rareGoodsId));
+    row.append(field('共享人', entry.reportName, null));
+    list.appendChild(row);
+  }
+  if (!radar.length) list.appendChild(el('div', 'empty', '暂无商情明细'));
+  details.appendChild(list);
+  return details;
+}
+
+/** 把总览状态中的建筑、舰队等列表压缩成单行摘要，控制卡片高度。 */
+function overviewList(list, mapper, limit = 8) {
+  return (list || []).slice(0, limit).map(mapper).join('；') || '无';
+}
+
+/** 将秒数格式化为舰队面板使用的剩余时间，避免把倒计时误显示成绝对时间。 */
+function fleetRemaining(seconds) {
+  const value = Math.max(0, Math.ceil(Number(seconds) || 0));
+  const minutes = Math.floor(value / 60);
+  const secs = value % 60;
+  return minutes + ':' + String(secs).padStart(2, '0');
+}
+
+/** 根据服务端已返回的目标字段生成舰队目标文案，未知类型保留可核对的坐标。 */
+function fleetTargetText(fleet) {
+  if (fleet.targetName) return fleet.targetName;
+  if (fleet.targetType) return String(fleet.targetType);
+  if (Number(fleet.targetCityId) > 0) return '城战 · 城市 #' + fleet.targetCityId;
+  if (fleet.targetGridIdx != null && Number(fleet.targetGridIdx) > 0) return '地图目标 · #' + fleet.targetGridIdx;
+  return '暂无目标';
+}
+
+/** 将协议状态转换为首屏更短的操作员用词。 */
+function fleetStatusText(fleet) {
+  return { 移动中: '行军', 维修中: '维修', 闲置: '空闲', 战斗中: '战斗', 排队中: '排队' }[fleet.stateText] || fleet.stateText || '未知';
+}
+
+/** 渲染首屏独立舰队面板，按舰队展示状态、耐久、倒计时与当前目标。 */
+function renderOverviewFleets(data) {
+  const panel = clear($('overview-fleets'));
+  const fleets = data.fleets?.list || [];
+  const heading = el('div', 'fleet-panel-heading');
+  heading.appendChild(el('h3', null, '舰队状态'));
+  heading.appendChild(el('small', null, fleets.length + ' 支远征舰队 · 自动刷新'));
+  panel.appendChild(heading);
+  if (!fleets.length) {
+    panel.appendChild(el('div', 'empty', '暂无舰队数据'));
+    return;
+  }
+  const list = el('div', 'fleet-list');
+  const now = Date.now() / 1000;
+  for (const fleet of fleets) {
+    const card = el('div', 'fleet-card');
+    const top = el('div', 'fleet-card-top');
+    top.appendChild(el('strong', null, fleet.buildingId || '未命名舰队'));
+    const statusText = fleetStatusText(fleet);
+    const status = el('span', 'fleet-card-status ' + (statusText === '空闲' ? 'idle' : statusText === '维修' ? 'repairing' : ''), statusText);
+    top.appendChild(status);
+    card.appendChild(top);
+    const meta = el('div', 'fleet-card-meta');
+    meta.appendChild(el('span', null, '耐久 ' + (fleet.durability ?? '-') + '/' + (fleet.maxDura ?? '-')));
+    const endTs = statusText === '维修' ? fleet.repairEndTs : fleet.moveEndTs;
+    if (endTs && endTs > now) meta.appendChild(el('span', 'fleet-card-time', statusText + '（' + fleetRemaining(endTs - now) + '）'));
+    else if (statusText === '行军' || statusText === '维修') meta.appendChild(el('span', 'fleet-card-time', '即将完成'));
+    card.appendChild(meta);
+    card.appendChild(el('div', 'fleet-card-target', '目标：' + fleetTargetText(fleet)));
+    list.appendChild(card);
+  }
+  panel.appendChild(list);
+}
+
+/** 渲染采集层已经拿到、但原总览没有展示的状态字段。 */
+function renderOverviewStatus(data) {
+  renderOverviewFleets(data);
+  const claimable = data.claimable || {};
+  renderOverviewCard('overview-claimable', '现在可以处理', [
+    ['主线任务', fmt(claimable.mainTask ?? 0) + ' 项'],
+    ['每日任务', fmt(claimable.daily ?? 0) + ' 项'],
+    ['成就', fmt(claimable.achievement ?? 0) + ' 项'],
+    ['邮件附件', fmt(claimable.email ?? 0) + ' 封'],
+    ['挂机等级奖励', fmt(claimable.afk ?? 0) + ' 项'],
+  ], { wide: true });
+
+  const daily = data.daily || {};
+  const gift = data.dailyGift || {};
+  renderOverviewCard('overview-daily', '日常与点金', [
+    ['任务完成', daily.tasks == null ? null : String(daily.done ?? 0) + '/' + String(daily.tasks)],
+    ['日活跃 / 周活跃', daily.dailyActivity == null ? null : fmt(daily.dailyActivity) + ' / ' + fmt(daily.weeklyActivity)],
+    ['成就', data.achievements ? String(data.achievements.done ?? 0) + '/' + String(data.achievements.total ?? 0) + '，可领 ' + String(data.achievements.claimable ?? 0) : null],
+    ['未读邮件', data.email ? String(data.email.unclaimed ?? 0) + ' 封' + (data.email.subjects?.length ? '：' + data.email.subjects.join('、') : '') : null],
+    ['任务重置', daily.resetTime ? when(daily.resetTime * 1000) : null],
+    ['每日赠礼', gift.drawnPack ? (gift.drawnPack.length ? '已领取' : '可领取') : null],
+    ['点金次数', data.clickGold ? fmt(data.clickGold.freeTimes) + ' 免费 / ' + fmt(data.clickGold.paidTimes) + ' 付费' : null],
+  ]);
+
+  const afk = data.afk || {};
+  renderOverviewCard('overview-afk', '挂机状态', [
+    ['挂机等级', afk.level],
+    ['本段收益', afk.startTime ? when(afk.startTime * 1000) + ' → ' + when(afk.finishTime * 1000) : null],
+    ['封顶状态', afk.capped == null ? null : (afk.capped ? '已封顶' : '收益累积中')],
+    ['待领等级', afk.pendingLevels],
+    ['已领等级', afk.rewardedLevel],
+  ]);
+
+  const buildings = data.buildings || [];
+  const buildingText = overviewList(buildings, (building) => {
+    const flags = [building.level ? 'lv' + building.level : '待建'];
+    if (building.auto) flags.push('自动');
+    if (building.building?.finish) flags.push('施工至' + when(building.building.finish * 1000));
+    if (building.factory?.finished?.length) flags.push('成品' + building.factory.finished.length);
+    if (building.factory?.queue?.length) flags.push('队列' + building.factory.queue.length);
+    return building.buildingId + '(' + flags.join('/') + ')';
+  });
+  const water = data.water || {};
+  renderOverviewCard('overview-water', '海面与生产', [
+    ['建筑', buildings.length + ' 座'],
+    ['建筑明细', buildingText],
+    ['自动生产', water.autoProduceForever ? '永久开启' : (water.autoProduceEndTime ? '至' + when(water.autoProduceEndTime * 1000) : '未开启')],
+    ['自动种植', water.autoFarming == null ? null : (water.autoFarming ? '开启' : '关闭')],
+    ['钓鱼 / 打捞 / 潜水', (water.fishingLevel ?? '-') + ' / ' + (water.salvageLevel ?? '-') + ' / ' + (water.divingLevel ?? '-')],
+    ['今日订单', water.orderOfTheDay ? String(water.orderOfTheDay.orderNum ?? 0) + ' / 已领奖 ' + String(water.orderOfTheDay.rewardedNum ?? 0) : null],
+    ['漂浮物 / 工人订单', String(water.floaterCount ?? 0) + ' / ' + String(water.workerOrderCount ?? 0)],
+  ], { wide: true });
+
+  renderOverviewProduction(data);
+
+  const trade = data.trade || {};
+  const tradePlayer = trade.player || {};
+  const tradeCargo = trade.cargo || {};
+  const tradeMoving = tradeCargo.moveEndTime && tradeCargo.moveEndTime > Date.now() / 1000;
+  const tradeGoods = (tradePlayer.goods || []).filter((goods) => (goods.num ?? 0) > 0);
+  const tradeRadar = data.tradeRadar || [];
+  renderOverviewCard('overview-trade', '海商王', [
+    ['开放状态', data.trade ? (trade.period > 0 ? '已开放，第 ' + trade.period + ' 期' : '未开放') : null],
+    ['贸易船', data.trade ? '等级 ' + (tradeCargo.cargoLv ?? '-') + '，' + (tradeMoving ? '航行中' : '已停靠') : null],
+    ['航线', data.trade && tradeCargo.cityId ? String(tradeCargo.cityId) + ' → ' + (tradeCargo.moveToCityId || '-') : null],
+    ['到港时间', tradeMoving ? when(tradeCargo.moveEndTime * 1000) : '当前已到港'],
+    ['贸易金币', data.trade ? fmt(tradePlayer.coins ?? 0) + ' / ' + fmt(tradePlayer.maxCoins ?? 0) : null],
+    ['累计利润', data.trade ? fmt(tradePlayer.profit ?? 0) : null],
+    ['船舱货物', data.trade ? (tradeGoods.length ? overviewList(tradeGoods, (goods) => '货物' + goods.goodsId + ' ×' + goods.num) : '空') : null],
+    ['联盟商情', data.tradeRadar ? () => tradeRadarDisclosure(tradeRadar) : null],
+    ['贸易任务', trade.guildTask ? '利润 ' + fmt(trade.guildTask.profit ?? 0) + '，贸易次数 ' + fmt(trade.guildTask.tradeTimes ?? 0) : null],
+    ['可领奖励', trade ? '成就 #' + (trade.gotAchieveRwdId ?? 0) + '，商情 #' + (trade.gotReportRwdId ?? 0) : null],
+  ], { wide: true });
+
+  const cargo = data.cargo || {};
+  const radar = data.radar || {};
+  renderOverviewCard('overview-world', '世界状态', [
+    ['资源田', data.resFields ? String(data.resFields.count ?? 0) + '/' + String(data.resFields.max ?? 0) : null],
+    ['货船', String(cargo.count ?? 0) + ' 艘' + (cargo.list?.length ? '：' + overviewList(cargo.list, (ship) => '#' + ship.index + ' ' + (ship.filledCount ?? 0) + '/' + (ship.orderCount ?? 0)) : '')],
+    ['海盗', data.pirates ? String(data.pirates.count ?? 0) + ' 个，可扫荡 ' + String(data.pirates.sweepTimes ?? 0) + ' 次' : null],
+    ['雷达', data.radar ? 'lv' + (radar.level ?? '-') + '，事件 ' + (radar.events?.length ?? 0) + '，储存 ' + (radar.storedNum ?? 0) : null],
+    ['世界 Boss', data.worldBoss ? 'Boss ' + (data.worldBoss.bossId ?? 0) + '，最高伤害 ' + fmt(data.worldBoss.bestDamage ?? 0) : null],
+  ]);
+
+  const counters = (data.counters || []).map((counter) => String(counter.type) + '=' + String(counter.num)).join('；');
+  renderOverviewCard('overview-guild', '公会与计数', [
+    ['公会候选', data.guild ? data.guild.length + ' 个' : null],
+    ['公会科技', data.guildTech ? data.guildTech.length + ' 项' : null],
+    ['公会订单', data.guildOrder ? '需求 ' + (data.guildOrder.requirements?.length ?? 0) + ' 项' : null],
+    ['每日计数', counters || '暂无计数'],
+  ]);
+
+  const season = data.season || {};
+  renderOverviewCard('overview-progress', '任务、赛季与活动', [
+    ['主线任务', data.mainTask ? '#' + data.mainTask.taskId + ' 进度 ' + (data.mainTask.progress ?? 0) + (data.mainTask.targetProgress == null ? '' : '/' + data.mainTask.targetProgress) : null],
+    ['引导', data.guide ? '阶段 ' + (data.guide.stage ?? '-') + ' · 步骤 ' + (data.guide.step ?? '-') + '（已触发 ' + (data.guideDone ?? 0) + ' 项）' : null],
+    ['赛季', data.season ? '阶段 ' + (season.seasonTaskStage ?? '-') + '，结束 ' + when((season.endTime ?? 0) * 1000) : null],
+    ['通行证', data.pass ? '最高开放 ' + (data.pass.maxOpenStage ?? '-') + '，' + (data.pass.isOver ? '已结束' : '进行中') : null],
+    ['周订单', data.weekOrder ? (data.weekOrder.count ?? 0) + ' 项，最终奖励' + (data.weekOrder.isGotFinal ? '已领' : '未领') : null],
+    ['周活动', data.week ? data.week.length + ' 个' : null],
+  ]);
+
+  const recruit = data.recruit || {};
+  const heroRecruit = recruit.hero || {};
+  const antiqueRecruit = recruit.antique || {};
+  renderOverviewCard('overview-collection', '招募与收藏', [
+    ['英雄招募', recruit.hero ? (heroRecruit.recruitTimes ?? 0) + ' 次，保底 ' + (heroRecruit.nextLuck ?? '-') : null],
+    ['藏品招募', recruit.antique ? (antiqueRecruit.recruitTimes ?? 0) + ' 次，保底 ' + (antiqueRecruit.nextLuck ?? '-') : null],
+    ['英雄阵型', data.heroes?.formation?.length ? data.heroes.formation.map((slot) => slot.heroId + '@' + slot.x + ',' + slot.y).join('；') : '未配置'],
+    ['藏品 / 宠物 / 装备', (data.antiques?.count ?? 0) + ' / ' + (data.pets ?? 0) + ' / ' + (data.equips ?? 0)],
+    ['大师等级 / 套装', data.antiques ? (data.antiques.masterLv ?? 0) + ' / ' + (data.antiques.suits ?? 0) : null],
+    ['月卡', data.monthCard?.length ? data.monthCard.map((card) => (card.active ? '生效' : '过期') + '至' + when((card.endTime ?? 0) * 1000)).join('；') : '无'],
+    ['鱼类图鉴', data.fish ? (data.fish.count ?? 0) + ' 条' : null],
+  ]);
+
+  renderOverviewCard('overview-data-health', '数据采集', [
+    ['最近刷新', data.updatedAt ? when(data.updatedAt) : null],
+    ['连接状态', data.status?.connected ? '已连接' : '未连接'],
+    ['未读响应', data.unreadable?.length ? data.unreadable.join('、') : '全部可读'],
+  ], { wide: true });
+}
+
+/** 渲染每块农田与每座工厂的当前生产明细，供总览轮询直接刷新。 */
+function renderOverviewProduction(data) {
+  const card = clear($('overview-production'));
+  card.appendChild(el('h3', null, '农田与工厂生产'));
+  const production = data.production || {};
+  const farms = production.farms || [];
+  const factories = production.factories || [];
+  if (!farms.length && !factories.length) {
+    card.appendChild(el('div', 'empty', '暂无农田或工厂数据'));
+    return;
+  }
+
+  const grid = el('div', 'overview-production');
+  const farmPane = el('div', 'overview-table');
+  farmPane.appendChild(el('h4', null, '农田（' + farms.length + ' 块）'));
+  const farmRows = farms.map((farm) => {
+    const ripe = farm.productId && farm.ripeTime && farm.ripeTime <= Date.now() / 1000;
+    const status = !farm.productId
+      ? chip('unknown', '空闲')
+      : ripe
+        ? chip('done', '已成熟')
+        : chip('waiting', farm.ripeTime ? '生长至 ' + when(farm.ripeTime * 1000) : '种植中');
+    return [
+      farm.buildingId,
+      farm.productId ? { cell: { id: farm.productId, icon: farm.icon } } : '未种植',
+      status,
+    ];
+  });
+  farmPane.appendChild(table(['农田', '作物', '状态'], farmRows));
+  grid.appendChild(farmPane);
+
+  const factoryPane = el('div', 'overview-table');
+  factoryPane.appendChild(el('h4', null, '工厂（' + factories.length + ' 座）'));
+  const factoryRows = factories.map((factory) => {
+    const queue = factory.queue || [];
+    const products = queue.length
+      ? queue.map((job) => ({ id: job.productId, icon: job.icon }))
+      : factory.autoProductId
+        ? [{ id: '自动：' + factory.autoProductId, icon: factory.autoIcon }]
+        : [];
+    const status = queue.length
+      ? chip('waiting', '生产中 ' + queue.length + ' 项')
+      : factory.autoProductId
+        ? chip('partial', '自动生产')
+        : factory.finished?.length
+          ? chip('partial', '待领取 ' + factory.finished.length + ' 项')
+        : chip('unknown', '空闲');
+    const finishText = queue.filter((job) => job.finishTime).map((job) => when(job.finishTime * 1000)).join('、');
+    return [
+      factory.buildingId,
+      products.length ? { cells: products } : '无排产',
+      finishText ? '生产中至 ' + finishText : status,
+    ];
+  });
+  factoryPane.appendChild(table(['工厂', '产品', '状态 / 完成时间'], factoryRows));
+  grid.appendChild(factoryPane);
+  card.appendChild(grid);
+}
+
+/** 渲染总览的账号、资源、英雄和扩展状态卡片。 */
 function renderOverview(data) {
   renderWho(data);
   const res = clear($('res'));
@@ -499,22 +949,55 @@ function renderOverview(data) {
   for (const entry of (data.items && data.items.top) || []) items.appendChild(cell(entry.icon, 34, entry.name, 'x' + fmt(entry.num)));
   if (!items.childElementCount) items.appendChild(el('span', 'dim', '暂无数据'));
 
+  const materials = clear($('materials'));
+  // 每种原材料都使用当前账号的动态仓库上限，避免把固定初始容量误显示成实时容量。
+  for (const entry of data.materials || []) {
+    const capacity = entry.capacity == null ? '-' : fmt(entry.capacity);
+    materials.appendChild(cell(entry.icon, 34, entry.itemId, fmt(entry.num) + ' / ' + capacity));
+  }
+  if (!materials.childElementCount) materials.appendChild(el('span', 'dim', '暂无原材料数据'));
+
+  const crops = clear($('crops'));
+  // 总览统一展示所有已配置农作物；低于人工种植水位时用红框提醒补种。
+  for (const entry of data.crops || []) {
+    const capacity = entry.capacity == null ? '-' : fmt(entry.capacity);
+    const cropCell = cell(entry.icon, 34, entry.itemId, fmt(entry.num) + ' / ' + capacity);
+    const target = Number(entry.plantTarget);
+    const amount = Number(entry.num);
+    // 水位为 0 表示不设补种目标，不应把该作物标成低库存。
+    if (Number.isFinite(target) && target > 0 && Number.isFinite(amount) && amount < target) cropCell.classList.add('crop-low-stock');
+    crops.appendChild(cropCell);
+  }
+  if (!crops.childElementCount) crops.appendChild(el('span', 'dim', '暂无农作物数据'));
+
   const heroes = clear($('hero-strip'));
   for (const hero of (data.heroes && data.heroes.list) || []) {
     heroes.appendChild(cell(hero.icon, 40, hero.heroId, 'lv' + hero.level + ' · ' + hero.star + '星'));
   }
   if (!heroes.childElementCount) heroes.appendChild(el('span', 'dim', '暂无数据'));
+  renderOverviewStatus(data);
 }
 
 let overviewPending = false;
 let claiming = false;
-async function refreshOverview() {
-  if (overviewPending || claiming || !current || snapshot.paused || disconnected.has(current) || document.hidden || $('tab-overview').classList.contains('hidden')) return;
+/** 总览只查询已连接的空闲账号，加载本地页面不会自动使用保存凭证登录游戏。 */
+async function refreshOverview(manual = false) {
+  if (!current) return;
   const account = current;
-  overviewPending = true;
   try {
+    // 先查询本机会话状态，不能用上次加载账号时缓存的 connected 决定是否请求游戏。
+    await loadAccounts(false);
+    if (account !== current) return;
+    $('busy').textContent = snapshot.busy ? '执行中: ' + snapshot.busy : '';
+    if (!snapshot.connected) {
+      renderOverview({ account: accounts.find(a => a.id === current), status: snapshot });
+      renderMessages({ connected: false });
+      return;
+    }
+    if (activeBusinessRequests || snapshot.busy || (!manual && snapshot.looping) || (typeof automationRunning !== 'undefined' && automationRunning)) return;
     const data = await call('/api/overview');
-    if (account !== current || snapshot.paused || disconnected.has(account)) return;
+    // 断开或切换账号后的迟到回包不能把页面重新显示成已连接。
+    if (account !== current || !snapshot.connected || snapshot.paused || disconnected.has(account)) return;
     snapshot = data.status;
     renderAccountSelect();
     renderOverview(data);
@@ -524,6 +1007,19 @@ async function refreshOverview() {
     reportError(error, '刷新总览');
   } finally { overviewPending = false; }
 }
+
+/** 手动刷新当前账号的总览数据，并在请求期间锁定按钮避免重复采集。 */
+$('overview-refresh').onclick = async () => {
+  if (overviewRefreshing || !snapshot.connected) return;
+  overviewRefreshing = true;
+  renderAccountSelect();
+  try {
+    await refreshOverview(true);
+  } finally {
+    overviewRefreshing = false;
+    renderAccountSelect();
+  }
+};
 
 $('loot-run').onclick = async () => {
   const account = current;
@@ -934,8 +1430,16 @@ function skillText(levels) {
   return raised.length ? '已升 ' + raised.length + '/' + list.length : '未升级';
 }
 
+/** 英雄选择与账号设置共用同一列表，保存后才开放培养按钮。 */
 function renderHeroes(data) {
+  heroSelectionAccount = current;
   $('hero-view').textContent = data.text;
+  const selection = clear($('hero-selection'));
+  for (const hero of data.heroes) {
+    const label = el('label'), input = el('input'); input.type = 'checkbox'; input.value = hero.heroId; input.dataset.hero = hero.heroId; input.checked = (data.selected || []).includes(hero.heroId);
+    label.append(input, document.createTextNode(' ' + hero.heroId)); selection.appendChild(label);
+  }
+  $('hero-run').disabled = !(data.selected || []).length;
   const box = clear($('hero-table'));
   const planned = new Set(data.steps.map(step => step.heroId));
   if (!planned.size) return;
@@ -948,31 +1452,57 @@ function renderHeroes(data) {
   ])));
 }
 
+/** 英雄查询完成时再次核对账号，避免较慢回包覆盖新账号选择。 */
 $('hero-plan').onclick = async () => {
   $('hero-hint').textContent = '计算中 ...';
+  const account=current;
   try {
-    renderHeroes(await call('/api/heroes'));
+    const data=await call('/api/heroes');
+    if(account!==current)return;
+    renderHeroes(data);
     $('hero-hint').textContent = '';
   } catch (error) {
     $('hero-hint').textContent = '';
     reportError(error);
   }
 };
-bindGameAction('hero-run', async () => {
-  $('hero-hint').textContent = '执行中 ...';
+/** 保存选择不自动开启培养动作，避免一次选择触发用户尚未配置的消费。 */
+$('hero-save').onclick = async () => {
   try {
-    const data = await call('/api/heroes/run', { method: 'POST', body: JSON.stringify({ confirm: true }) });
-    $('hero-hint').textContent = '发出 ' + data.sent + ' 个请求，失败 ' + data.failed + '，跳过 ' + data.skipped + '，耗时 ' + Math.round(data.ms / 1000) + 's';
-    $('hero-plan').onclick();
-  } catch (error) {
-    $('hero-hint').textContent = '';
-    reportError(error);
-  }
-});
+    if (heroSelectionAccount !== current) throw new Error('请先加载当前账号英雄');
+    const account=current;
+    const selected=[...document.querySelectorAll('[data-hero]:checked')].map(n => n.value);
+    const data = await call('/api/automation/settings');
+    if(account!==current)throw new Error('账号已切换，请重新选择英雄');
+    data.settings.modules.hero.heroes = selected;
+    await call('/api/automation/settings', {method:'POST', body:JSON.stringify({confirm:true,settings:data.settings})});
+    $('hero-run').disabled = !data.settings.modules.hero.heroes.length;
+    $('hero-hint').textContent = '已保存选择；请在自动化设置开启英雄模块和所需培养动作。';
+  } catch(error) { $('hero-hint').textContent=error.message; }
+};
+/** 培养确认绑定当前账号，确认期间切换账号不向新账号提交原操作。 */
+$('hero-run').onclick = () => {
+  const account = current;
+  openConfirm('执行英雄养成计划', [
+    el('div', null, '按已保存的指定英雄及培养设置执行，可能消耗经验、碎片、技能书、专武和强化材料。'),
+  ], async () => {
+    if (account !== current) throw new Error('账号已切换，请重新确认当前账号培养');
+    $('hero-hint').textContent = '执行中 ...';
+    try {
+      const data = await call('/api/heroes/run', { method: 'POST', body: JSON.stringify({ confirm: true }) });
+      if (account !== current) return;
+      $('hero-hint').textContent = '发出 ' + data.sent + ' 个请求，失败 ' + data.failed + '，耗时 ' + Math.round(data.ms / 1000) + 's';
+      $('hero-plan').onclick();
+    } catch (error) {
+      $('hero-hint').textContent = error.message;
+    }
+  });
+};
 
 // ---- 日常 ------------------------------------------------------------------
 const DAILY_LABEL = { ready: '可做', paid: '需付费', partial: '部分可做', waiting: '等待中', done: '已完成', blocked: '不可用', error: '出错', unknown: '未知' };
 
+/** 显示日常进度及领奖计划，并明确消费仍受账号额度约束。 */
 function renderDailies(data) {
   const box = clear($('dailies-table'));
   box.appendChild(table(['任务', '进度', '状态', '动作 / 原因'], data.tasks.map((entry) => [
@@ -1003,7 +1533,7 @@ function renderDailies(data) {
         free ? '免费，一键领取会顺手领掉' : '今天那份已经领过了，明天 0 点重置'],
     ]));
   }
-  $('dailies-view').textContent = data.text + String.fromCharCode(10) + '钻石 ' + fmt(data.ruby) + '（本工具不主动花钻石）';
+  $('dailies-view').textContent = data.text + String.fromCharCode(10) + '钻石 ' + fmt(data.ruby) + '（付费操作受账号消费开关及日额度限制）';
 }
 
 $('dailies-plan').onclick = async () => {
@@ -1212,11 +1742,73 @@ async function exportAccounts(id) {
   } catch (error) { reportError(error); }
 }
 $('export-accounts').onclick = () => exportAccounts();
+/** 加载当前账号的企微通知设置；账号切换期间的迟到响应不得覆盖新账号的表单。 */
+async function renderWecomNotification() {
+  const account = current;
+  const enabled = $('wecom-enabled');
+  const webhook = $('wecom-webhook');
+  const save = $('wecom-save');
+  const hint = $('wecom-hint');
+  enabled.disabled = true;
+  webhook.disabled = true;
+  save.disabled = true;
+  if (!account) {
+    enabled.checked = false;
+    webhook.value = '';
+    hint.textContent = '请先添加并选择账号';
+    return;
+  }
+  hint.textContent = '加载中...';
+  try {
+    const data = await call('/api/accounts/notifications');
+    if (account !== current) return;
+    const wecom = data.notifications.wecom;
+    enabled.checked = wecom.enabled;
+    webhook.value = wecom.webhook;
+    enabled.disabled = false;
+    webhook.disabled = false;
+    save.disabled = false;
+    hint.textContent = '';
+  } catch (error) {
+    if (account === current) hint.textContent = '企微通知设置加载失败：' + error.message;
+  }
+}
+
+/** 保存当前账号的企微机器人地址和启用状态，不触碰自动化的其他账号设置。 */
+async function saveWecomNotification() {
+  const account = current;
+  if (!account) return;
+  const save = $('wecom-save');
+  const hint = $('wecom-hint');
+  const notifications = {
+    wecom: {
+      enabled: $('wecom-enabled').checked,
+      // 机器人地址属于用户输入的外部终点，去除首尾空白避免保存后产生无效请求。
+      webhook: $('wecom-webhook').value.trim(),
+    },
+  };
+  save.disabled = true;
+  hint.textContent = '保存中...';
+  try {
+    const data = await call('/api/accounts/notifications', { method: 'POST', body: JSON.stringify({ confirm: true, notifications }) });
+    if (account !== current) return;
+    $('wecom-enabled').checked = data.notifications.wecom.enabled;
+    $('wecom-webhook').value = data.notifications.wecom.webhook;
+    hint.textContent = '企微通知已保存';
+  } catch (error) {
+    if (account === current) hint.textContent = '企微通知设置保存失败：' + error.message;
+  } finally {
+    if (account === current) save.disabled = false;
+  }
+}
+
+/** 渲染账号卡片，并把最近一次观测到的角色等级和 VIP 等级显示给用户。 */
 async function renderAccounts() {
   $('export-accounts').disabled = !accounts.length;
   const box = clear($('accounts'));
   if (!accounts.length) {
     box.appendChild(el('div', 'dim', '还没有账号。先在下面用「从电脑微信添加」，或跑 node tools/capture-credentials.mjs。'));
+    await renderWecomNotification();
     return;
   }
   for (const account of accounts) {
@@ -1226,7 +1818,7 @@ async function renderAccounts() {
     top.appendChild(el('span', 'id', account.id.slice(0, 10) + '…'));
     if (account.id === current) top.appendChild(chip('done', '当前'));
     const seenInfo = account.lastSeen
-      ? '上次 ' + (account.lastSeen.nickname || '?') + ' lv' + (account.lastSeen.level ?? '?') + ' 战力' + fmt(account.lastSeen.power) + ' @' + when(account.lastSeen.at)
+      ? '上次 ' + (account.lastSeen.nickname || '?') + ' lv' + (account.lastSeen.level ?? '?') + ' VIP' + (account.lastSeen.vipLevel ?? '?') + ' 战力' + fmt(account.lastSeen.power) + ' @' + when(account.lastSeen.at)
       : '还没连过';
     top.appendChild(el('span', 'id', seenInfo));
     const use = smallButton(account.id === current ? '已选中' : '切换到它');
@@ -1258,7 +1850,10 @@ async function renderAccounts() {
     card.appendChild(top);
     box.appendChild(card);
   }
+  await renderWecomNotification();
 }
+
+$('wecom-save').onclick = saveWecomNotification;
 
 $('cred-show').onclick = async () => {
   $('cred-show').disabled = true;
@@ -1347,6 +1942,7 @@ $('enter-world').onclick = () => {
 // ---- 添加账号：从电脑微信采集登录 -----------------------------------------
 let capturePoll = null;
 
+/** 采集面板展示原出站路径与回滚状态，不渲染登录凭证。 */
 function renderCapture(state) {
   const hint = $('cap-hint');
   const box = clear($('cap-box'));
@@ -1383,6 +1979,7 @@ function renderCapture(state) {
     const rows = [
       ['系统代理', (state.proxyOn ? '已打开 -> ' + (state.proxy?.ProxyServer ?? '') : '未打开') + '　原值 ' + (state.originalProxy?.ProxyEnable ?? '无') + ' / ' + (state.originalProxy?.ProxyServer ?? '无')],
       ['本地证书', state.caInstalled ? (state.caAddedByCapture ? '本次安装，结束后移除' : '原有证书，结束后保留') : '未安装'],
+      ['上游代理', state.upstreamProxy ? state.upstreamProxy.host + ':' + state.upstreamProxy.port : '未使用'],
       ['抓包代理', state.port ? '127.0.0.1:' + state.port : '-'],
     ];
     for (const [k, v] of rows) {
@@ -1454,6 +2051,8 @@ $('cap-stop').onclick = async () => {
   renderAccounts();
 };
 
+${AUTOMATION_SCRIPT}
+
 // ---- 启动 ------------------------------------------------------------------
 ${progressionScript}
 document.querySelectorAll('#tabs button').forEach((button) => {
@@ -1474,6 +2073,7 @@ document.querySelectorAll('#tabs button').forEach((button) => {
     if (button.dataset.tab === 'idle') refreshLoop();
     if (button.dataset.tab === 'activities') refreshActivities();
     if (button.dataset.tab === 'stages') refreshStages();
+    if (button.dataset.tab === 'automation') loadAutomation().catch(error => $('automation-hint').textContent = error.message);
   };
 });
 

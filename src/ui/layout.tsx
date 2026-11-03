@@ -13,6 +13,7 @@ const tabs = [
   ["overview", "总览", "icon_btn_bottom_home", LayoutDashboard], ["idle", "挂机", "icon_btn_offline", Timer],
   ["manual", "单次操作", "icon_btn_bottom_bag", Hand], ["stages", "挑战", "icon_btn_bottom_battle", Flag],
   ["heroes", "英雄", "icon_btn_bottom_hero", Swords], ["dailies", "日常", "icon_btn_star", CalendarDays],
+  ["automation", "自动化", "icon_btn_moreFunc", Timer],
   ["activities", "活动", "icon_activity_week_month", Gift], ["account", "账号", "icon_btn_moreFunc", ContactRound],
 ] as const
 
@@ -29,6 +30,7 @@ function GameIcon({ sprite, size, children }: { sprite: Sprite | null; size: num
   </span>
 }
 
+/** 上游导航保留原入口，新自动化页面在同一套组件与主题中注册。 */
 export function chrome(icon: (name: string) => Sprite | null) {
   return renderToStaticMarkup(<header>
     <div className="headline">

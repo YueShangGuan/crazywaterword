@@ -13,16 +13,35 @@ function Option({id, label, checked = false}: {id: string; label: string; checke
   return <div className="bar"><Switch id={id} data-local-switch="" defaultChecked={checked} className="p-0" /><label htmlFor={id}>{label}</label></div>
 }
 
+/** 总览沿用上游组件布局，增加库存、舰队和只读消息状态容器。 */
 export function overviewPage() {
   return renderToStaticMarkup(<div className="grid gap-4">
     <Panel title="角色概况">
 <div className="who" id="who"><span className="dim">还没连上。点右上角「连接」，或先去「账号」页添加账号。</span></div>
+      <Button id="overview-refresh" variant="outline">刷新数据</Button>
     </Panel>
     <Panel title="资源"><div className="icons" id="res"><span className="dim">连接后显示</span></div>
     </Panel>
     <Panel title="库存"><div className="icons" id="items"><span className="dim">连接后显示</span></div>
     </Panel>
+    <Panel title="原材料库存（当前 / 仓库上限）"><div className="material-panel" id="materials" /></Panel>
+    <Panel title="农作物库存（当前 / 上限）"><div className="material-panel" id="crops" /></Panel>
     <Panel title="主力英雄"><div className="icons" id="hero-strip"><span className="dim">连接后显示</span></div></Panel>
+    <div className="overview-grid" id="overview-status-grid">
+      <div className="fleet-panel" id="overview-fleets" />
+      {['claimable','daily','afk','water','production','trade','world','guild','progress','collection','data-health'].map(name =>
+        <div key={name} className="overview-card" id={'overview-' + name} />)}
+    </div>
+    <Panel title="游戏消息">
+      <div className="message-panel">
+        <div className="message-tabs" id="message-tabs">
+          {Object.entries({ world:'世界', notice:'通知', private:'私聊', guild:'联盟' }).map(([kind, label]) =>
+            <Button key={kind} data-message-tab={kind} variant="outline">{label}</Button>)}
+        </div>
+        <p className="dim" id="messages-status" />
+        <div className="message-list" id="message-list" />
+      </div>
+    </Panel>
   </div>)
 }
 
@@ -79,15 +98,18 @@ export function manualPage() {
   </div>)
 }
 
+/** 选择并保存培养对象；任命和装备等上游独有入口仍保留。 */
 export function heroesPage() {
   return renderToStaticMarkup(<div className="grid gap-4">
     <Panel title="英雄养成">
 <div className="bar">
       <Button id="hero-plan" variant="outline">计算计划</Button>
-      <Button id="hero-run" variant="default">执行养成</Button>
+      <Button id="hero-save" variant="outline">保存所选英雄</Button>
+      <Button id="hero-run" variant="default" disabled>培养所选英雄</Button>
       <span id="hero-hint" className="warn"></span>
     </div>
-    <pre id="hero-view">升级、升星、升技能的条件取自游戏客户端的红点逻辑；执行前会先算一遍计划。</pre>
+    <pre id="hero-view">先保存所选英雄，再在自动化设置中启用对应培养动作。</pre>
+    <div id="hero-selection" className="bar" />
     <div id="hero-table"></div>
     </Panel>
     <Panel title="英雄任命">
@@ -121,12 +143,21 @@ export function dailiesPage() {
   </div>)
 }
 
+/** 账号页保留上游凭证导出与双渠道采集，并单独提供本地通知配置。 */
 export function accountPage() {
   return renderToStaticMarkup(<div className="grid gap-4">
     <Panel title="账号">
     <div className="bar"><Button id="export-accounts" variant="outline">导出全部账号</Button><span className="dim">备份含登录凭证，请妥善保管。</span></div>
     <div id="accounts"></div>
 
+    </Panel>
+    <Panel title="企微通知（当前账号）">
+      <div className="bar">
+        <label><input type="checkbox" id="wecom-enabled" /> 自动化异常停止、连接异常断开时通知</label>
+        <Input id="wecom-webhook" type="url" autoComplete="off" placeholder="企微机器人 Webhook 地址" />
+        <Button id="wecom-save">保存企微通知</Button><span id="wecom-hint" className="warn" />
+      </div>
+      <p className="dim">配置仅保存在当前账号的本地数据目录，不进入版本库。</p>
     </Panel>
     <Panel title="凭证">
     <div className="bar">

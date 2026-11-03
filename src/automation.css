@@ -1,0 +1,89 @@
+/* 自动化和总览扩展使用独立选择器，避免覆盖上游组件主题。 */
+  /* 总览扩展继承上游浅色主题；卡片和窄表格不挤压右侧日志栏。 */
+  .material-panel { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(100%,160px),1fr)); gap:8px; }
+  .material-panel .cell { min-width:0; }
+  .material-panel .txt { min-width:0; overflow-wrap:anywhere; }
+  .material-panel .crop-low-stock { border-color:#b73838; background:#fff1ef; }
+  .overview-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr)); gap:12px; }
+  .overview-card, .fleet-panel { min-width:0; border:1px solid var(--line); border-radius:8px; background:white; padding:14px; }
+  .overview-card h3, .fleet-panel h3 { font-weight:600; margin-bottom:8px; }
+  .overview-lines { display:grid; gap:6px; }
+  .overview-line { display:flex; justify-content:space-between; align-items:start; gap:12px; }
+  .overview-line .label { color:var(--muted); flex:none; }
+  .overview-line .value { min-width:0; text-align:right; overflow-wrap:anywhere; }
+  .fleet-panel, #overview-production { grid-column:1 / -1; }
+  .fleet-panel-heading, .fleet-card-top, .fleet-card-meta { display:flex; justify-content:space-between; gap:8px; flex-wrap:wrap; }
+  .fleet-panel-heading small, .fleet-card-meta, .fleet-card-target { color:var(--muted); font-size:12px; }
+  .fleet-list { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr)); gap:10px; }
+  .fleet-card { min-width:0; padding:10px; border:1px solid var(--line); border-radius:6px; background:var(--paper); }
+  .fleet-card-meta { margin:6px 0; }
+  .fleet-card-target { overflow-wrap:anywhere; }
+  .fleet-card-status { color:var(--teal); }
+  .fleet-card-status.idle { color:#19624e; }
+  .fleet-card-status.repairing { color:#8c4e14; }
+  .overview-production { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr)); gap:14px; }
+  .overview-table { min-width:0; overflow-x:auto; }
+  .trade-radar-disclosure summary { cursor:pointer; color:var(--teal); }
+  .trade-radar-list { display:grid; gap:8px; margin-top:8px; text-align:left; }
+  .trade-radar-row { border:1px solid var(--line); border-radius:4px; padding:8px; }
+  .trade-radar-field small { color:var(--muted); margin-right:6px; }
+  .message-panel { border: 1px solid #29424b; border-radius: 6px; background: linear-gradient(145deg, #151e23, #10161a); padding: 10px; }
+  .message-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+  .message-tabs button { border-color: #31505a; background: #111a1e; color: #8ea7ad; }
+  .message-tabs button.on { border-color: #5b9eaa; background: #1d353b; color: #e1f0f1; }
+  .message-list { height: 260px; overflow: auto; padding: 4px 8px; border: 1px solid #22353c; border-radius: 4px; background: #0d1418; }
+  .message-row { display: grid; grid-template-columns: 76px minmax(80px, 150px) minmax(0, 1fr); gap: 8px; padding: 5px 0; border-bottom: 1px solid #1d2b30; }
+  .message-row:last-child { border-bottom: 0; }
+  .message-row .ts, .message-row .sender { color: #7f9aa1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .message-row .body { color: #d5e4e6; overflow-wrap: anywhere; }
+  .message-empty { padding: 28px 8px; color: #7c8695; text-align: center; }
+  @media (max-width:720px) { .message-row { grid-template-columns: 64px minmax(0, 1fr); } .message-row .body { grid-column: 1 / -1; } }
+  .automation-group { border:1px solid var(--line); border-radius:4px; padding:8px 12px; margin:8px 0; }
+  .automation-group summary { cursor:pointer; color:var(--teal); }
+  .automation-group-note { margin:7px 0 9px; color:var(--muted); font-size:12px; line-height:1.55; }
+  .automation-field { display:flex; align-items:center; justify-content:space-between; gap:16px; max-width:780px; margin:8px 0; }
+  .automation-field-copy { display:grid; gap:2px; flex:1; min-width:0; }
+  .automation-field-label { color:var(--ink); }
+  .automation-field-help { color:var(--muted); font-size:12px; line-height:1.45; }
+  /* 三列分别承载游戏选项、当前配置与生成结果；窄屏按操作顺序依次换行。 */
+  .automation-editor { display:grid; grid-template-columns:minmax(180px,1fr) minmax(260px,1.2fr) minmax(200px,280px); gap:10px; max-width:1160px; margin:8px 0 14px; padding:10px; border:1px solid #303640; border-radius:6px; background:#15191f; align-items:start; }
+  .automation-editor-pane { min-width:0; padding:8px; border:1px solid #262d37; border-radius:5px; background:#101419; }
+  .automation-editor-pane strong { display:block; color:#b9c7d8; margin-bottom:6px; }
+  .automation-editor .automation-field-label { color:#d7e0e5; }
+  .automation-editor .automation-field-help { color:#aabac5; }
+  .automation-editor-note { margin:4px 0 10px; color:#7c8695; font-size:12px; }
+  .automation-choice-list { max-height:210px; overflow:auto; }
+  .automation-choice-search { width:100%; min-width:0; margin-bottom:6px; }
+  .automation-choice { margin:3px; padding:3px 8px; font-size:12px; }
+  .automation-choice.on { border-color:#4f8e64; color:#a7e2b4; background:#1d3023; }
+  .automation-editor-add { display:flex; gap:5px; margin-top:8px; }
+  .automation-editor-add input { min-width:0; width:100%; }
+  .automation-editor-rows { display:grid; gap:6px; min-width:0; }
+  .automation-editor-row { display:flex; gap:6px; align-items:center; min-width:0; padding:5px; border:1px solid #29303a; border-radius:4px; background:#11161c; }
+  .automation-editor-row input[type=text], .automation-editor-row input[type=number] { min-width:0; width:100%; }
+  .automation-editor-row > select { flex:1; min-width:0; }
+  .automation-editor select { min-width:0; max-width:100%; width:100%; }
+  .automation-dictionary-label { display:grid; gap:4px; flex:1; min-width:0; }
+  .automation-editor-row label { color:#8996a7; font-size:12px; white-space:nowrap; }
+  .automation-chip { display:flex; align-items:center; gap:6px; padding:4px 7px; border:1px solid #3a5368; border-radius:4px; color:#b9d8ef; background:#182733; font-size:12px; }
+  .automation-chip span { flex:1; overflow-wrap:anywhere; }
+  .automation-chip-remove { padding:0 3px; border:0; background:transparent; color:#9bb5c6; font-size:14px; line-height:1; }
+  .automation-json-pane { min-width:0; }
+  .automation-json-pane > strong { display:block; margin:8px 0 6px; font-size:12px; color:#94b9b6; }
+  .automation-json { width:100%; min-height:150px; padding:8px; resize:vertical; background:#0d1116; color:#b8e0a0; border:1px solid #2f353f; border-radius:4px; font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace; }
+  .automation-json[readonly] { cursor:default; }
+  .automation-editor-error { color:#f08a8a; margin:4px 0 0; overflow-wrap:anywhere; }
+  .automation-rule-row { padding:9px; border:1px solid #303c48; border-radius:4px; background:#11161c; display:grid; gap:8px; }
+  .automation-rule-field { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; min-width:0; }
+  .automation-rule-field > input:not([type=checkbox]), .automation-rule-field > select { width:100%; }
+  .automation-role-options { display:flex; gap:10px; flex-wrap:wrap; }
+  .automation-role-options label { display:flex; gap:5px; align-items:center; }
+  #automation-settings input[role=switch] { appearance:none; width:32px; height:18px; padding:2px; border-radius:12px; border:1px solid #526072; background:#2d3540; cursor:pointer; flex:none; }
+  #automation-settings input[role=switch]::before { content:''; display:block; width:12px; height:12px; border-radius:50%; background:#a6b0bd; }
+  #automation-settings input[role=switch]:checked { background:#215c61; border-color:#4eabb1; }
+  #automation-settings input[role=switch]:checked::before { transform:translateX(14px); background:#ceeff0; }
+  #automation-settings :focus-visible { outline:2px solid #72c1cd; outline-offset:2px; }
+  .automation-field > .automation-editor { flex:1; }
+  @media (max-width:1000px) { .automation-editor { grid-template-columns:minmax(0,1fr) minmax(0,1fr); } .automation-json-pane { grid-column:1 / -1; } }
+  @media (max-width:620px) { .automation-editor { grid-template-columns:minmax(0,1fr); } .automation-json-pane { grid-column:auto; } .automation-field { flex-wrap:wrap; } .automation-field input:not([type=checkbox]) { max-width:100%; } .automation-group { padding:8px; } .automation-editor-row { flex-wrap:wrap; } }
+  #automation-loop-modules { display:flex; gap:12px; flex-wrap:wrap; }
