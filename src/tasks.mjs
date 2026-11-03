@@ -203,11 +203,16 @@ export async function surveyTasks(client, protocol, { config = null, water = nul
 }
 
 // 逐条领取。同一条被服务端拒过就记下来，本轮之后不再重发——否则循环模式里会每轮骚扰一次。
-export async function runTasks(client, protocol, survey, { allowMutate = false, window = 400, onStep, enabled = () => true } = {}) {
+/** 任务领取使用共享读回与互斥规则，未确认时停止后续领取。 */
+export async function runTasks(client, protocol, survey, { allowMutate = false, accountId, player, config, actionExecutor, rejected = new Set(), stop = { aborted: false }, onStep, enabled = () => true } = {}) {
   if (!allowMutate) throw new Error('领取任务奖励会改变账号状态，需要 --yes');
+  if (!actionExecutor) {
+    const { gameplaySession } = await import('./automation/service.mjs');
+    return gameplaySession({ accountId, player, client, protocol, config, stop, module: 'welfare', work: execute => runTasks(client, protocol, survey, { allowMutate, actionExecutor: execute, rejected, stop, onStep, enabled }) });
+  }
   const results = [];
-  const rejected = new Set();
   for (const step of survey.plan) {
+    if (stop.aborted || !client.connected) break;
     if (!enabled()) break;
     const key = `${step.kind}:${step.id}`;
     if (rejected.has(key)) {
@@ -223,7 +228,7 @@ export async function runTasks(client, protocol, survey, { allowMutate = false, 
       continue;
     }
     try {
-      const sent = await client.sendWatch(step.request, step.body, { window });
+      const sent = await actionExecutor(step);
       const entry = { step, ok: true, sent };
       results.push(entry);
       onStep?.(entry);

@@ -1,12 +1,13 @@
+import { runDailies, runWorld, runLoop } from './selftest-gameplay.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import { EventEmitter } from 'node:events';
 import path from 'node:path';
 import { automationTasks, defaultFishingGoldReserve } from '../src/automation.mjs';
-import { surveyDailies, runDailies } from '../src/dailies.mjs';
-import { runWorld } from '../src/world.mjs';
-import { runLoop } from '../src/loop.mjs';
+import { surveyDailies } from '../src/dailies.mjs';
+
+
 import { testFishing } from './selftest-fishing.mjs';
 import { testFishingUpgrade } from './selftest-fishing-upgrade.mjs';
 import { testAntiqueRecruit } from './selftest-antique-recruit.mjs';
@@ -30,7 +31,13 @@ const { GameClient } = await import('../src/client.mjs');
 const { createConsole } = await import('../src/server.mjs');
 let logins = 0;
 let finishedLogins = 0;
-GameClient.prototype.connect = async () => { logins++; return { playerInfo: {} }; };
+// 登录、历史消息和库存查询都只走内存夹具，禁止真实 WebSocket。
+GameClient.prototype.connect = async function () {
+  logins++;
+  this.socket = { readyState: 1, close() {} };
+  this.setState('READY');
+  return { playerInfo: { playerId: '1' } };
+};
 GameClient.prototype.send = function (name) {
   assert.equal(name, 'LoginFinishRequest');
   finishedLogins++;
@@ -39,7 +46,7 @@ GameClient.prototype.send = function (name) {
   ] } });
 };
 GameClient.prototype.request = async name => {
-  assert.equal(name, 'EmailBoxRequest');
+  assert(['EmailBoxRequest', 'AllItemRequest', 'AllResourceRequest', 'WorldChatRequest', 'GuildChatRequest', 'PrivateChatListRequest', 'NoticeRequest'].includes(name), name);
   return {};
 };
 const tasks = Object.fromEntries(automationTasks.map(t => [t.key, t.key === 'mail']));
@@ -78,7 +85,9 @@ try {
   await open();
   assert.equal((await api('a', '')).running, false);
   assert.equal((await api('a', '')).fishingGoldReserve, 12500);
-  for (const [route, payload] of [['overview'], ['connect', {}], ['worlds/enter', { confirm: true, worldId: 1 }], ['loop/start', { confirm: true }]]) {
+  // 总览断线时返回离线状态，不会像写入口一样尝试重连或抛暂停错误。
+  assert.equal((await (await request('overview')).json()).status.connected, false);
+  for (const [route, payload] of [['connect', {}], ['worlds/enter', { confirm: true, worldId: 1 }], ['loop/start', { confirm: true }]]) {
     assert.match((await (await request(route, payload)).json()).error, /账号已暂停/);
   }
   assert.equal(logins, before);
@@ -221,6 +230,22 @@ try {
     assert.equal(notices.filter(n => n.round === 2).length, 0);
     assert.deepEqual(notices.filter(n => n.round === 3).map(n => n.reason).sort(),
       ['广播站尚未建成', '广播站尚未建成', '尚未建成钓鱼椅'].sort());
+  }
+  // CLI 与网页停止都应中断普通轮次间隔，不能等完一分钟才结束。
+  {
+    const controller = new AbortController();
+    const stop = { aborted: false, signal: controller.signal };
+    const client = { connected: true };
+    let timer;
+    const started = Date.now();
+    try {
+      const result = await runLoop(client, {}, {
+        allowMutate: true, rounds: 2, everyMs: 60_000, isEnabled: () => false, stop,
+        onRound: () => { timer = setTimeout(() => { stop.aborted = true; controller.abort(); }, 5); },
+      });
+      assert.equal(result.history.length, 1);
+      assert(Date.now() - started < 2000, '停止必须唤醒等待，不能再开始下一轮');
+    } finally { clearTimeout(timer); }
   }
   await testFishing();
   await testFishingUpgrade();

@@ -3,7 +3,13 @@ import { claimDailies } from './dailies.mjs';
 import { claimHeroShowRewards } from './hero-show-rewards.mjs';
 import { surveyTasks, runTasks } from './tasks.mjs';
 
-export async function claimRewards(client, protocol, config, onResult, enabled = () => true, onAfkDeadline, scheduler, player) {
+/** 上游领奖调度与新自动化共用账号写入账本，同时保留各奖励独立的冷却调度。 */
+export async function claimRewards(client, protocol, config, onResult, enabled = () => true, onAfkDeadline, scheduler, player, { accountId, actionExecutor, stop = { aborted: false } } = {}) {
+  if (!actionExecutor) {
+    // 启动一次上下文覆盖整组领奖，避免任务、活跃宝箱和手动入口各自重复写入。
+    const { gameplaySession } = await import('./automation/service.mjs');
+    return gameplaySession({ accountId, player, client, protocol, config, stop, module: 'welfare', work: execute => claimRewards(client, protocol, config, onResult, enabled, onAfkDeadline, scheduler, player, { actionExecutor: execute, stop }) });
+  }
   const results = [];
   const ready = key => enabled(key) && (!scheduler || scheduler.due(key));
   const report = (label, ok, error) => {
@@ -18,7 +24,7 @@ export async function claimRewards(client, protocol, config, onResult, enabled =
   async function draw(key, label, action, params = {}) {
     if (!ready(key)) return;
     await group(label, async () => {
-      const reply = await runAction(client, protocol, action, params, { allowMutate: true });
+      const reply = await runAction(client, protocol, action, params, { allowMutate: true, actionExecutor });
       report(label, true);
       if (action === 'afkDraw') setDeadline(reply.body?.afkFinishTime);
     });
@@ -31,10 +37,10 @@ export async function claimRewards(client, protocol, config, onResult, enabled =
   if (ready('tasks')) await group('任务与成就', async () => {
     const survey = await surveyTasks(client, protocol, { config, scheduler, player });
     if (survey.orderError) report('每日订单', false, survey.orderError);
-    await runTasks(client, protocol, survey, { allowMutate: true, enabled: () => enabled('tasks'),
+    await runTasks(client, protocol, survey, { allowMutate: true, actionExecutor, stop, enabled: () => enabled('tasks'),
       onStep: (entry) => report(entry.step.label, entry.ok, entry.error) });
   });
-  if (['dailyRewards', 'chests', 'gift'].some(ready)) await group('日常与赠礼', () => claimDailies(client, protocol, { config, enabled, scheduler,
+  if (['dailyRewards', 'chests', 'gift'].some(ready)) await group('日常与赠礼', () => claimDailies(client, protocol, { config, enabled, scheduler, actionExecutor, stop,
     onStep: (entry) => report(entry.note || entry.title, entry.ok, entry.error) }));
   if (ready('mail')) await group('邮件', async () => {
     const inbox = await client.request('EmailBoxRequest', { pageNo: 0 }, 'EmailBoxResponse');

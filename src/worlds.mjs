@@ -18,8 +18,12 @@ export function normalize(value) {
   return out;
 }
 
-// AccountRoleInfo (world list) and PlayerInfo (login) carry the same identity fields
-// under different names, so accept either.
+/**
+ * 将世界列表或登录回包里的角色身份字段归一化为控制台公开结构。
+ *
+ * @param {object|null} info AccountRoleInfo or PlayerInfo from the current protocol.
+ * @returns {object|null} Normalized role identity, including the current VIP level.
+ */
 export function describeRole(info) {
   if (!info) return null;
   const role = normalize(info);
@@ -27,6 +31,8 @@ export function describeRole(info) {
     id: role.id ?? role.playerId,
     nickname: role.nickname,
     level: role.level,
+    // PlayerInfo.vip.vipLevel is the login snapshot used by the console to determine VIP eligibility.
+    vipLevel: role.vip?.vipLevel,
     power: role.power,
     appId: role.appId,
     channelId: role.channelId,

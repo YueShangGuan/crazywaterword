@@ -134,6 +134,7 @@ function rememberResidentOrders(session, orders) {
 }
 
 // 只读探测：一次拉齐海面状态、库存、资源田、舰队。
+/** 海面读取串行执行，并保留上游的订单专用探测和货船预留规则。 */
 export async function surveyWorld(client, protocol, { config = null, player = null, includeWeekOrder = true, includeCargo = false, ordersOnly = false, timeout = 8000 } = {}) {
   const get = async (name) => {
     const responseName = `${name.slice(0, -7)}Response`;
@@ -149,12 +150,10 @@ export async function surveyWorld(client, protocol, { config = null, player = nu
   const water = await get('OnWaterRequest');
   if (!water) throw new Error('拿不到 OnWaterResponse，无法探测海面');
   const orderKeys = rememberResidentOrders(orderSession, water.workerOrder ?? []);
-  const [itemList, resourceList, resFields, fleets] = await Promise.all([
-    get('AllItemRequest'),
-    ordersOnly ? null : get('AllResourceRequest'),
-    ordersOnly ? null : get('MyResFieldsRequest'),
-    ordersOnly ? null : get('MyFleetsRequest'),
-  ]);
+  const itemList = await get('AllItemRequest');
+  const resourceList = ordersOnly ? null : await get('AllResourceRequest');
+  const resFields = ordersOnly ? null : await get('MyResFieldsRequest');
+  const fleets = ordersOnly ? null : await get('MyFleetsRequest');
 
   // 道具和资源合到一张库存表里，消耗项的 id 有的是道具名（木材）、有的是资源名（GOLD）。
   const stock = new Map();
@@ -926,7 +925,8 @@ async function confirmResidentOrder(client, protocol, step, config, player, carg
   return { action: current };
 }
 
-export async function submitResidentOrder(client, protocol, { index, orderKey, config, player, cargoEnabled = () => false, enabled = () => true }) {
+/** 手动交单复核订单版本及库存预留，并沿用当前账号的共享写入上下文。 */
+export async function submitResidentOrder(client, protocol, { index, orderKey, config, player, accountId, actionExecutor, cargoEnabled = () => false, enabled = () => true }) {
   if (!Number.isSafeInteger(index) || index < 0 || index > 2147483647 || typeof orderKey !== 'string' || !orderKey) {
     throw new Error('请从当前居民订单列表中选择要交付的一单');
   }
@@ -935,7 +935,7 @@ export async function submitResidentOrder(client, protocol, { index, orderKey, c
   const step = { kind: 'finishOrder', request: 'FinishWorkerOrderRequest', response: 'FinishWorkerOrderResponse',
     body: { index }, orderKey, manualCheck: true, label: '交付居民订单 #' + index };
   const { results } = await runWorld(client, protocol, { actions: [step] }, {
-    config, player, allowMutate: true, cargoEnabled, enabled,
+    config, player, accountId, actionExecutor, allowMutate: true, cargoEnabled, enabled,
   });
   const [entry] = results;
   if (!entry?.ok) throw new Error(entry?.error || '账号托管状态已变化，已取消手动交单');
@@ -946,21 +946,28 @@ export async function submitResidentOrder(client, protocol, { index, orderKey, c
 
 // 逐条执行。同类动作失败就跳过该类的剩余动作；被服务端拒过的具体动作记进 rejected，
 // 循环模式下后续轮次不再重发（否则每轮都会骚扰一次同一个必败请求）。
+/** 旧海面计划共用自动化写入、读回和停止控制，不把静默当成执行成功。 */
 export async function runWorld(client, protocol, plan, {
   allowMutate = false,
   window = 400,
   timeout = 15000,
+  accountId, player, config, actionExecutor, stop = { aborted: false },
   rejected = new Set(),
   onStep,
   enabled = () => true,
-  config, player, cargoEnabled = () => false,
+  cargoEnabled = () => false,
 } = {}) {
   if (!allowMutate) throw new Error('海面自动化会改变账号状态，需要 --yes');
+  if (!actionExecutor) {
+    const { gameplaySession } = await import('./automation/service.mjs');
+    return gameplaySession({ accountId, player, client, protocol, config, stop, module: 'island', work: execute => runWorld(client, protocol, plan, { allowMutate, rejected, actionExecutor: execute, stop, onStep, enabled, config, player, cargoEnabled, timeout }) });
+  }
   const results = [];
   const blocked = new Set();
   const failedRecipes = new Set();
   const confirmedBorrow = new Map();
   for (const step of plan.actions) {
+    if (stop.aborted || !client.connected) break;
     if (!enabled(step.kind)) continue;
     const key = stepKey(step);
     const resident = step.kind === 'finishOrder' || step.kind === 'denyOrder';
@@ -999,16 +1006,11 @@ export async function runWorld(client, protocol, plan, {
           if (session.get(step.body.index)?.key !== actual.orderKey) throw new Error('这条居民订单已刷新或已处理，请查看当前订单');
           session.delete(step.body.index); // A lost reply can still have consumed this slot.
         }
-        if (step.response && protocol[step.response]) {
-          const body = await client.request(step.request, step.body, step.response, timeout);
-          if (step.kind === 'finishOrder' && !body?.reward?.asset?.length) throw new Error('服务端尚未返回居民订单的交付奖励');
-          for (const item of actual.weeklyBorrowed ?? []) confirmedBorrow.set(item.id, (confirmedBorrow.get(item.id) ?? 0) + item.num);
-          entry = { step: actual, ok: true, body };
-        } else {
-          // 没有配套 Response：静默即成功，回包是 PromptResponse 就是被拒。
-          const sent = await client.sendWatch(step.request, step.body, { window });
-          entry = { step, ok: true, sent };
-        }
+        // 保留订单新鲜度与预留校验，实际写入统一经过账号预算和未确认保护。
+        const body = await actionExecutor(actual);
+        if (step.kind === 'finishOrder' && !body?.reward?.asset?.length) throw new Error('服务端尚未返回居民订单的交付奖励');
+        for (const item of actual.weeklyBorrowed ?? []) confirmedBorrow.set(item.id, (confirmedBorrow.get(item.id) ?? 0) + item.num);
+        entry = { step: actual, ok: true, body };
       } catch (error) {
         if (recipe) failedRecipes.add(recipe);
         // Each plot has independent prerequisites. A failed build must not

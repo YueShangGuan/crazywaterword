@@ -1,5 +1,6 @@
+import { claimRewards } from './selftest-gameplay.mjs';
 import assert from 'node:assert/strict';
-import { claimRewards } from '../src/claim-rewards.mjs';
+
 import { nextOrderTier, surveyTasks } from '../src/tasks.mjs';
 
 let now = 1000;

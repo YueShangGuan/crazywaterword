@@ -5,7 +5,7 @@
 // from guessing. Requests whose response type does not exist in the protocol table are
 // answered by a push or a generic OkResponse instead, so they are sent fire-and-forget.
 
-// SpeedUpCost.SPEED_UP_ITEM=2（1=钻石 2=加速器 3=广告）。本工具只允许 2。
+// SpeedUpCost.SPEED_UP_ITEM=2（1=钻石 2=加速器 3=广告）；普通加速动作默认只用 2，维修回退由 world.mjs 单独处理 1。
 export const SPEED_UP_ITEM_TYPE = 2;
 
 // 「每日精选」里几个礼包的 packId 是客户端写死的字面量（DailyPackBuyPanel 的字段初值），
@@ -60,7 +60,8 @@ export const ACTIONS = {
     mutate: true,
     desc: '收取指定建筑的产物',
     params: ['buildingId'],
-    body: ({ buildingId }) => ({ buildingId }),
+    // 客户端字段是 repeated string；单建筑入口也必须按数组编码。
+    body: ({ buildingId }) => ({ buildingId: [buildingId] }),
   },
   buildingFinish: {
     request: 'FinishUpgradeBuildingRequest',
@@ -140,7 +141,9 @@ export const ACTIONS = {
     response: null,
     mutate: true,
     desc: '领取月卡每日奖励',
-    body: () => ({}),
+    params: ['type'],
+    // 同时生效的月卡可有多个，协议字段 type 指定本次要领取的卡种。
+    body: ({ type }) => ({ type: Number(type) }),
   },
   taskDrawMain: {
     request: 'DrawMainTaskRewardRequest',
@@ -246,6 +249,7 @@ export const ACTIONS = {
   },
 };
 
+/** 返回可用动作及必填参数，供 CLI 与页面展示同一份目录。 */
 export function listActions() {
   return Object.entries(ACTIONS).map(([id, action]) => ({
     id,
@@ -258,6 +262,7 @@ export function listActions() {
 
 // Checked before dialing the gateway, so a missing opt-in costs nothing and never even
 // opens a session.
+/** 在连接网关前验证动作及明确写入确认。 */
 export function assertAllowed(id, { allowMutate = false } = {}) {
   const action = ACTIONS[id];
   if (!action) throw new Error(`unknown action: ${id}`);
@@ -267,6 +272,7 @@ export function assertAllowed(id, { allowMutate = false } = {}) {
   return action;
 }
 
+/** 将入口参数转换为当前协议字段，缺少业务参数时直接拒绝。 */
 export function buildBody(action, params = {}) {
   for (const key of action.params ?? []) {
     if (params[key] === undefined || params[key] === '') {
@@ -278,17 +284,19 @@ export function buildBody(action, params = {}) {
 
 // Runs one action. Mutating calls are refused unless the caller explicitly opts in, so a
 // stray command line cannot change the account by accident.
-export async function runAction(client, protocol, id, params = {}, { allowMutate = false, timeout = 15000 } = {}) {
+/** 写动作必须由共享执行器接管预算、串行、停止及不确定结果记录。 */
+export async function runAction(client, protocol, id, params = {}, { allowMutate = false, timeout = 15000, actionExecutor } = {}) {
   const action = assertAllowed(id, { allowMutate });
   const body = buildBody(action, params);
   if (!protocol[action.request]) throw new Error(`protocol has no type ${action.request}`);
-
-  if (action.response && protocol[action.response]) {
+  if (action.mutate) {
+    if (!actionExecutor) throw new Error('写动作需要账号共享执行上下文');
+    const response = await actionExecutor({ request: action.request, response: action.response, body, label: id });
+    return { id, sent: action.request, response: action.response, body: response };
+  }
+  if (action.response) {
     const response = await client.request(action.request, body, action.response, timeout);
     return { id, sent: action.request, response: action.response, body: response };
   }
-  // 没有配套 Response 的写请求：成功时服务端一声不吭，被拒时只推 PromptResponse，
-  // 所以守着窗口听一下，守到就算失败（见 src/client.mjs 的 attributePrompt）。
-  await client.sendWatch(action.request, body, { window: 400 });
-  return { id, sent: action.request, response: null, body: null };
+  throw new Error('只读动作缺少专用响应');
 }

@@ -43,10 +43,37 @@ function nextFactoryCheck(buildings, offset, collect) {
   return Math.max(now + 3000, next);
 }
 
+import { runAutomation, handledDailyIds } from './automation/service.mjs';
+import { loadSettings, selectLoopModules } from './automation/settings.mjs';
+const ISLAND_ACTION_KINDS = new Set(['collectProduct', 'gainFactory', 'finishUpgrade', 'build', 'upgrade', 'speedUpUpgrade', 'startProduce', 'speedUpProduce', 'weekFactory', 'buildSupply']);
+
+/**
+ * Decides whether the legacy world runner may execute a planned step.
+ *
+ * When the island module is enabled, it exclusively owns every building and
+ * factory action. Its individual switches then decide which actions run, so a
+ * disabled switch cannot be bypassed by the legacy world plan later in the
+ * same loop.
+ *
+ * @param {{kind: string}} step Planned legacy world action.
+ * @param {ReturnType<typeof loadSettings>} settings Saved account settings.
+ * @returns {boolean} Whether the legacy world runner should retain the step.
+ */
+export function shouldRunLegacyWorldStep(step, settings) {
+  if (step.kind === 'finishOrder' || step.kind === 'denyOrder') return !settings.modules.resident.enabled;
+  return !settings.modules.island.enabled || !ISLAND_ACTION_KINDS.has(step.kind);
+}
+
+/** 所有已启用新玩法每轮都由统一执行服务处理，旧日常跳过这些玩法以免重复操作。 */
 export async function runLoop(client, protocol, {
   config = null,
   player = null,
   adChannel = {},
+  accountId,
+  actionExecutor,
+  automationModules = 'all',
+  automationOnly = false,
+  initialPushes = new Map(),
   rounds = 1,
   everyMs = 60_000,
   allowMutate = false,
@@ -62,6 +89,8 @@ export async function runLoop(client, protocol, {
   onStep,
 } = {}) {
   if (!allowMutate) throw new Error('循环会持续改变账号状态，需要 --yes');
+  // CLI 会使用默认 all；循环入口统一规范化，不能让已下架模块从任一入口重新进入执行器。
+  const selectedAutomationModules = selectLoopModules(automationModules);
   const rejected = { tasks: new Set(), world: new Set() };
   const history = [];
   const rewards = isEnabled ? rewardSchedule(client) : null;
@@ -78,7 +107,25 @@ export async function runLoop(client, protocol, {
     if (stop.aborted) break;
     const empty = () => ({ planned: 0, results: [] });
     const summary = { round, startedAt: Math.floor(Date.now() / 1000), tasks: empty(), dailies: empty(), world: empty() };
-    const enabled = key => !stop.aborted && (!isEnabled || (isEnabled(key) && rewards.due(key)));
+    const settings = accountId ? loadSettings(accountId) : null;
+    // 同一玩法启用新模块后，其细分开关拥有唯一执行权；上游独有任务仍由原调度处理。
+    const ownership = {
+      cargo: 'cargo', farm: 'farm', finishOrder: 'resident', denyOrder: 'resident',
+      collect: 'island', finishUpgrade: 'island', build: 'island', buildSupply: 'island',
+      startProduce: 'island', weekFactory: 'island', upgrade: 'island', speedUp: 'island',
+      autoDive: 'gather', diveEnhance: 'gather', autoSalvage: 'gather', salvageEnhance: 'gather',
+      floaters: 'gather', autoFish: 'gather', fishEnhance: 'gather', afk: 'afk',
+      freeRecruit: 'hero', ticketRecruit: 'hero', freeAntiqueRecruit: 'antique', antiqueRecruitRewards: 'antique',
+      guildWelfare: 'guild', arena: 'battle', pirate: 'world',
+      tasks: 'welfare', dailyRewards: 'welfare', chests: 'welfare', gift: 'welfare', mail: 'welfare',
+      weekGift: 'welfare', weekTimes: 'welfare', weekPass: 'welfare',
+      evilExpel: 'activity', edict: 'activity', compassReward: 'activity',
+    };
+    // 新挑战模块仅在普通试炼开启时处理免费档；VIP 广告扫荡是另一份权益，不能吞掉上游免费扫荡。
+    if (settings && Object.values(settings.modules.battle.trial).some(rule => rule.challenge || rule.rubySweep)) ownership.trialSweep = 'battle';
+    const enabled = key => !stop.aborted
+      && !settings?.modules[ownership[key]]?.enabled
+      && (!isEnabled || (isEnabled(key) && rewards.due(key)));
     const groupEnabled = group => automationTasks.some(task => task.group === group && enabled(task.key));
     const stepLog = phase => entry => onStep?.({ round, phase, ...entry });
     let afkDeadline;
@@ -88,7 +135,7 @@ export async function runLoop(client, protocol, {
     const allowDaily = (id, action) => enabled(dailyTaskKey(id, action));
     const allowWorld = kind => enabled(worldTaskKey(kind));
     const attemptedOrders = new Set();
-    const harvestOptions = { config, player, attemptedOrders, cargoEnabled: () => !!isEnabled && enabled('cargo'),
+    const harvestOptions = { config, player, accountId, actionExecutor, stop, attemptedOrders, cargoEnabled: () => !!isEnabled && enabled('cargo'),
       finishEnabled: () => allowWorld('finishOrder') };
     function phaseFailure(phase, title, error) {
       if (!client.connected) throw error;
@@ -96,15 +143,24 @@ export async function runLoop(client, protocol, {
       summary[phase].results.push(entry);
       stepLog(phase)(entry);
     }
+    if (stop.aborted || !client.connected) break;
 
     await schedule(async () => {
       if (stop.aborted) return;
+      if (settings) {
+        summary.automation = await runAutomation({ client, protocol, config, player, accountId, settings,
+          selector: selectedAutomationModules, initialPushes, stop,
+          onStep: row => onStep?.({ round, phase: 'automation', ...row, ok: row.status === 'success', error: row.reason }) });
+        if (summary.automation.error || stop.aborted) return;
+      }
+      // 独立模块循环不执行上游挂机任务，防止未选择的任务随模块预览/执行一起运行。
+      if (automationOnly) return;
       if (!isEnabled && enabled('tasks')) {
         try {
           const survey = await surveyTasks(client, protocol, { config, player });
           summary.tasks.planned = survey.plan.length;
           summary.tasks.results = await runTasks(client, protocol, survey, {
-            allowMutate, enabled: () => enabled('tasks'), onStep: stepLog('tasks'),
+            allowMutate, accountId, player, config, actionExecutor, stop, rejected: rejected.tasks, enabled: () => enabled('tasks'), onStep: stepLog('tasks'),
           });
         } catch (error) { phaseFailure('tasks', '任务检查', error); }
       }
@@ -123,6 +179,7 @@ export async function runLoop(client, protocol, {
           if (summary.dailies.planned) {
             summary.dailies.results = await runDailies(client, protocol, survey, {
               allowMutate, allowPaid: isEnabled ? true : allowPaid, claimRewards: !isEnabled, config,
+              accountId, player, actionExecutor, stop, handledIds: settings ? handledDailyIds(settings) : [],
               allowAction: allowDaily, onStep: stepLog('dailies'),
             });
           }
@@ -143,7 +200,7 @@ export async function runLoop(client, protocol, {
         } catch (error) { phaseFailure('dailies', '日常检查', error); }
       }
       if (isEnabled && groupEnabled('领奖')) {
-        const results = await claimRewards(client, protocol, config, logReward, enabled, rememberDeadline, rewards, player);
+        const results = await claimRewards(client, protocol, config, logReward, enabled, rememberDeadline, rewards, player, { accountId, actionExecutor, stop });
         summary.tasks = { planned: results.length, results };
       }
       if (isEnabled && enabled('adShop')) {
@@ -349,9 +406,15 @@ export async function runLoop(client, protocol, {
     history.push(summary);
     if (!Number.isFinite(total) && history.length > 50) history.shift();
     onRound?.(summary);
+    if (summary.automation?.error) break;
+    if (automationOnly) {
+      // 普通停止信号与 AbortSignal 均可使用；分段等待保证界面停止立即生效。
+      for (let remaining = everyMs; round < total && remaining > 0 && !stop.aborted; remaining -= 250) await sleep(Math.min(250, remaining));
+      continue;
+    }
     if (round < total && !stop.aborted) {
       try {
-        const signal = typeof stop.addEventListener === 'function' ? stop : undefined;
+        const signal = stop.signal ?? (typeof stop.addEventListener === 'function' ? stop : undefined);
         const nextRound = Date.now() + everyMs;
         let upgradeAt = Date.now() + 30_000;
         while (isEnabled && !stop.aborted) {
@@ -363,7 +426,7 @@ export async function runLoop(client, protocol, {
           if (Date.now() >= nextRound) break;
           if (afkAt <= Date.now() && enabled('afk')) {
             afkDeadline = undefined;
-            await schedule(() => enabled('afk') && claimRewards(client, protocol, config, logReward, key => key === 'afk' && enabled(key), rememberDeadline, rewards, player));
+            await schedule(() => enabled('afk') && claimRewards(client, protocol, config, logReward, key => key === 'afk' && enabled(key), rememberDeadline, rewards, player, { accountId, actionExecutor, stop }));
             if (!afkDeadline || afkDeadline <= Date.now()) afkDeadline = Date.now() + 60_000;
           }
           const checkUpgrade = enabled('upgrade') && upgradeAt <= Date.now();
@@ -419,8 +482,10 @@ export function formatLoopStep(entry) {
   return message;
 }
 
+/** 汇总上游任务及新版模块结果，避免模块执行未计入本轮统计。 */
 export function formatLoopRound(summary) {
-  const results = [...summary.tasks.results, ...summary.dailies.results, ...summary.world.results];
+  const results = [...summary.tasks.results, ...summary.dailies.results, ...summary.world.results,
+    ...(summary.automation?.results ?? []).map(row => ({ ok: row.status === 'success', skipped: ['skipped', 'disabled', 'planned'].includes(row.status) }))];
   const skipped = results.filter(entry => entry.skipped).length;
   const failed = results.filter(entry => !entry.skipped && entry.ok === false).length;
   const sent = results.filter(entry => !entry.skipped && entry.ok && 'sent' in entry).length;

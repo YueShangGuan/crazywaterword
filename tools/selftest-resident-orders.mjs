@@ -1,6 +1,7 @@
+import { runLoop, runWorld, runWorldRound, submitResidentOrder } from './selftest-gameplay.mjs';
 import assert from 'node:assert/strict';
-import { runLoop } from '../src/loop.mjs';
-import { orderSlotsAfterHarvest, planWorld, runWorld, runWorldRound, submitResidentOrder, surveyWorld } from '../src/world.mjs';
+
+import { orderSlotsAfterHarvest, planWorld, surveyWorld } from '../src/world.mjs';
 
 const now = Math.floor(Date.now() / 1000);
 const config = { materialName: id => id, tables: {

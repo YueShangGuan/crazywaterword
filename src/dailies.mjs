@@ -422,34 +422,46 @@ export async function surveyDailies(client, protocol, { config = null, player = 
   };
 }
 
-// 发一条动作，带 Response 的等回包，没有配套 Response 的靠 sendWatch 看有没有被 PromptResponse 打回来。
-async function sendAction(client, protocol, action, timeout) {
-  if (action.response && protocol[action.response]) {
-    return client.request(action.request, action.body, action.response, timeout);
-  }
-  await client.sendWatch(action.request, action.body, { window: 400 });
-  return null;
-}
-
 // 有付费动作时必须显式开 allowPaid，否则默认只做免费的部分。
 //
 // claimRewards 走的是「收尾」：驱动动作发完服务端才更新完成数，所以这里重新问一次
 // DailyTaskInfoResponse，先把达标任务的奖励领了（奖励里的活跃度会把活跃度顶上去），
 // 再领活跃度宝箱。少了这一步，任务做完了奖励还挂在服务端上。
-export async function runDailies(client, protocol, survey, { allowMutate = false, allowPaid = false, claimRewards = true, config = null, timeout = 15000, onStep, allowAction = () => true } = {}) {
+/** 执行旧日常入口；付费请求必须进入账号共享预算，停止后不继续领取。 */
+export async function runDailies(client, protocol, survey, { allowMutate = false, allowPaid = false, claimRewards = true, config = null, timeout = 15000, accountId, player, actionExecutor, moduleExecutor, handledIds = [], stop = { aborted: false }, onStep, allowAction = () => true } = {}) {
   if (!allowMutate) throw new Error('完成日常会改变账号状态，需要 --yes');
+  if (!actionExecutor) {
+    const { gameplaySession, dailyGameplay } = await import('./automation/service.mjs');
+    return gameplaySession({ accountId, player, client, protocol, config: config ?? survey.config, stop, work: (execute, ctx) => runDailies(client, protocol, survey, { allowMutate, allowPaid, claimRewards, config, timeout, actionExecutor: execute, moduleExecutor: id => dailyGameplay(ctx, id), handledIds, stop, onStep, allowAction }) });
+  }
   const results = [];
   for (const entry of survey.tasks) {
+    if (stop.aborted) break;
+    if (handledIds.includes(entry.task.id)) continue;
+    if (entry.status !== 'done' && moduleExecutor) {
+      // 已配置的玩法必须遵守其时长、目标和消费规则，不能再用日常旧动作绕开。
+      const steps = await moduleExecutor(entry.task.id);
+      if (steps !== null) {
+        for (const step of steps) {
+          const outcome = { id: entry.task.id, title: entry.task.title, request: step.request, note: step.label, ok: step.status === 'success', skipped: ['disabled', 'skipped'].includes(step.status), error: step.reason, body: step.value };
+          results.push(outcome); onStep?.(outcome);
+        }
+        continue;
+      }
+    }
     if (!entry.actions?.length) continue;
-    if (entry.status === 'paid' && !allowPaid) {
+    // 折扣商店的旧计划曾标为 ready，仍须按真实请求识别消费，不能靠显示状态绕过。
+    const paid = entry.status === 'paid' || entry.actions.some(a => a.request === 'DiscountShopBuyRequest' || (a.request === 'ClickGoldRequest' && a.body.free === false));
+    if (paid && !allowPaid) {
       results.push({ id: entry.task.id, skipped: true, reason: '需要付费，未开 allowPaid' });
       onStep?.({ id: entry.task.id, title: entry.task.title, skipped: true, reason: '需要付费' });
       continue;
     }
     for (const action of entry.actions) {
+      if (stop.aborted || !client.connected) break;
       if (!allowAction(entry.task.id, action)) continue;
       try {
-        const body = await sendAction(client, protocol, action, timeout);
+        const body = await actionExecutor(action);
         const outcome = { id: entry.task.id, title: entry.task.title, request: action.request, note: action.note, ok: true, body };
         results.push(outcome);
         onStep?.(outcome);
@@ -462,16 +474,22 @@ export async function runDailies(client, protocol, survey, { allowMutate = false
       await new Promise((resolve) => setTimeout(resolve, 400));
     }
   }
-  if (claimRewards) {
+  if (claimRewards && !stop.aborted) {
     // 服务端的完成数是异步落库的，动作刚发完就问会读到旧值。
     await new Promise((resolve) => setTimeout(resolve, 1000));
-    results.push(...await claimDailies(client, protocol, { config: config ?? survey.config, timeout, onStep }));
+    results.push(...await claimDailies(client, protocol, { config: config ?? survey.config, timeout, actionExecutor, stop, onStep }));
   }
   return results;
 }
 
 // 收尾两连：先领达标任务的奖励，再领活跃度宝箱。
-export async function claimDailies(client, protocol, { config = null, timeout = 15000, onStep, enabled = () => true, scheduler } = {}) {
+/** 日常收尾也走共享写入通道，停止或断线后不再领取后续任务与宝箱。 */
+export async function claimDailies(client, protocol, { config = null, timeout = 15000, accountId, player, actionExecutor, stop = { aborted: false }, onStep, enabled = () => true, scheduler } = {}) {
+  // 独立领奖入口也必须绑定账号，不能因上游调度没有传执行器而绕过共享账本。
+  if (!actionExecutor) {
+    const { gameplaySession } = await import('./automation/service.mjs');
+    return gameplaySession({ accountId, player, client, protocol, config, stop, module: 'welfare', work: execute => claimDailies(client, protocol, { config, timeout, actionExecutor: execute, stop, onStep, enabled, scheduler }) });
+  }
   const results = [];
   const ready = key => enabled(key) && (!scheduler || scheduler.due(key));
 
@@ -492,11 +510,12 @@ export async function claimDailies(client, protocol, { config = null, timeout = 
   const after = canReadDaily && (ready('dailyRewards') || ready('chests')) ? await readDaily('读取日常奖励') : null;
   const claimable = (after?.dailyTask ?? []).filter((task) => task.progress >= task.targetProgress && !task.rewardClaimed);
   for (const task of claimable) {
+    if (stop.aborted || !client.connected) break;
     if (!ready('dailyRewards')) break;
     const title = TASK_TITLES[task.id] ?? String(task.id);
     const action = { request: 'DrawDailyTaskRewardRequest', response: 'DrawDailyTaskRewardResponse', body: { id: task.id }, note: `领任务奖励（${title}）` };
     try {
-      const body = await sendAction(client, protocol, action, timeout);
+      const body = await actionExecutor(action);
       report({ id: task.id, title, request: action.request, note: action.note, ok: true, body });
     } catch (error) {
       report({ id: task.id, title, request: action.request, note: action.note, ok: false, error: error.message });
@@ -525,10 +544,10 @@ export async function claimDailies(client, protocol, { config = null, timeout = 
     }
   }
   for (const action of actions) {
-    if (!ready('chests')) break;
+    if (!ready('chests') || stop.aborted || !client.connected) break;
     const title = action.request === 'DrawWeeklyRewardRequest' ? '周活跃宝箱' : '日常活跃宝箱';
     try {
-      const body = await sendAction(client, protocol, action, timeout);
+      const body = await actionExecutor(action);
       report({ id: 'activityChest', title, request: action.request, note: action.note, ok: true, body });
     } catch (error) {
       report({ id: 'activityChest', title, request: action.request, note: action.note, ok: false, error: error.message });
@@ -551,7 +570,7 @@ export async function claimDailies(client, protocol, { config = null, timeout = 
     if (plan.actions.length > 0 && ready('gift')) {
       const action = plan.actions[0];
       try {
-        await sendAction(client, protocol, action, timeout);
+        await actionExecutor(action);
         const after = await client.request('DailyGiftPackRequest', {}, 'DailyGiftPackResponse', timeout);
         const ok = (after.drawnPack ?? []).includes(FREE_DAILY_PACK_ID);
         if (ok && scheduler && after.resetTime > scheduler.now()) scheduler.defer('gift', after.resetTime);

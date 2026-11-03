@@ -38,6 +38,7 @@ export function isSeqNoInRange(seq, right) {
 }
 
 export class GameClient extends EventEmitter {
+  /** 连接内业务共用串行队列，避免回包和拒绝提示归属到并发动作。 */
   constructor({ url = DEFAULT_GATEWAY, protocol, login = null } = {}) {
     super();
     this.url = url;
@@ -63,6 +64,7 @@ export class GameClient extends EventEmitter {
     this.watchers = [];
     this.sendOrder = 0;
     this.stopping = false;
+    this.businessTail = Promise.resolve();
   }
 
   get connected() {
@@ -160,8 +162,9 @@ export class GameClient extends EventEmitter {
     return this.sendSeqNo;
   }
 
+  /** 业务发送必须属于当前可用连接；停止或被顶号后拒绝继续发包。 */
   send(name, body) {
-    if (!this.connected) throw new Error('not connected');
+    if (this.stopping || !this.connected) throw new Error('not connected or stopped');
     const seq = this.bumpSeqNo();
     const frame = this.codec.encode(name, seq, body || {});
     this.emit('frame', { dir: 'out', name, seq, bytes: frame, body });
@@ -177,8 +180,20 @@ export class GameClient extends EventEmitter {
     return true;
   }
 
+  /** 所有业务请求按连接排队，保证无序号 Prompt 与当前唯一请求准确归属。 */
+  enqueueBusiness(work) {
+    const pending = this.businessTail.then(() => {
+      if (this.stopping || !this.connected) throw new Error('not connected or stopped');
+      return work();
+    });
+    // 拒绝不阻塞队列清理，但每个排队动作仍须重新检查连接与停止状态。
+    this.businessTail = pending.catch(() => {});
+    return pending;
+  }
+
+  /** 串行发送并等待明确回包，超时本身不触发业务重试。 */
   request(name, body, responseName = `${name.slice(0, -7)}Response`, timeout = 15000) {
-    return new Promise((resolve, reject) => {
+    return this.enqueueBusiness(() => new Promise((resolve, reject) => {
       const entry = { name, responseName, resolve, reject, timer: null, order: this.sendOrder };
       entry.timer = setTimeout(() => {
         this.pending = this.pending.filter((item) => item !== entry);
@@ -193,22 +208,25 @@ export class GameClient extends EventEmitter {
         this.pending = this.pending.filter((item) => item !== entry);
         reject(error);
       }
-    });
+    }));
   }
 
   // 有一部分请求服务端没有配套的 *Response，成功时静默，失败时只推一条 PromptResponse。
-  // 这类请求用 sendWatch：发送后守着 prompt 一小段时间，守到了就是被拒，没守到就当作成功。
+  // sendWatch 只观察拒绝提示；业务成功仍由调用方的状态查询确认。
+  /** 观察静默写入的拒绝窗口；调用方还须读回业务状态才能确认成功。 */
   sendWatch(name, body, { window = 350 } = {}) {
-    const order = this.sendOrder;
-    this.sendOrder += 1;
-    const seq = this.send(name, body);
-    return new Promise((resolve, reject) => {
-      const watcher = { name, order, resolve, reject, timer: null };
-      watcher.timer = setTimeout(() => {
-        this.watchers = this.watchers.filter((item) => item !== watcher);
-        resolve({ sent: seq, name });
-      }, window);
-      this.watchers.push(watcher);
+    return this.enqueueBusiness(() => {
+      const order = this.sendOrder;
+      this.sendOrder += 1;
+      const seq = this.send(name, body);
+      return new Promise((resolve, reject) => {
+        const watcher = { name, order, resolve, reject, timer: null };
+        watcher.timer = setTimeout(() => {
+          this.watchers = this.watchers.filter((item) => item !== watcher);
+          resolve({ sent: seq, name });
+        }, window);
+        this.watchers.push(watcher);
+      });
     });
   }
 
@@ -260,6 +278,7 @@ export class GameClient extends EventEmitter {
     return true;
   }
 
+  /** 分发回包和服务器推送；顶号或协议重传失败立即终止业务队列。 */
   onMessage(data) {
     let decoded;
     try {
@@ -288,6 +307,7 @@ export class GameClient extends EventEmitter {
       return;
     }
     this.emit('message', { seq, name, body });
+
     // 业务拦截：服务端拒绝一个请求时不回 *Response，而是推一条 PromptResponse。
     // 不处理的话每次被拒都要干等满超时。
     if (name === 'PromptResponse') {

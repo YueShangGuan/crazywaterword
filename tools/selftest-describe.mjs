@@ -4,6 +4,7 @@ import { fields, typeNames } from './describe.mjs';
 // The bundle ships no reflection metadata, so field layouts are recovered from the
 // generated encode/decode bodies. These expectations are the ones read by eye from the
 // source; if the extractor drifts, phase-2 message work silently breaks.
+/** 固定当前客户端的字段布局，防止嵌套消息和数组再次被遗漏。 */
 function layout(name) {
   return fields(name).map((field) => `${field.number}:${field.name}:${field.kind}:${field.type}`);
 }
@@ -23,6 +24,7 @@ assert.deepEqual(layout('LoginRequest'), [
   '7:eworldClientInfo:message:EworldClientInfo',
   '8:worldId:scalar:int64',
   '9:systemLanguage:scalar:string',
+  '10:loginRateType:scalar:int32',
 ]);
 
 assert.deepEqual(layout('GameWorldInfo'), [
@@ -69,6 +71,9 @@ assert.deepEqual(layout('PingRequest'), ['1:clientTimestamp:scalar:int64']);
 
 // A single-field type exercises the `i>>>3==N?` decode form the extractor normalises.
 assert.deepEqual(layout('Position'), ['1:x:scalar:int32', '2:y:scalar:int32']);
+assert.deepEqual(layout('FarmHarvestRequest'), ['1:buildingId:repeated:string']);
+assert.deepEqual(layout('SnapEndRoundRequest'), ['1:placements:repeated:SnapPlacement', '2:round:scalar:int32']);
+assert.equal(fields('CatcherEndRequest').find(f => f.name === 'hookedRewardIds').type, 'int32');
 
 const total = typeNames().length;
 assert.ok(total > 1400, `expected the full protocol table, got ${total} types`);

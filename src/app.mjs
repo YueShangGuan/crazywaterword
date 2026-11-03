@@ -9,12 +9,13 @@ import { collectState, summarize, formatState } from './game.mjs';
 import { ACTIONS, listActions, runAction, assertAllowed, buildBody } from './actions.mjs';
 import { normalize } from './worlds.mjs';
 import { getConfig } from './config.mjs';
-import { planHeroes, runHeroPlan, formatHeroPlan } from './heroes.mjs';
 import { surveyDailies, runDailies, formatSurvey, planChests, planDailyGift } from './dailies.mjs';
 import { surveyTasks, runTasks, formatTaskPlan } from './tasks.mjs';
 import { surveyWorld, planWorld, runWorld, runWorldRound, formatWorldPlan, formatFieldReport, loadMapAsset, planFieldOccupy, planFieldGiveUp, SPEED_UP_ITEM, makeTypeResolver as resolveBuildingType, upgradeRow } from './world.mjs';
 import { runLoop, formatLoopRound, formatLoopStep } from './loop.mjs';
 import { runStages, stageFailureLimit } from './stages.mjs';
+import { gameplaySession, runAutomation } from './automation/service.mjs';
+import { loadSettings, saveSettings, LABELS, MODULES } from './automation/settings.mjs';
 
 const READ_ONLY_PROBES = [
   'AllResourceRequest',
@@ -259,8 +260,9 @@ const KEY_FIELDS = (ok) => {
 };
 
 // 领取类动作：先判定后执行，最后重新采集对比。即发即弃的请求在断开前留出排空时间。
+/** 领取计划逐项走共享执行上下文，未知结果后不继续写入。 */
 async function loot({ allowMutate, dryRun = false }) {
-  const { url, login } = loadCredentials();
+  const { url, login, account } = loadCredentials();
   const protocol = loadProtocol();
   const client = new GameClient({ url, protocol });
   client.on('warn', (message) => console.log(`warn: ${message}`));
@@ -284,18 +286,20 @@ async function loot({ allowMutate, dryRun = false }) {
 
     console.log('\n执行:');
     let failed = 0;
-    for (const step of plan) {
-      try {
-        assertAllowed(step.id, { allowMutate });
-        const result = await runAction(client, protocol, step.id, step.params, { allowMutate });
-        const detail = result.body ? ` ${JSON.stringify(normalize(result.body)).slice(0, 200)}` : ' 即发即弃';
-        console.log(`  . ${result.sent} ${JSON.stringify(step.params)}${detail}`);
-      } catch (error) {
-        failed += 1;
-        console.log(`  x ${step.id} ${JSON.stringify(step.params)} 失败: ${error.message}`);
+    await gameplaySession({ accountId: account.id, client, protocol, config, player: response.playerInfo, work: async actionExecutor => {
+      for (const step of plan) {
+        try {
+          assertAllowed(step.id, { allowMutate });
+          const result = await runAction(client, protocol, step.id, step.params, { allowMutate, actionExecutor });
+          const detail = result.body ? ` ${JSON.stringify(normalize(result.body)).slice(0, 200)}` : ' 即发即弃';
+          console.log(`  . ${result.sent} ${JSON.stringify(step.params)}${detail}`);
+        } catch (error) {
+          failed += 1;
+          console.log(`  x ${step.id} ${JSON.stringify(step.params)} 失败: ${error.message}`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 300));
       }
-      await new Promise((resolve) => setTimeout(resolve, 300));
-    }
+    } });
 
     await new Promise((resolve) => setTimeout(resolve, 1500));
     const after = (await collectState(client, protocol)).ok;
@@ -314,18 +318,21 @@ async function loot({ allowMutate, dryRun = false }) {
 
 // One protocol call. Mutating actions need CW_ALLOW_MUTATE=1; without it the run stops
 // before anything leaves the socket.
+/** 单次写动作同样绑定账号角色，手动 CLI 不能绕过预算检查。 */
 async function act({ id, params, allowMutate }) {
   assertAllowed(id, { allowMutate });
   buildBody(ACTIONS[id], params);
-  const { url, login } = loadCredentials();
+  const { url, login, account } = loadCredentials();
   const protocol = loadProtocol();
   const client = new GameClient({ url, protocol });
   client.on('warn', (message) => console.log(`warn: ${message}`));
   client.on('fatal', (info) => console.log(`fatal: ${JSON.stringify(info)}`));
 
-  await client.connect(login);
+  const response = await client.connect(login);
   try {
-    const result = await runAction(client, protocol, id, params, { allowMutate });
+    const result = ACTIONS[id].mutate
+      ? await gameplaySession({ accountId: account.id, client, protocol, config: getConfig(), player: response.playerInfo, work: actionExecutor => runAction(client, protocol, id, params, { allowMutate, actionExecutor }) })
+      : await runAction(client, protocol, id, params);
     console.log(`${result.sent}${result.response ? ` -> ${result.response}` : ' (无响应，回包走推送或 OkResponse)'}`);
     if (result.body) console.log(JSON.stringify(normalize(result.body), null, 2));
   } finally {
@@ -334,8 +341,12 @@ async function act({ id, params, allowMutate }) {
 }
 
 // 英雄养成：先按客户端红点条件算计划，--dry 只打印，--yes 才真发请求。
-async function heroes({ allowMutate, dryRun, allowUniversal }) {
-  const { url, login } = loadCredentials();
+/** 英雄旧 CLI 也只培养账号明确选中的英雄，所有开关读取共享设置。 */
+async function heroes({ allowMutate, dryRun }) {
+  const { url, login, account } = loadCredentials();
+  const settings = loadSettings(account.id);
+  if (!settings.modules.hero.enabled || !settings.modules.hero.heroes.length) throw new Error('请先在自动化设置开启英雄模块并明确选择英雄');
+  if (!dryRun && !allowMutate) throw new Error('英雄培养需要 --yes');
   const protocol = loadProtocol();
   const client = new GameClient({ url, protocol });
   client.on('warn', (message) => console.log(`warn: ${message}`));
@@ -344,46 +355,17 @@ async function heroes({ allowMutate, dryRun, allowUniversal }) {
   const response = await client.connect(login);
   const config = loadConfigSafe();
   try {
-    const heroList = await client.request('AllHeroRequest', {}, 'AllHeroResponse', 15000);
-    const itemList = await client.request('AllItemRequest', {}, 'AllItemResponse', 15000);
-    const counts = new Map();
-    for (const item of itemList.items ?? []) {
-      const id = item.itemId ?? item.id;
-      counts.set(id, (counts.get(id) ?? 0) + Number(item.num ?? item.count ?? 0));
-    }
-    const itemNum = (id) => counts.get(id) ?? 0;
-    const playerLevel = describeRole(response.playerInfo).level;
-    const plan = planHeroes({ config, heroes: heroList.heroes ?? [], itemNum, playerLevel, allowUniversal });
-    console.log(`玩家等级 ${playerLevel}，英雄等级上限 ${plan.maxLevel}，星级上限 ${plan.maxStar}`);
-    console.log(formatHeroPlan(plan));
-    const requests = plan.steps.reduce((sum, step) => sum + (step.kind === 'level' ? step.count : 1), 0);
-    console.log(`\n共 ${plan.steps.length} 个步骤 / ${requests} 个请求`);
-
-    if (dryRun) {
-      console.log('\n--dry：只列计划，未执行');
-      return;
-    }
-    await runHeroPlan(client, protocol, plan, {
-      allowMutate,
-      timeout: 8000,
-      onStep: (entry) => {
-        const step = entry.step;
-        const label = step.kind === 'level' ? `${step.heroId} 目标 lv${entry.targetLevel}` : step.kind === 'star' ? `${step.heroId} ${step.to}星` : `${step.heroId} 技能${step.slot + 1}`;
-        if (entry.skipped) console.log(`  - ${label} 已跳过：${entry.error}`);
-        else console.log(entry.ok ? `  . ${label}` : `  x ${label} 失败: ${entry.error}`);
-      },
-    });
-    const after = await client.request('AllHeroRequest', {}, 'AllHeroResponse', 15000);
-    console.log('\n养成后:');
-    for (const hero of after.heroes ?? []) console.log(`  ${hero.heroId} lv${hero.level} ${hero.star}星 战力${hero.power} 技能${JSON.stringify(hero.skillLevels)}`);
+    const result = await runAutomation({ client, protocol, config, player: response.playerInfo, accountId: account.id, settings, selector: 'hero', dryRun, onStep: row => console.log(`${row.status} ${row.label ?? row.request ?? ''} ${row.reason ?? ''}`) });
+    if (result.error) throw new Error(result.error);
   } finally {
     client.stop();
   }
 }
 
-// 日常：先只读探一遍（--dry 到这里就够），--yes 才执行，--paid 才允许花钻石的动作。
+// 日常：--paid 只开放消费能力，实际价格仍受账号持久化额度限制。
+/** 旧日常 CLI 传入账号身份供共享预算隔离，不把 --paid 当作无限消费授权。 */
 async function dailies({ allowMutate, dryRun, allowPaid }) {
-  const { url, login } = loadCredentials();
+  const { url, login, account } = loadCredentials();
   const protocol = loadProtocol();
   const client = new GameClient({ url, protocol });
   client.on('warn', (message) => console.log(`warn: ${message}`));
@@ -408,6 +390,8 @@ async function dailies({ allowMutate, dryRun, allowPaid }) {
     await runDailies(client, protocol, survey, {
       allowMutate,
       allowPaid,
+      accountId: account.id,
+      player: response.playerInfo,
       onStep: (entry) => {
         if (entry.skipped) console.log(`  - ${entry.title} 跳过: ${entry.reason}`);
         else console.log(entry.ok ? `  . ${entry.title} ${entry.note}` : `  x ${entry.title} ${entry.note} 失败: ${entry.error}`);
@@ -434,8 +418,9 @@ async function dailies({ allowMutate, dryRun, allowPaid }) {
 }
 
 // 任务领取：主线 / 支线 / 成就 / 每日订单档位。--dry 只列判定，--yes 才真领。
+/** 任务 CLI 传入当前账号与角色，领取状态由共享执行器读回确认。 */
 async function tasks({ allowMutate, dryRun }) {
-  const { url, login } = loadCredentials();
+  const { url, login, account } = loadCredentials();
   const protocol = loadProtocol();
   const client = new GameClient({ url, protocol });
   client.on('warn', (message) => console.log(`warn: ${message}`));
@@ -461,6 +446,7 @@ async function tasks({ allowMutate, dryRun }) {
     console.log('\n领取:');
     await runTasks(client, protocol, survey, {
       allowMutate,
+      accountId: account.id, player: response.playerInfo, config,
       onStep: (entry) => {
         if (entry.skipped) console.log(`  - ${entry.step.label} 跳过: ${entry.error}`);
         else console.log(entry.ok ? `  . ${entry.step.label}` : `  x ${entry.step.label} 失败: ${entry.error}`);
@@ -479,8 +465,9 @@ async function tasks({ allowMutate, dryRun }) {
 
 // 海面世界：收成品 / 竣工 / 交单 / 排产 / 余料升级建筑。--dry 只列计划，--yes 才真发请求。
 // --speed-up 才允许花「加速器」（钻石永远不碰）；--reroll 才允许拒绝材料不齐的订单。
+/** 原海面命令保留计划入口，实际写入遵守共享资源与停止控制。 */
 async function world({ allowMutate, dryRun, allowSpeedUp, allowReroll }) {
-  const { url, login } = loadCredentials();
+  const { url, login, account } = loadCredentials();
   const protocol = loadProtocol();
   const client = new GameClient({ url, protocol });
   client.on('warn', (message) => console.log(`warn: ${message}`));
@@ -502,7 +489,7 @@ async function world({ allowMutate, dryRun, allowSpeedUp, allowReroll }) {
 
     console.log('\n执行:');
     const { rejected } = await runWorldRound(client, protocol, plan, {
-      config, player: response.playerInfo, allowMutate,
+      config, player: response.playerInfo, accountId: account.id, allowMutate,
       onStep: (entry) => {
         if (entry.skipped) console.log(`  - ${entry.step.label} 跳过: ${entry.error}`);
         else console.log(entry.ok ? `  . ${entry.step.label}` : `  x ${entry.step.label} 失败: ${entry.error}`);
@@ -537,8 +524,9 @@ async function world({ allowMutate, dryRun, allowSpeedUp, allowReroll }) {
 
 // 资源田：默认只读报告；occupy / giveup 需要显式 gridIdx 与 --yes。
 // 占田要求「该田所属城是我方城 + 有闲置且耐久>0 的舰队」，条件不满足就直接拒绝，不发请求。
+/** 保留手动资源田入口，同时使用角色互斥和写后读回确认。 */
 async function field({ sub, gridIdx, fleets, allowMutate }) {
-  const { url, login } = loadCredentials();
+  const { url, login, account } = loadCredentials();
   const protocol = loadProtocol();
   const client = new GameClient({ url, protocol });
   client.on('warn', (message) => console.log(`warn: ${message}`));
@@ -582,6 +570,7 @@ async function field({ sub, gridIdx, fleets, allowMutate }) {
     }
     const { rejected } = await runWorld(client, protocol, { actions: [planned.action], notes: [] }, {
       allowMutate,
+      accountId: account.id, player, config,
       onStep: (entry) => console.log(entry.ok ? '  . 已发送' : `  x ${entry.error}`),
     });
     if (rejected.size) console.log('被服务端拒绝（PromptResponse），未生效');
@@ -591,16 +580,20 @@ async function field({ sub, gridIdx, fleets, allowMutate }) {
 }
 
 // 自动循环：任务 → 日常 → 海面，每轮之间睡 --every 秒。必须显式开，Ctrl-C 收尾后退出。
+/** 旧循环与新玩法共用账号设置和额度，Ctrl-C 中断后续动作。 */
 async function loopCli({ allowMutate, rounds, everySeconds, allowSpeedUp, allowReroll, allowPaid }) {
-  const { url, login } = loadCredentials();
+  const { url, login, account } = loadCredentials();
   const protocol = loadProtocol();
   const client = new GameClient({ url, protocol });
   client.on('warn', (message) => console.log(`warn: ${message}`));
   client.on('fatal', (info) => console.log(`fatal: ${JSON.stringify(info)}`));
 
-  const stop = { aborted: false };
+  const controller = new AbortController();
+  const stop = { aborted: false, signal: controller.signal };
   const onSigint = () => {
     stop.aborted = true;
+    // 同时唤醒轮次间的等待，避免退出要等完整挂机间隔；已发出的请求仍按原流程收尾。
+    controller.abort();
     console.log('\n收到 Ctrl-C：本轮结束后退出');
   };
   process.on('SIGINT', onSigint);
@@ -613,6 +606,7 @@ async function loopCli({ allowMutate, rounds, everySeconds, allowSpeedUp, allowR
     await runLoop(client, protocol, {
       config,
       player,
+      accountId: account.id,
       rounds,
       everyMs: everySeconds * 1000,
       allowMutate,
@@ -627,6 +621,32 @@ async function loopCli({ allowMutate, rounds, everySeconds, allowSpeedUp, allowR
     process.off('SIGINT', onSigint);
     client.stop();
   }
+}
+
+/** 自动化 CLI 的 plan 只读，run 必须显式 --yes；设置读写不连接游戏。 */
+async function automationCli(args) {
+  const [command = 'plan', selector = 'all'] = args.filter(arg => !arg.startsWith('--'));
+  const { account, url, login } = loadCredentials();
+  if (command === 'settings') {
+    if (selector === 'all') console.log(JSON.stringify(loadSettings(account.id), null, 2));
+    else console.log(JSON.stringify(saveSettings(account.id, JSON.parse(fs.readFileSync(selector, 'utf8'))), null, 2));
+    return;
+  }
+  if (!['plan', 'run'].includes(command)) throw new Error('用法：automation plan|run [模块|all]；automation settings [JSON文件]');
+  if (selector !== 'all' && !MODULES.includes(selector)) throw new Error(`未知自动化模块 ${selector}`);
+  if (command === 'run' && !args.includes('--yes')) throw new Error('执行自动化必须显式 --yes');
+  const protocol = loadProtocol(), client = new GameClient({ url, protocol });
+  const pushes = new Map(), stop = { aborted: false };
+  /** 登录推送绑定当前连接，确保首轮活动预览能读到活动状态。 */
+  const capture = message => { if (message.name.startsWith('SC')) pushes.set(message.name, message.body); };
+  const interrupt = () => { stop.aborted = true; };
+  client.on('message', capture); process.on('SIGINT', interrupt);
+  try {
+    const response = await client.connect(login);
+    const result = await runAutomation({ client, protocol, config: getConfig(), player: response.playerInfo, accountId: account.id, selector, initialPushes: pushes, stop, dryRun: command === 'plan', onStep: row => console.log(`[${LABELS[row.module] ?? row.module}] ${row.status} ${row.label ?? row.request ?? ''} ${row.reason ?? ''}`) });
+    if (result.error) throw new Error(result.error);
+    console.log(JSON.stringify({ completedAt: result.completedAt, counts: result.results.reduce((map, row) => { map[row.status] = (map[row.status] ?? 0) + 1; return map; }, {}) }));
+  } finally { process.off('SIGINT', interrupt); client.off('message', capture); client.stop(); }
 }
 
 // 账号管理：列、改名、切换、删除、看凭证。加账号本身要抓包，走
@@ -695,6 +715,7 @@ async function accountsCli(args) {
   throw new Error(`未知子命令 ${sub}。可用: list / use / label / remove / show`);
 }
 
+/** 命令分发保持原有入口，并将 automation 命令交给统一账号执行服务。 */
 async function main() {
   const mode = process.argv[2] || 'console';
 
@@ -708,6 +729,10 @@ async function main() {
     return;
   }
 
+  if (mode === 'automation') {
+    await automationCli(process.argv.slice(3));
+    return;
+  }
   if (mode === 'connect') {
     await headless({ seconds: Number(process.argv[3] ?? 60) });
     return;

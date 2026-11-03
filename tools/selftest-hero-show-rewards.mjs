@@ -1,5 +1,6 @@
+import { claimRewards } from './selftest-gameplay.mjs';
 import assert from 'node:assert/strict';
-import { claimRewards } from '../src/claim-rewards.mjs';
+
 
 const heroes = [
   { heroId: '待领取', showName: '瑞文' }, { heroId: '已完成' },

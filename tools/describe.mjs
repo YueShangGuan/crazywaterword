@@ -6,9 +6,11 @@ import { PROTO_BUNDLE as BUNDLE, readProtocolSource } from '../src/protocol-sour
 
 const WIRE_CALL = /t\.uint32\((\d+)\)\.([A-Za-z0-9_]+)\(e\.([A-Za-z0-9_.]+)/g;
 const CASE_SCALAR = /case (\d+):o\.([A-Za-z0-9_]+)=t\.([A-Za-z0-9_]+)\(\)/g;
-const CASE_ARRAY = /case (?<num>\d+):o\.(?<field>[A-Za-z0-9_]+)&&o\.\k<field>\.length\|\|\(o\.\k<field>=\[\]\),o\.\k<field>\.push\(tf\.protocol\.(?<type>[A-Za-z0-9_]+)\.decode/g;
-const CASE_MSG = /case (\d+):o\.([A-Za-z0-9_]+)=tf\.protocol\.([A-Za-z0-9_]+)\.decode/g;
+// 压缩器会改变协议命名空间变量名；字段布局取决于 wire tag，不取决于这个局部变量名。
+const CASE_ARRAY = /case (?<num>\d+):o\.(?<field>[A-Za-z0-9_]+)&&o\.\k<field>\.length\|\|\(o\.\k<field>=\[\]\),o\.\k<field>\.push\([A-Za-z_$][\w$]*\.protocol\.(?<type>[A-Za-z0-9_]+)\.decode/g;
+const CASE_MSG = /case (\d+):o\.([A-Za-z0-9_]+)=[A-Za-z_$][\w$]*\.protocol\.([A-Za-z0-9_]+)\.decode/g;
 const CASE_COND = /case (\d+):/g;
+const CASE_REPEATED_SCALAR = /case (\d+):(?:(?!case \d+:)[\s\S])*?o\.([A-Za-z0-9_]+)\.push\(t\.([A-Za-z0-9_]+)\(\)\)/g;
 
 const source = readProtocolSource();
 const indexes = new Map();
@@ -17,6 +19,7 @@ for (const match of source.matchAll(/(?:^|[,;{(]i\.|\}\)\.)([A-Za-z0-9_]+)=funct
   indexes.set(match[1], match.index + match[0].length - 1);
 }
 
+/** 返回当前客户端中声明的类型名，用于离线核对协议覆盖。 */
 function typeNames() {
   return [...indexes.keys()].sort();
 }
@@ -24,6 +27,7 @@ function typeNames() {
 // 类型是按对象字面量成组声明的，组里的第一项写成 `((i={}).X=function(){`，
 // 其余项写成 `,i.X=function(){`。只认前一种前缀会漏掉每组第一个类型
 // （AchievementInfoRequest 就是这么被漏掉的），所以两种都试。
+/** 定位生成类型的函数体，避免把相邻类型的字段混入当前类型。 */
 function findType(name) {
   let start = -1;
   for (const prefix of [`i.${name}=function(){`, `}).${name}=function(){`]) {
@@ -36,13 +40,14 @@ function findType(name) {
   return source.slice(start, end);
 }
 
+/** 从客户端生成的编码和解码函数恢复字段、wire 类型及必填约束。 */
 function fields(name) {
   const raw = findType(name);
   if (!raw) throw new Error(`unknown type: ${name}`);
   // protobufjs emits `switch (i>>>3) { case N: ... }` for multi-field types but a bare
   // `i>>>3==N? ... :` ternary when the type has a single field. Normalise so one set of
   // patterns covers both.
-  const body = raw.replace(/i>>>3==(\d+)\?\(?/g, 'case $1:');
+  const body = raw.replace(/i>>>3==(\d+)\?\(?/g, 'case $1:').replace(/if\(i>>>3==(\d+)\)\{/g, 'case $1:');
   const out = new Map();
   const ensure = (number) => {
     if (!out.has(number)) out.set(number, { number, name: null, kind: 'unknown', type: null });
@@ -73,6 +78,10 @@ function fields(name) {
     field.name = match[2];
     field.kind = 'scalar';
     field.type = match[3];
+  }
+  // packed 数值数组的赋值包在 if/for 内；必须从 decode 的 push 恢复元素类型。
+  for (const match of body.matchAll(CASE_REPEATED_SCALAR)) {
+    Object.assign(ensure(Number(match[1])), { name: match[2], kind: 'repeated', type: match[3] });
   }
 
   const required = new Set(

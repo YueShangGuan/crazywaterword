@@ -112,7 +112,7 @@ let checked = 0;
 {
   // No empty plots in OnWaterResponse: reconstruct non-housing plots and
   // keep building even if daily probes or an unrelated first plot fail.
-  const { runLoop } = await import('./loop.mjs');
+  const { runLoop } = await import('../tools/selftest-gameplay.mjs');
   const ids = ['1农田', '1工厂', '1仓库', '2工厂'];
   const config = { tables: { BuildingUnlockCfg: { data: ids.map((buildingId, i) => ({
     buildingId, buildingType: buildingId.slice(1), category: ['农田', '工厂', '', '工厂'][i],
@@ -393,12 +393,14 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
     id: long(55059310000001),
     nickname: '示例玩家1001',
     level: 11,
+    vip: { vipLevel: 3 },
     power: long(40889),
     worldId: long(2004001001),
     bornWorldId: long(2001001001),
   });
   assert.equal(role.id, 55059310000001);
   assert.equal(role.power, 40889);
+  assert.equal(role.vipLevel, 3, 'describeRole exposes nested PlayerInfo.vip.vipLevel');
   assert.equal(role.worldId, 2004001001, 'role worldId is where the role lives now');
   assert.equal(role.bornWorldId, 2001001001, 'bornWorldId is the world it was created in');
   assert.equal(role.newRole, undefined, 'absent flags stay absent');
@@ -417,7 +419,7 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
 // it must exist in the protocol table along with its response, or the whole burst turns
 // into timeouts at runtime.
 {
-  const { ENTRY_QUERIES, ENTRY_SIGNALS, summarize, formatState } = await import('./game.mjs');
+  const { ENTRY_QUERIES, ENTRY_SIGNALS, cropStorageCapacity, summarize, formatState } = await import('./game.mjs');
 
   for (const { name } of ENTRY_QUERIES) {
     assert.ok(protocol[name], `entry query has no protocol type: ${name}`);
@@ -466,6 +468,20 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
   assert.equal(sample.buildings[0].auto, true);
   assert.equal(sample.buildings[0].factory.finished[0].id, '生鱼片');
   assert.ok(formatState(sample).includes('杰森 lv45 2星 战力11658'));
+
+  // 农作物容量从 250 起；VIP 配置的特权值每点对应 5 个库存位，不能误用工厂成品的 50。
+  const cropConfig = { tables: {
+    FarmlandPlantCfg: { data: [{ id: '玉米' }] },
+    VipLevelCfg: { data: [
+      { level: 4, effects: [['加工品存量上限', 5]] },
+      { level: 6, effects: [['加工品存量上限', 10]] },
+    ] },
+  } };
+  assert.equal(cropStorageCapacity(cropConfig, 3), 250, 'VIP3 keeps the base crop capacity');
+  assert.equal(cropStorageCapacity(cropConfig, 4), 275, 'VIP4 applies the configured crop-capacity bonus');
+  assert.equal(cropStorageCapacity(cropConfig, 6), 300, 'later VIP rows replace the previous crop-capacity bonus');
+  const crops = summarize({ ok: { AllItemRequest: { items: [{ itemId: '玉米', num: 201 }] } } }, { config: cropConfig, cropVipLevel: 3 });
+  assert.deepEqual(crops.crops, [{ itemId: '玉米', num: 201, capacity: 250 }], 'overview crops use the VIP-derived capacity');
   checked += 1;
 }
 
@@ -542,6 +558,8 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
   delete legacy[name];
   for (const table of new Set([protocol, legacy])) {
     const client = new GameClient({ protocol: table });
+    // 队列只接受已连接会话；内存 socket 不会创建任何网络连接。
+    client.socket = { readyState: 1, close() {} };
     client.recvSeqNo = 40;
     client.send = () => 1;
     const acknowledged = [];
@@ -549,6 +567,7 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
     const pushes = [];
     client.on('message', (msg) => { if (msg.name === name) pushes.push(msg.body); });
     const waiting = client.request('DailyTaskInfoRequest', {}, 'DailyTaskInfoResponse');
+    await Promise.resolve(); // 等串行队列注册待响应项后再注入服务端帧。
     client.onMessage(push);
     assert.equal(client.pending.length, 1, 'a push cannot settle the reward query');
     client.onMessage(codec.encode('DailyTaskInfoResponse', 42, { dailyActivity: 20 }));
@@ -573,7 +592,9 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
   assert(client.handleSeqNo(990, 'SCUpdateResource'));
   assert.equal(client.gapTimer, null);
   client.send = () => 1;
+  client.socket = { readyState: 1, close() {} };
   const waiting = client.request('DailyTaskInfoRequest', {}, 'DailyTaskInfoResponse');
+  await Promise.resolve();
   client.onMessage(codec.encode('ResendFailed', 995, { seqNo: 991 }));
   await assert.rejects(waiting, /重传/);
   assert.equal(client.state, 'CLOSED');
@@ -582,7 +603,7 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
 }
 
 {
-  const { claimRewards } = await import('./claim-rewards.mjs');
+  const { claimRewards } = await import('../tools/selftest-gameplay.mjs');
   const calls = [];
   const client = {
     async request(name) {
@@ -1130,7 +1151,8 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
     }
     if (!action.mutate) continue;
     sent.length = 0;
-    await runAction(client, protocol, id, { buildingId: 'x', productId: 'y', taskId: 1, index: 1, gridIdx: 1, useNum: 1, level: 1, isOn: true, id: 1 }, { allowMutate: true });
+    // 目录测试只验证路由，预算与结果确认由独立模拟网关测试覆盖。
+    await runAction(client, protocol, id, { buildingId: 'x', productId: 'y', taskId: 1, index: 1, gridIdx: 1, useNum: 1, level: 1, isOn: true, id: 1, type: 1 }, { allowMutate: true, actionExecutor: async step => step.response ? client.request(step.request, step.body, step.response) : client.sendWatch(step.request, step.body) });
     assert.equal(sent.length, 1, `${id} sends exactly one message`);
     assert.equal(sent[0].via, action.response ? 'request' : 'watch', `${id} must go through ${action.response ? 'request' : 'watch'}`);
   }
@@ -1171,7 +1193,7 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
   assert.throws(() => mod.pickAccount(store, 'open'), /匹配到多个/, '前缀撞车要报错而不是随便挑一个');
 
   // 同一个账号重新抓包 → 凭证换新，备注与 lastSeen 保留
-  const seen = { nickname: '老船长', level: 11, power: 900, worldId: 7 };
+  const seen = { nickname: '老船长', level: 11, vipLevel: 3, power: 900, worldId: 7 };
   mod.rememberSeen(store.accounts[1], seen);
   const refreshed = 'tk-open-2-refreshed-0001';
   const again = mod.upsertAccount(store, credential('open-2', refreshed));
@@ -1179,6 +1201,7 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
   assert.equal(again.account.label, '小号', '重新抓包不该丢掉备注');
   assert.equal(again.account.login.eworldParams.token, refreshed, '凭证要换成新的');
   assert.equal(again.account.lastSeen.nickname, '老船长', 'lastSeen 保留');
+  assert.equal(again.account.lastSeen.vipLevel, 3, 'lastSeen 保留 VIP 等级');
   assert.equal(store.accounts.length, 2, '不会因为重复抓包多出一条');
 
   assert.equal(mod.accountId(credential('open-9', 'x')), 'open-9', '账号身份取自 openId');

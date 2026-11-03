@@ -31,7 +31,7 @@ export async function testResidentHttp(app) {
   const game = new EventEmitter();
   game.connected = true;
   game.stop = () => { game.connected = false; };
-  session.player = { level: 1, scenarioId: 1.5 }; // no real map fetch for this fixture
+  session.player = { playerId: '2', level: 1, scenarioId: 1.5 }; // 固定假角色，避免请求真实地图。
   session.client = game;
   const orders = [1, 2].map(index => ({ index, workerId: index, textId: index, requirements: [{ id: '烤鱼', num: 3 }] }));
   const writes = [];
@@ -93,7 +93,7 @@ export async function testResidentHttp(app) {
   } finally { blocked.release.resolve(); }
   await blocked.read;
   const delivered = await duplicatePair;
-  assert(delivered.every(r => r.status === 200 && r.data.ok && r.data.index === 2));
+  assert(delivered.every(r => r.status === 200 && r.data.ok && r.data.index === 2), JSON.stringify(delivered));
   assert.deepEqual(writes, [2], '两次点击只交一次指定的第二单');
   assert.equal((await submit(second)).status, 400, '已提交的同一把 key 即使状态推送未到也不能重放');
 

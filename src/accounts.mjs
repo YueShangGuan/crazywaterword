@@ -106,11 +106,19 @@ export function upsertAccount(store, credential, { label = null, now = new Date(
   return { account: merged, created: false };
 }
 
+/**
+ * 保存最近一次登录角色的可读身份快照，供账号选择器和资格展示使用。
+ *
+ * @param {object} account 本地账号记录。
+ * @param {object|null} player 已归一化的角色信息。
+ * @param {string} now 本次观察时间。
+ */
 export function rememberSeen(account, player, now = new Date().toISOString()) {
   if (!account) return;
   account.lastSeen = {
     nickname: player?.nickname ?? account.lastSeen?.nickname ?? null,
     level: player?.level ?? account.lastSeen?.level ?? null,
+    vipLevel: player?.vipLevel ?? account.lastSeen?.vipLevel ?? null,
     power: player?.power ?? account.lastSeen?.power ?? null,
     worldId: player?.worldId ?? account.lastSeen?.worldId ?? null,
     at: now,
