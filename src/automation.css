@@ -4,14 +4,12 @@
   .material-panel .cell { min-width:0; }
   .material-panel .txt { min-width:0; overflow-wrap:anywhere; }
   .material-panel .crop-low-stock { border-color:#b73838; background:#fff1ef; }
-  .overview-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr)); gap:12px; }
   .overview-card, .fleet-panel { min-width:0; border:1px solid var(--line); border-radius:8px; background:white; padding:14px; }
   .overview-card h3, .fleet-panel h3 { font-weight:600; margin-bottom:8px; }
   .overview-lines { display:grid; gap:6px; }
   .overview-line { display:flex; justify-content:space-between; align-items:start; gap:12px; }
   .overview-line .label { color:var(--muted); flex:none; }
   .overview-line .value { min-width:0; text-align:right; overflow-wrap:anywhere; }
-  .fleet-panel, #overview-production { grid-column:1 / -1; }
   .fleet-panel-heading, .fleet-card-top, .fleet-card-meta { display:flex; justify-content:space-between; gap:8px; flex-wrap:wrap; }
   .fleet-panel-heading small, .fleet-card-meta, .fleet-card-target { color:var(--muted); font-size:12px; }
   .fleet-list { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr)); gap:10px; }
@@ -45,35 +43,38 @@
   .automation-field-copy { display:grid; gap:2px; flex:1; min-width:0; }
   .automation-field-label { color:var(--ink); }
   .automation-field-help { color:var(--muted); font-size:12px; line-height:1.45; }
-  /* 三列分别承载游戏选项、当前配置与生成结果；窄屏按操作顺序依次换行。 */
-  .automation-editor { display:grid; grid-template-columns:minmax(180px,1fr) minmax(260px,1.2fr) minmax(200px,280px); gap:10px; max-width:1160px; margin:8px 0 14px; padding:10px; border:1px solid #303640; border-radius:6px; background:#15191f; align-items:start; }
-  .automation-editor-pane { min-width:0; padding:8px; border:1px solid #262d37; border-radius:5px; background:#101419; }
-  .automation-editor-pane strong { display:block; color:#b9c7d8; margin-bottom:6px; }
-  .automation-editor .automation-field-label { color:#d7e0e5; }
-  .automation-editor .automation-field-help { color:#aabac5; }
-  .automation-editor-note { margin:4px 0 10px; color:#7c8695; font-size:12px; }
+  /* 自动化编辑器沿用控制台浅色青绿表面；原生下拉框也固定 light 色彩方案，避免系统深色弹层将候选项显示为黑底。 */
+  .automation-editor { display:grid; grid-template-columns:minmax(180px,1fr) minmax(260px,1.2fr) minmax(200px,280px); gap:10px; max-width:1160px; margin:8px 0 14px; padding:10px; border:1px solid #cddedc; border-radius:8px; background:#f8fbfa; box-shadow:0 2px 5px #16394306; color-scheme:light; align-items:start; }
+  .automation-editor-pane { min-width:0; padding:8px; border:1px solid #d7e5e2; border-radius:6px; background:#fff; }
+  .automation-editor-pane strong { display:block; color:#23474d; margin-bottom:6px; }
+  .automation-editor .automation-field-label { color:var(--ink); }
+  .automation-editor .automation-field-help, .automation-editor-note { color:var(--muted); }
+  .automation-editor-note { margin:4px 0 10px; font-size:12px; }
   .automation-choice-list { max-height:210px; overflow:auto; }
   .automation-choice-search { width:100%; min-width:0; margin-bottom:6px; }
-  .automation-choice { margin:3px; padding:3px 8px; font-size:12px; }
-  .automation-choice.on { border-color:#4f8e64; color:#a7e2b4; background:#1d3023; }
+  .automation-choice { margin:3px; padding:3px 8px; border:1px solid #ccd9d9; border-radius:6px; background:#fff; color:#2c5054; font-size:12px; transition:background-color .15s,color .15s,border-color .15s; }
+  .automation-choice:hover { border-color:#a3bcbb; background:#edf5f3; }
+  .automation-choice.on { border-color:#59a79b; color:#0f5f60; background:#e3f3ee; font-weight:600; }
   .automation-editor-add { display:flex; gap:5px; margin-top:8px; }
   .automation-editor-add input { min-width:0; width:100%; }
   .automation-editor-rows { display:grid; gap:6px; min-width:0; }
-  .automation-editor-row { display:flex; gap:6px; align-items:center; min-width:0; padding:5px; border:1px solid #29303a; border-radius:4px; background:#11161c; }
+  .automation-editor-row { display:flex; gap:6px; align-items:center; min-width:0; padding:5px; border:1px solid #d7e5e2; border-radius:5px; background:#f8fbfa; }
   .automation-editor-row input[type=text], .automation-editor-row input[type=number] { min-width:0; width:100%; }
   .automation-editor-row > select { flex:1; min-width:0; }
-  .automation-editor select { min-width:0; max-width:100%; width:100%; }
+  .automation-editor input:not([type=checkbox]), .automation-editor select { min-width:0; max-width:100%; width:100%; border:1px solid #ccd9d9; border-radius:4px; background:#fff; color:#29494e; }
+  .automation-editor select { color-scheme:light; }
+  .automation-editor select option { background:#fff; color:#29494e; }
   .automation-dictionary-label { display:grid; gap:4px; flex:1; min-width:0; }
-  .automation-editor-row label { color:#8996a7; font-size:12px; white-space:nowrap; }
-  .automation-chip { display:flex; align-items:center; gap:6px; padding:4px 7px; border:1px solid #3a5368; border-radius:4px; color:#b9d8ef; background:#182733; font-size:12px; }
+  .automation-editor-row label { color:#4c686e; font-size:12px; white-space:nowrap; }
+  .automation-chip { display:flex; align-items:center; gap:6px; padding:4px 7px; border:1px solid #b8d7d1; border-radius:5px; color:#155960; background:#eaf5f1; font-size:12px; }
   .automation-chip span { flex:1; overflow-wrap:anywhere; }
-  .automation-chip-remove { padding:0 3px; border:0; background:transparent; color:#9bb5c6; font-size:14px; line-height:1; }
+  .automation-chip-remove { padding:0 3px; border:0; background:transparent; color:#4c777d; font-size:14px; line-height:1; }
   .automation-json-pane { min-width:0; }
-  .automation-json-pane > strong { display:block; margin:8px 0 6px; font-size:12px; color:#94b9b6; }
-  .automation-json { width:100%; min-height:150px; padding:8px; resize:vertical; background:#0d1116; color:#b8e0a0; border:1px solid #2f353f; border-radius:4px; font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace; }
+  .automation-json-pane > strong { display:block; margin:8px 0 6px; font-size:12px; color:#35646a; }
+  .automation-json { width:100%; min-height:150px; padding:8px; resize:vertical; background:#f4f9f8; color:#31575a; border:1px solid #c9dddd; border-radius:5px; font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace; }
   .automation-json[readonly] { cursor:default; }
-  .automation-editor-error { color:#f08a8a; margin:4px 0 0; overflow-wrap:anywhere; }
-  .automation-rule-row { padding:9px; border:1px solid #303c48; border-radius:4px; background:#11161c; display:grid; gap:8px; }
+  .automation-editor-error { color:#a13d33; margin:4px 0 0; overflow-wrap:anywhere; }
+  .automation-rule-row { padding:9px; border:1px solid #d1e1de; border-radius:5px; background:#f8fbfa; display:grid; gap:8px; }
   .automation-rule-field { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; min-width:0; }
   .automation-rule-field > input:not([type=checkbox]), .automation-rule-field > select { width:100%; }
   .automation-role-options { display:flex; gap:10px; flex-wrap:wrap; }

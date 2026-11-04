@@ -40,10 +40,10 @@ header .connection #connect:disabled:has(+ #disconnect:enabled), header .connect
 .log-filter { width:fit-content; padding:3px; gap:2px; border-radius:9px; background:#edf3f2 }
 .log-filter [data-slot=button] { border:0; background:transparent; color:#4a6266; height:28px; font-size:12px; border-radius:6px }
 .log-filter [aria-pressed=true] { background:white; color:#155960; box-shadow:0 1px 3px #17485124 }
-@media(min-width:1000px) {
-  #tab-overview > .grid { grid-template-columns:repeat(2,minmax(0,1fr)) }
-  #tab-overview [data-slot=card]:first-child, #tab-overview [data-slot=card]:last-child { grid-column:1/-1 }
-}
+/* 多栏流式布局让高内容状态卡独立增长，不再把同一行的英雄等面板拉到相同高度。 */
+#tab-overview .overview-layout { display:grid; gap:16px }
+#tab-overview .overview-masonry > * { break-inside:avoid; margin-block-end:16px; min-width:0 }
+@media(min-width:1000px) { #tab-overview .overview-masonry { column-count:2; column-gap:16px } }
 @media(max-width:640px) {
   header [data-tab] { min-height:42px; padding-inline:9px }
   [data-slot=card-header], [data-slot=card-content] { padding-inline:15px }

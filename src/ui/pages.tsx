@@ -13,21 +13,24 @@ function Option({id, label, checked = false}: {id: string; label: string; checke
   return <div className="bar"><Switch id={id} data-local-switch="" defaultChecked={checked} className="p-0" /><label htmlFor={id}>{label}</label></div>
 }
 
-/** 总览沿用上游组件布局，增加库存、舰队和只读消息状态容器。 */
+/**
+ * 渲染总览：角色概况和游戏消息保持全宽，中间各业务面板交由 CSS 瀑布流按内容高度排列。
+ */
 export function overviewPage() {
-  return renderToStaticMarkup(<div className="grid gap-4">
+  return renderToStaticMarkup(<div className="overview-layout">
     <Panel title="角色概况">
-<div className="who" id="who"><span className="dim">还没连上。点右上角「连接」，或先去「账号」页添加账号。</span></div>
+      <div className="who" id="who"><span className="dim">还没连上。点右上角「连接」，或先去「账号」页添加账号。</span></div>
       <Button id="overview-refresh" variant="outline">刷新数据</Button>
     </Panel>
-    <Panel title="资源"><div className="icons" id="res"><span className="dim">连接后显示</span></div>
-    </Panel>
-    <Panel title="库存"><div className="icons" id="items"><span className="dim">连接后显示</span></div>
-    </Panel>
-    <Panel title="原材料库存（当前 / 仓库上限）"><div className="material-panel" id="materials" /></Panel>
-    <Panel title="农作物库存（当前 / 上限）"><div className="material-panel" id="crops" /></Panel>
-    <Panel title="主力英雄"><div className="icons" id="hero-strip"><span className="dim">连接后显示</span></div></Panel>
-    <div className="overview-grid" id="overview-status-grid">
+
+    <div className="overview-masonry">
+      <Panel title="资源"><div className="icons" id="res"><span className="dim">连接后显示</span></div>
+      </Panel>
+      <Panel title="库存"><div className="icons" id="items"><span className="dim">连接后显示</span></div>
+      </Panel>
+      <Panel title="原材料库存（当前 / 仓库上限）"><div className="material-panel" id="materials" /></Panel>
+      <Panel title="农作物库存（当前 / 上限）"><div className="material-panel" id="crops" /></Panel>
+      <Panel title="主力英雄"><div className="icons" id="hero-strip"><span className="dim">连接后显示</span></div></Panel>
       <div className="fleet-panel" id="overview-fleets" />
       {['claimable','daily','afk','water','production','trade','world','guild','progress','collection','data-health'].map(name =>
         <div key={name} className="overview-card" id={'overview-' + name} />)}

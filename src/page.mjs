@@ -647,11 +647,8 @@ function renderWho(view) {
 }
 
 /** 创建总览中的状态卡片，并把值写入文本节点以避免协议内容被当作 HTML。 */
-function renderOverviewCard(id, title, rows, { wide = false } = {}) {
+function renderOverviewCard(id, title, rows) {
   const card = clear($(id));
-  // 卡片宽度在静态模板中已声明；这里保留参数只用于表达调用方的布局意图，
-  // 也让最小化的离线 DOM 测试不需要实现完整的 classList API。
-  void wide;
   card.appendChild(el('h3', null, title));
   const lines = rows.filter((row) => row && row[1] !== undefined && row[1] !== null && row[1] !== '');
   if (!lines.length) {
@@ -767,7 +764,7 @@ function renderOverviewStatus(data) {
     ['成就', fmt(claimable.achievement ?? 0) + ' 项'],
     ['邮件附件', fmt(claimable.email ?? 0) + ' 封'],
     ['挂机等级奖励', fmt(claimable.afk ?? 0) + ' 项'],
-  ], { wide: true });
+  ]);
 
   const daily = data.daily || {};
   const gift = data.dailyGift || {};
@@ -808,7 +805,7 @@ function renderOverviewStatus(data) {
     ['钓鱼 / 打捞 / 潜水', (water.fishingLevel ?? '-') + ' / ' + (water.salvageLevel ?? '-') + ' / ' + (water.divingLevel ?? '-')],
     ['今日订单', water.orderOfTheDay ? String(water.orderOfTheDay.orderNum ?? 0) + ' / 已领奖 ' + String(water.orderOfTheDay.rewardedNum ?? 0) : null],
     ['漂浮物 / 工人订单', String(water.floaterCount ?? 0) + ' / ' + String(water.workerOrderCount ?? 0)],
-  ], { wide: true });
+  ]);
 
   renderOverviewProduction(data);
 
@@ -829,7 +826,7 @@ function renderOverviewStatus(data) {
     ['联盟商情', data.tradeRadar ? () => tradeRadarDisclosure(tradeRadar) : null],
     ['贸易任务', trade.guildTask ? '利润 ' + fmt(trade.guildTask.profit ?? 0) + '，贸易次数 ' + fmt(trade.guildTask.tradeTimes ?? 0) : null],
     ['可领奖励', trade ? '成就 #' + (trade.gotAchieveRwdId ?? 0) + '，商情 #' + (trade.gotReportRwdId ?? 0) : null],
-  ], { wide: true });
+  ]);
 
   const cargo = data.cargo || {};
   const radar = data.radar || {};
@@ -876,7 +873,7 @@ function renderOverviewStatus(data) {
     ['最近刷新', data.updatedAt ? when(data.updatedAt) : null],
     ['连接状态', data.status?.connected ? '已连接' : '未连接'],
     ['未读响应', data.unreadable?.length ? data.unreadable.join('、') : '全部可读'],
-  ], { wide: true });
+  ]);
 }
 
 /** 渲染每块农田与每座工厂的当前生产明细，供总览轮询直接刷新。 */

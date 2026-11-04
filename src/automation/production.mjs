@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { makeTypeResolver } from '../world.mjs';
 import { amount } from './context.mjs';
 import { skip } from './common.mjs';
 import { planProduction, productionEffects, waitingProduction } from './production-planner.mjs';
@@ -33,7 +32,6 @@ function findJob(water, target) {
  */
 export async function scheduleProduction(ctx, options, needs, disabledBuildings = []) {
   const state = structuredClone(ctx.memory(MEMORY_KEY) ?? { restocking: [], streaks: {}, deferred: [], protectedJobs: {} });
-  const resolve = makeTypeResolver(ctx.config);
   const effectsResponse = await ctx.query('GameEffectRequest');
   // 只合并本轮查询之后收到的效果推送，不能让旧推送覆盖更新的查询快照。
   const effectValues = new Map((effectsResponse.effects ?? []).map(row => [row.id, row.value]));
@@ -81,16 +79,7 @@ export async function scheduleProduction(ctx, options, needs, disabledBuildings 
   try {
     let water = await ctx.query('OnWaterRequest');
     if (!await recoverIntent(water)) return;
-    for (const building of water.building ?? []) {
-      const type = resolve(building.buildingId);
-      if (!building.factory?.autoProductId || !type || type === '活动工厂' || disabledBuildings.includes(type) || options.disabledFactories.includes(type)) continue;
-      // 游戏自动生产会独立插入任务、消耗原料，三档调度接管期间不能让两个调度器争用同一队列。
-      const result = await ctx.action('CancelFactoryAutoProduceRequest', { buildingId: building.buildingId }, { label: `${type} 切换三档排产`, confirm: async () => {
-        const current = (await ctx.query('OnWaterRequest')).building?.find(row => row.buildingId === building.buildingId)?.factory;
-        return Boolean(current) && !current.autoProductId;
-      } });
-      if (result.status !== 'success' || ctx.stop.aborted) return;
-    }
+    // 保留游戏自动生产；需求材料只能在现有队列有空位时追加到队尾，不能关闭自动生产抢占队列。
     for (let iteration = 0; iteration < 200; iteration++) {
       ctx.assertReady();
       water = await ctx.query('OnWaterRequest');

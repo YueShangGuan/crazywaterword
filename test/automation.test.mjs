@@ -247,6 +247,15 @@ test('automation UI: merchant ship uses form controls instead of a fleet JSON te
   assert.doesNotMatch(PAGE, /merchantShip.*舰队规则（JSON 数组）/);
 });
 
+/** 自动化候选项、已选项与原生下拉框必须跟随控制台浅色主题。 */
+test('automation UI: choice editor uses the shared light control style', () => {
+  assert.match(PAGE, /\.automation-editor \{[^}]*background:#f8fbfa[^}]*color-scheme:light/s);
+  assert.match(PAGE, /\.automation-choice \{[^}]*background:#fff[^}]*color:#2c5054/s);
+  assert.match(PAGE, /\.automation-choice\.on \{[^}]*background:#e3f3ee/s);
+  assert.match(PAGE, /\.automation-editor select option \{[^}]*background:#fff[^}]*color:#29494e/s);
+  assert.doesNotMatch(PAGE, /\.automation-editor \{[^}]*background:#15191f/s);
+});
+
 test('automation UI: diamond copy distinguishes balance protection from daily allowances', () => {
   assert.match(AUTOMATION_SCRIPT, /当前角色游戏内钻石余额的下限，不是每日可用额度/);
   assert.match(AUTOMATION_SCRIPT, /10000 会按原值保存/);
@@ -281,11 +290,13 @@ test('automation UI: every rendered setting has specific functionality and scope
   }
 });
 
-test('automation UI: merchant ship and trade reuse the shared configuration layout', () => {
+test('automation UI: merchant ship and trade render as separate world activity groups', () => {
   assert.match(AUTOMATION_SCRIPT, /function merchantShipFields\(value, path\)/);
   assert.match(AUTOMATION_SCRIPT, /function tradeFields\(value, path\)/);
-  assert.match(AUTOMATION_SCRIPT, /settingHeading\(merchantCopy\.title, merchantCopy\.note\)/);
-  assert.match(AUTOMATION_SCRIPT, /settingHeading\(tradeCopy\.title, tradeCopy\.note\)/);
+  assert.match(AUTOMATION_SCRIPT, /function worldActivityGroup\(copy, fields\)/);
+  assert.match(AUTOMATION_SCRIPT, /group\.appendChild\(el\('summary', null, copy\.title\)\)/);
+  assert.match(AUTOMATION_SCRIPT, /pathName === 'modules\.world\.merchantShip'.*worldActivityGroup/s);
+  assert.match(AUTOMATION_SCRIPT, /pathName === 'modules\.world\.trade'.*worldActivityGroup/s);
   assert.doesNotMatch(AUTOMATION_SCRIPT, /merchant-ship-panel|merchant-ship-heading|merchant-ship-badge/);
   assert.match(PAGE, /\.automation-editor-row > select/);
   assert.doesNotMatch(PAGE, /\.merchant-ship-panel/);
@@ -405,6 +416,15 @@ test('overview: production panel exposes every farm crop and factory queue item'
   assert.match(PAGE, /id="overview-production"/);
   assert.match(PAGE, /function renderOverviewProduction\(data\)/);
   assert.match(PAGE, /农田与工厂生产/);
+});
+
+/** 桌面总览将中间业务卡置于瀑布流，避免高度较高的状态区拉伸主力英雄卡。 */
+test('overview: intermediate panels use an adaptive masonry layout', () => {
+  assert.match(PAGE, /class="overview-layout"/);
+  assert.match(PAGE, /class="overview-masonry"/);
+  assert.match(PAGE, /column-count:2/);
+  assert.match(PAGE, /break-inside:avoid/);
+  assert.doesNotMatch(PAGE, /overview-grid|overview-status-grid|wide: true/);
 });
 
 /** 运行真实页面脚本的纯转换函数；不创建浏览器或任何游戏连接。 */
@@ -2097,14 +2117,30 @@ test('factory scheduler: preview does not cancel or persist simulated deferred j
   } finally { f.ctx.dispose(); }
 });
 
-test('factory scheduler: takes over game auto-production once without enabling two competing schedulers', async () => {
-  const f = productionFixture({ autoProductId: '长货', options: { autoProduce: true } });
+test('factory scheduler: keeps game auto-production and appends demand materials behind it', async () => {
+  const f = productionFixture({ autoProductId: '长货', queue: [{ idx: 1, productId: '长货', finishTime: fixedNow / 1000 + 7200 }], options: { autoProduce: true } });
   try {
     await runProduction(f);
     const writes = f.client.calls.filter(call => /^(Cancel|Set|Start)Factory/.test(call.name));
-    assert.equal(writes[0].name, 'CancelFactoryAutoProduceRequest');
-    assert.equal(writes.filter(call => call.name === 'CancelFactoryAutoProduceRequest').length, 1);
+    assert.equal(writes.filter(call => call.name === 'CancelFactoryAutoProduceRequest').length, 0);
     assert.equal(writes.filter(call => call.name === 'SetFactoryAutoProduceRequest').length, 0);
+    assert.equal(f.client.states.OnWaterRequest.building[0].factory.autoProductId, '长货');
+    assert.equal(f.client.states.OnWaterRequest.building[0].factory.factoryQ[0].productId, '长货');
+    assert.ok(writes.some(call => call.name === 'StartFactoryProduceRequest'), '需求材料应追加到现有自动生产项之后');
+  } finally { f.ctx.dispose(); }
+});
+
+test('factory scheduler: full auto-production queue is preserved without reordering', async () => {
+  const f = productionFixture({ autoProductId: '长货', queue: [
+    { idx: 1, productId: '长货', finishTime: fixedNow / 1000 + 7200 },
+    { idx: 2, productId: '长货', finishTime: 0 },
+  ], slots: 2, options: { autoProduce: true } });
+  try {
+    await runProduction(f, [{ id: '快料', need: 1, source: 'resident' }]);
+    assert.equal(f.client.calls.filter(call => call.name === 'CancelFactoryProduceRequest').length, 0);
+    assert.equal(f.client.calls.filter(call => call.name === 'StartFactoryProduceRequest').length, 0);
+    assert.equal(f.client.states.OnWaterRequest.building[0].factory.autoProductId, '长货');
+    assert.deepEqual(f.client.states.OnWaterRequest.building[0].factory.factoryQ.map(job => job.productId), ['长货', '长货']);
   } finally { f.ctx.dispose(); }
 });
 

@@ -132,7 +132,7 @@ export async function island(ctx, options) {
       if (building.factory.autoProductId) await ctx.action('CancelFactoryAutoProduceRequest', { buildingId: building.buildingId }, { confirm: async () => !(await ctx.query('OnWaterRequest')).building?.find(b => b.buildingId === building.buildingId)?.factory?.autoProductId });
       continue;
     }
-    // 三档调度拥有自己的库存和队列分配，不能同时启动游戏自动生产争抢原料。
+    // 三档调度负责需求排产，不再重复设置自动生产；已有游戏自动生产由服务端继续维护。
     if (f.priorityProduce || !f.autoProduce) continue;
     const select = s => s.building?.find(b => b.buildingId === building.buildingId)?.factory;
     const cap = ctx.rows('BuildingProduceParamCfg').find(r => r.paramName === '制造位上限')?.paramValue;

@@ -240,6 +240,8 @@ export function planProduction({ config, water, stock, needs, options, disabledB
       if (task.recipe.buildType !== resolve(building.buildingId) || task.recipe.unlockLevel > building.level
         || (task.deferred && task.deferred.buildingId !== building.buildingId)) return false;
       if ((building.factory.factoryQ?.length ?? 0) < slots) return true;
+      // 自动生产的队列由游戏继续维护；队列已满时不能取消其中任何一项来插入需求材料。
+      if (building.factory.autoProductId) return false;
       if (hasProtectedWaiting(building.buildingId)) return false;
       const first = waiting.find(job => job.buildingId === building.buildingId);
       return options.reorderQueue && first && task.tier < first.tier;
@@ -287,7 +289,7 @@ export function planProduction({ config, water, stock, needs, options, disabledB
       choices.push({ kind: 'protect', building, task: best, longDue });
       continue;
     }
-    if (!longDue && !protectedWaiting && options.reorderQueue) {
+    if (!longDue && !protectedWaiting && !building.factory.autoProductId && options.reorderQueue) {
       // 头部已有短料不代表后面排好了：在整个等待后缀找倒置，只取消挡路后缀，不动正确前缀。
       const promotion = candidates.find(candidate => {
         const displaced = buildingWaiting.filter(job => candidate.tier < job.tier && (!candidate.queued || job.position < candidate.position));

@@ -121,10 +121,10 @@ const automationFieldActionCopy = {
   speedUp:'对本组正在进行的项目使用现有加速道具；没有道具时不会购买',
   disabledBuildings:'列出的建筑不会被本组建造、升级或加速；不影响手动操作',
   gain:'领取已完成的工厂或活动工坊成品，并在领取后刷新库存',
-  autoProduce:'未开启需求优先生产时，为普通工厂开启游戏内自动生产；需求优先开启后由三档调度接管并关闭游戏自动生产',
+  autoProduce:'为普通工厂开启游戏内自动生产；需求优先开启后仍保留自动生产，并在现有队列后追加需求材料',
   products:'为选中的工厂类型指定可生产产品；未配置的工厂不会因本项自动开工',
   disabledFactories:'列出的工厂会停止本组排产，并取消其已有的自动生产',
-  priorityProduce:'开启三档排产：短料按低高水位补货、长品按订单及配方依赖生产；关闭游戏内自动生产以避免抢料和抢队列',
+  priorityProduce:'开启三档排产：短料按低高水位补货、长品按订单及配方依赖生产；保留游戏自动生产，需求材料仅追加到现有队列后方',
   proposedPriority:'决定订单需求来源的计算顺序；前面的来源优先占用可用库存和产能',
   speedUpForDemand:'只为已识别的订单缺口加速生产；每座工厂每轮最多加速一次',
   fastTimeSecs:'按当前固定减时和速度加成计算单件耗时；不超过此秒数归为第一档，默认 300 秒；0 只包含即时商品',
@@ -400,8 +400,6 @@ function addMerchantShipFleetRow(fleet, container) {
  */
 function merchantShipFields(value, path) {
   const panel = el('div');
-  const merchantCopy = settingCopy(path, 'merchantShip');
-  panel.appendChild(settingHeading(merchantCopy.title, merchantCopy.note));
 
   const enabledCopy = settingCopy(path.concat('enabled'), 'enabled');
   const enabled = editorInput('enabled', value.enabled); enabled.dataset.setting = path.concat('enabled').join('.'); enabled.dataset.kind = 'boolean'; enabled.title = enabledCopy.note;
@@ -439,8 +437,6 @@ function merchantShipFields(value, path) {
  */
 function tradeFields(value, path) {
   const panel = el('div');
-  const tradeCopy = settingCopy(path, 'trade');
-  panel.appendChild(settingHeading(tradeCopy.title, tradeCopy.note));
 
   // 专用标题保留贸易语义，避免通用字段名“开启”“领取”在独立面板中失去对象。
   const tradeFieldTitles = { enabled:'开启海商王', claim:'领取贸易战报、成就和通行证奖励', upgrade:'自动升级贸易船', speedUp:'允许航行加速', speedUpDailyLimit:'每日航行加速次数', profitLimit:'航行加速最低累计利润' };
@@ -461,6 +457,23 @@ function tradeFields(value, path) {
   panel.appendChild(field('speedUpDailyLimit', 'number'));
   panel.appendChild(field('profitLimit', 'number'));
   return panel;
+}
+
+/**
+ * Wraps one world activity in the same collapsible group used by the other
+ * world features. The activity title and scope note belong on the summary
+ * group so its fields are not duplicated inside the panel.
+ *
+ * @param {{title: string, note: string}} copy Activity display copy.
+ * @param {HTMLElement} fields Existing activity form fields.
+ * @returns {HTMLDetailsElement} Collapsible world-activity group.
+ */
+function worldActivityGroup(copy, fields) {
+  const group = el('details', 'automation-group');
+  group.appendChild(el('summary', null, copy.title));
+  if (copy.note) group.appendChild(el('p', 'automation-group-note', copy.note));
+  group.appendChild(fields);
+  return group;
 }
 
 /** 根据业务字段取本地游戏选项；时钟和需求来源属于固定业务枚举。 */
@@ -679,8 +692,10 @@ function objectArrayEditor(value, key, settingPath) {
 function settingFields(value, path, parent) {
   for (const [key, sample] of Object.entries(value)) {
     const fullPath = path.concat(key), copy = settingCopy(fullPath, key), title = copy.title;
-    if (fullPath.join('.') === 'modules.world.merchantShip') { parent.appendChild(merchantShipFields(sample, fullPath)); continue; }
-    if (fullPath.join('.') === 'modules.world.trade') { parent.appendChild(tradeFields(sample, fullPath)); continue; }
+    const pathName = fullPath.join('.');
+    // 两个世界活动各自独立折叠，避免平铺字段和把不同玩法混入同一个面板。
+    if (pathName === 'modules.world.merchantShip') { parent.appendChild(worldActivityGroup(copy, merchantShipFields(sample, fullPath))); continue; }
+    if (pathName === 'modules.world.trade') { parent.appendChild(worldActivityGroup(copy, tradeFields(sample, fullPath))); continue; }
     if (dictionarySettings.has(key)) { parent.appendChild(settingHeading(title, copy.note)); parent.appendChild(dictionaryEditor(sample, key, fullPath.join('.'))); continue; }
     if (Array.isArray(sample)) {
       if (objectArrays.has(key)) { parent.appendChild(settingHeading(title, copy.note)); parent.appendChild(objectArrayEditor(sample, key, fullPath.join('.'))); }
