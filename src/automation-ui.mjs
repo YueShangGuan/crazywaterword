@@ -642,6 +642,26 @@ function structuredEditor(key, settingPath, kind) {
   root.append(palette, selected, result); return { root, palette, rows, sync };
 }
 
+/**
+ * 为候选或已选材料生成图文标签；图标存在时沿用页面的图集裁切器，名称始终保留以避免只靠颜色辨认。
+ *
+ * @param {{label?: string, icon?: object}|undefined} choice 服务器提供的候选项。
+ * @param {string} text 当前控件中需要显示的文字。
+ * @param {number} iconSize 图标在当前信息层级的显示边长。
+ * @returns {DocumentFragment} 可插入按钮或已选标签的图文内容。
+ */
+function choiceContent(choice, text, iconSize) {
+  const content = document.createDocumentFragment();
+  if (choice?.icon) {
+    // 图标仅补充形状和配色信息；名称仍是筛选、无障碍名称和缺图时的稳定识别依据。
+    const icon = iconEl(choice.icon, iconSize, choice.label || text);
+    icon.classList.add('automation-choice-icon');
+    content.appendChild(icon);
+  }
+  content.appendChild(el('span', 'automation-choice-label', text));
+  return content;
+}
+
 /** 大列表可按游戏名称搜索；只隐藏候选按钮，不清空已经选择的值。 */
 function editorPalette(container, choices, onPick) {
   const list = el('div', 'automation-choice-list');
@@ -651,7 +671,8 @@ function editorPalette(container, choices, onPick) {
     container.appendChild(search);
   }
   for (const item of choices) {
-    const button = el('button', 'automation-choice', item.label); button.type = 'button'; button.dataset.editorChoice = String(item.value);
+    const button = el('button', 'automation-choice'); button.type = 'button'; button.dataset.editorChoice = String(item.value);
+    button.setAttribute('aria-label', item.label); button.appendChild(choiceContent(item, item.label, 26));
     button.onclick = () => onPick(item.value); list.appendChild(button);
   }
   container.appendChild(list);
@@ -661,7 +682,7 @@ function editorPalette(container, choices, onPick) {
 /** 数组按点击顺序保存，可移除或上移；仅没有本地候选表的字符串项允许手填。 */
 function primitiveArrayEditor(value, key, settingPath) {
   const { root, palette, rows, sync } = structuredEditor(key, settingPath, 'array');
-  const selected = [...value], choices = editorChoices(key), labels = new Map(choices.map(item => [String(item.value), item.label]));
+  const selected = [...value], choices = editorChoices(key), choicesByValue = new Map(choices.map(item => [String(item.value), item])), labels = new Map(choices.map(item => [String(item.value), item.label]));
   const repeatable = key === 'repairThresholds';
   const manualStringEntry = ['protectedUids', 'helpNicknameKeywords'].includes(key);
   /** 返回副本，防止保存过程或调用者改写页面中的选择顺序。 */
@@ -671,7 +692,9 @@ function primitiveArrayEditor(value, key, settingPath) {
     clear(rows);
     if (!selected.length) rows.appendChild(el('span', 'automation-editor-note', '暂未选择'));
     selected.forEach((item, index) => {
-      const chip = el('div', 'automation-chip'); chip.appendChild(el('span', null, (index + 1) + '. ' + (labels.get(String(item)) || item)));
+      const choice = choicesByValue.get(String(item));
+      const label = labels.get(String(item)) || item;
+      const chip = el('div', 'automation-chip'); chip.appendChild(choiceContent(choice, (index + 1) + '. ' + label, 20));
       const up = el('button', 'tiny', '↑'); up.type = 'button'; up.disabled = index === 0; up.setAttribute('aria-label', '上移 ' + item);
       up.onclick = () => { [selected[index - 1], selected[index]] = [selected[index], selected[index - 1]]; render(); };
       const remove = el('button', 'automation-chip-remove', '×'); remove.type = 'button'; remove.setAttribute('aria-label', '移除 ' + item);

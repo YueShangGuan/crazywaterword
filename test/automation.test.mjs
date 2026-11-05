@@ -690,6 +690,8 @@ test('automation UI: three columns show read-only JSON and the final embedded sc
   assert.match(AUTOMATION_SCRIPT, /JSON 结果/);
   assert.match(AUTOMATION_SCRIPT, /target\[keys\.at\(-1\)\] = editor\.readSetting\(\)/);
   assert.doesNotMatch(AUTOMATION_SCRIPT, /case 'json'|sample\.join\(', '\)|JSON\.parse\(input\.value\)/);
+  assert.match(AUTOMATION_SCRIPT, /function choiceContent\(choice, text, iconSize\)/);
+  assert.match(PAGE, /automation-choice-icon/);
   // 检查最终内嵌脚本，能捕获 String.raw 模板中的转义和插值错误。
   new vm.Script(PAGE.match(/<script>([\s\S]*)<\/script>/)[1]);
 });
@@ -722,7 +724,7 @@ test('automation form options: game names map to actual IDs and retain season an
     BuildingCfg:[{ buildingType:'服装厂', name:'服装作坊' }],
     BuildingProduceCfg:[{ buildType:'服装厂', itemId:'衣服' }],
     ItemCfg:[{ id:'衣服', show_name:'休闲衣服' }],
-    ResourceCfg:[{ id:'GOLD', show_name:'金币' }],
+    ResourceCfg:[{ id:'GOLD', show_name:'金币' }, { id:'木材', show_name:'木材', pic:'icon_res_wood' }],
     BuildingUnlockCfg:[{ buildingType:'远征船', buildingId:'2远征船' }],
     GuildTechCfg:[{ techId:10201, name:'生产效率', season:2 }],
     '2_CityCfg':[{ id:3, name:'净水城' }],
@@ -732,6 +734,7 @@ test('automation form options: game names map to actual IDs and retain season an
   assert.deepEqual(options.products, [{ value:'衣服', label:'休闲衣服', factory:'服装厂' }]);
   assert.deepEqual(options.fleets, [{ value:'2远征船', label:'2号远征舰队' }]);
   assert.deepEqual(options.rewardMaterials, [{ value:'衣服', label:'休闲衣服' }]);
+  assert.match(options.items.find(item => item.value === '木材').icon.url, /^\/api\/art\/atlas\//);
   assert.deepEqual(options.cities[2], [{ value:3, label:'净水城' }]);
   assert.deepEqual(options.tech, [{ value:10201, label:'生产效率', season:2 }]);
   assert.deepEqual(automationFormOptions(null).fleets, []);
