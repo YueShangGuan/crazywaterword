@@ -5,9 +5,9 @@
       "../sea666-afk/sea666_welfare.py:549"
     ],
     "implementation": [
-      "src/automation/service.mjs:118",
+      "src/automation/service.mjs:239",
       "src/automation/welfare.mjs:20",
-      "src/game.mjs:16",
+      "src/game.mjs:17",
       "src/tasks.mjs:73"
     ],
     "fields": [],
@@ -22,7 +22,9 @@
       "../sea666-afk/sea666_antique.py:387"
     ],
     "implementation": [
-      "src/automation/cultivation.mjs:155"
+      "src/automation/cultivation.mjs:181",
+      "src/automation/service.mjs:291",
+      "src/automation/service.mjs:292"
     ],
     "fields": [
       {
@@ -46,13 +48,13 @@
     ],
     "implementation": [
       "src/app.mjs:23",
-      "src/automation/base.mjs:346",
-      "src/automation/base.mjs:350",
-      "src/automation/base.mjs:357",
+      "src/automation/base.mjs:518",
+      "src/automation/base.mjs:522",
+      "src/automation/base.mjs:529",
       "src/claim-rewards.mjs:51",
       "src/dailies.mjs:192",
       "src/dailies.mjs:195",
-      "src/game.mjs:21"
+      "src/game.mjs:22"
     ],
     "fields": [],
     "response": "AfkInfoResponse",
@@ -67,13 +69,14 @@
       "../sea666-afk/sea666_antique.py:544"
     ],
     "implementation": [
-      "src/automation/cultivation.mjs:153",
-      "src/automation/cultivation.mjs:155",
-      "src/automation/cultivation.mjs:159",
-      "src/automation/cultivation.mjs:167",
-      "src/automation/cultivation.mjs:174",
-      "src/automation/cultivation.mjs:190",
-      "src/game.mjs:23"
+      "src/automation/cultivation.mjs:179",
+      "src/automation/cultivation.mjs:181",
+      "src/automation/cultivation.mjs:185",
+      "src/automation/cultivation.mjs:193",
+      "src/automation/cultivation.mjs:200",
+      "src/automation/cultivation.mjs:216",
+      "src/automation/service.mjs:286",
+      "src/game.mjs:24"
     ],
     "fields": [],
     "response": "AllAntiqueResponse",
@@ -90,25 +93,27 @@
       "../sea666-afk/sea666_pet_museum.py:198"
     ],
     "implementation": [
-      "src/automation/battle.mjs:273",
-      "src/automation/cultivation.mjs:27",
-      "src/automation/cultivation.mjs:30",
-      "src/automation/cultivation.mjs:39",
-      "src/automation/cultivation.mjs:44",
-      "src/automation/cultivation.mjs:52",
-      "src/automation/cultivation.mjs:56",
-      "src/automation/cultivation.mjs:79",
-      "src/automation/cultivation.mjs:81",
-      "src/automation/cultivation.mjs:86",
-      "src/automation/cultivation.mjs:250",
-      "src/automation/cultivation.mjs:392",
-      "src/automation/guild.mjs:196",
+      "src/automation/battle.mjs:284",
+      "src/automation/battle.mjs:580",
+      "src/automation/cultivation.mjs:28",
+      "src/automation/cultivation.mjs:31",
+      "src/automation/cultivation.mjs:40",
+      "src/automation/cultivation.mjs:45",
+      "src/automation/cultivation.mjs:53",
+      "src/automation/cultivation.mjs:57",
+      "src/automation/cultivation.mjs:80",
+      "src/automation/cultivation.mjs:82",
+      "src/automation/cultivation.mjs:87",
+      "src/automation/cultivation.mjs:278",
+      "src/automation/cultivation.mjs:425",
+      "src/automation/guild.mjs:198",
       "src/fleet-formation.mjs:28",
-      "src/game.mjs:10",
+      "src/game.mjs:11",
       "src/hero-equipment.mjs:47",
       "src/hero-show-rewards.mjs:8",
-      "src/server.mjs:898",
-      "src/server.mjs:1554"
+      "src/server.mjs:45",
+      "src/server.mjs:1352",
+      "src/server.mjs:2052"
     ],
     "fields": [],
     "response": "AllHeroResponse",
@@ -125,17 +130,18 @@
       "src/activities.mjs:24",
       "src/activities.mjs:159",
       "src/app.mjs:22",
-      "src/automation/context.mjs:157",
+      "src/automation/context.mjs:186",
       "src/boats.mjs:36",
       "src/cargo.mjs:19",
       "src/cargo.mjs:39",
       "src/dailies.mjs:350",
       "src/fishing.mjs:19",
-      "src/game.mjs:8",
+      "src/game.mjs:9",
       "src/hero-equipment.mjs:48",
       "src/log-errors.mjs:8",
-      "src/pirates.mjs:124",
-      "src/server.mjs:899",
+      "src/pirates.mjs:162",
+      "src/server.mjs:45",
+      "src/server.mjs:1353",
       "src/world.mjs:153"
     ],
     "fields": [],
@@ -150,12 +156,12 @@
       "../sea666-afk/sea666_pet.py:465"
     ],
     "implementation": [
-      "src/automation/cultivation.mjs:224",
-      "src/automation/cultivation.mjs:228",
-      "src/automation/cultivation.mjs:235",
-      "src/automation/cultivation.mjs:238",
+      "src/automation/cultivation.mjs:252",
+      "src/automation/cultivation.mjs:256",
+      "src/automation/cultivation.mjs:263",
       "src/automation/cultivation.mjs:266",
-      "src/game.mjs:42"
+      "src/automation/cultivation.mjs:294",
+      "src/game.mjs:45"
     ],
     "fields": [],
     "response": "AllPetResponse",
@@ -169,12 +175,13 @@
       "../sea666-afk/sea666_world.py:137"
     ],
     "implementation": [
-      "src/automation/world.mjs:319",
-      "src/automation/world.mjs:344",
+      "src/automation/world.mjs:322",
+      "src/automation/world.mjs:358",
       "src/dailies.mjs:305",
       "src/dailies.mjs:308",
-      "src/game.mjs:53",
-      "src/pirates.mjs:134"
+      "src/game.mjs:56",
+      "src/pirates.mjs:172",
+      "src/server.mjs:1755"
     ],
     "fields": [],
     "response": "AllPirateResponse",
@@ -189,11 +196,12 @@
     ],
     "implementation": [
       "src/app.mjs:21",
-      "src/automation/context.mjs:158",
+      "src/automation/context.mjs:187",
       "src/boats.mjs:21",
       "src/dailies.mjs:356",
       "src/fishing-upgrade.mjs:36",
-      "src/game.mjs:9",
+      "src/game.mjs:10",
+      "src/server.mjs:45",
       "src/world.mjs:154"
     ],
     "fields": [],
@@ -210,8 +218,8 @@
     ],
     "implementation": [
       "src/antique-recruit.mjs:43",
-      "src/automation/base.mjs:311",
-      "src/automation/cultivation.mjs:127"
+      "src/automation/base.mjs:429",
+      "src/automation/cultivation.mjs:135"
     ],
     "fields": [
       {
@@ -244,7 +252,8 @@
       "../sea666-afk/sea666_antique.py:406"
     ],
     "implementation": [
-      "src/automation/cultivation.mjs:167"
+      "src/automation/cultivation.mjs:193",
+      "src/automation/service.mjs:291"
     ],
     "fields": [
       {
@@ -276,7 +285,9 @@
       "../sea666-afk/sea666_antique.py:462"
     ],
     "implementation": [
-      "src/automation/cultivation.mjs:190"
+      "src/automation/cultivation.mjs:216",
+      "src/automation/service.mjs:285",
+      "src/automation/service.mjs:293"
     ],
     "fields": [
       {
@@ -299,7 +310,7 @@
       "../sea666-afk/sea666_hero.py:797"
     ],
     "implementation": [
-      "src/automation/cultivation.mjs:105"
+      "src/automation/cultivation.mjs:106"
     ],
     "fields": [
       {
@@ -331,8 +342,8 @@
     ],
     "implementation": [
       "src/appointments.mjs:22",
-      "src/automation/cultivation.mjs:105",
-      "src/game.mjs:29"
+      "src/automation/cultivation.mjs:106",
+      "src/game.mjs:32"
     ],
     "fields": [],
     "response": "AppointInfoResponse",
@@ -346,7 +357,7 @@
       "../sea666-afk/sea666_battle.py:527"
     ],
     "implementation": [
-      "src/automation/battle.mjs:190",
+      "src/automation/battle.mjs:219",
       "src/dailies.mjs:216"
     ],
     "fields": [
@@ -381,9 +392,9 @@
     ],
     "implementation": [
       "src/app.mjs:25",
-      "src/automation/battle.mjs:183",
-      "src/automation/battle.mjs:186",
-      "src/automation/service.mjs:129",
+      "src/automation/battle.mjs:212",
+      "src/automation/battle.mjs:215",
+      "src/automation/service.mjs:250",
       "src/dailies.mjs:207",
       "src/dailies.mjs:210"
     ],
@@ -399,7 +410,7 @@
       "../sea666-afk/sea666_battle.py:439"
     ],
     "implementation": [
-      "src/automation/battle.mjs:186"
+      "src/automation/battle.mjs:215"
     ],
     "fields": [],
     "response": null,
@@ -412,7 +423,7 @@
       "../sea666-afk/sea666_hero.py:766"
     ],
     "implementation": [
-      "src/automation/cultivation.mjs:105"
+      "src/automation/cultivation.mjs:106"
     ],
     "equivalent": "按显式选择的英雄与位置逐条委任；不让服务端自动选择未授权英雄",
     "fields": [
@@ -435,8 +446,8 @@
       "../sea666-afk/sea666_hero.py:320"
     ],
     "implementation": [
-      "src/automation/cultivation.mjs:98",
-      "src/game.mjs:14"
+      "src/automation/cultivation.mjs:99",
+      "src/game.mjs:15"
     ],
     "fields": [],
     "response": "BadgesResponse",
@@ -452,7 +463,7 @@
       "../sea666-afk/sea666_snap.py:886"
     ],
     "implementation": [
-      "src/automation/battle.mjs:77"
+      "src/automation/battle.mjs:93"
     ],
     "fields": [
       {
@@ -478,8 +489,8 @@
       "../sea666-afk/sea666_snap.py:857"
     ],
     "implementation": [
-      "src/automation/battle.mjs:75",
-      "src/automation/battle.mjs:77"
+      "src/automation/battle.mjs:91",
+      "src/automation/battle.mjs:93"
     ],
     "fields": [
       {
@@ -588,7 +599,7 @@
     ],
     "implementation": [
       "src/actions.mjs:204",
-      "src/automation/service.mjs:143",
+      "src/automation/service.mjs:264",
       "src/world.mjs:506"
     ],
     "fields": [
@@ -611,8 +622,8 @@
       "../sea666-afk/sea666_world.py:187"
     ],
     "implementation": [
-      "src/automation/world.mjs:162",
-      "src/automation/world.mjs:164"
+      "src/automation/world.mjs:165",
+      "src/automation/world.mjs:167"
     ],
     "fields": [
       {
@@ -637,8 +648,7 @@
       "../sea666-afk/sea666_factory.py:153"
     ],
     "implementation": [
-      "src/automation/base.mjs:132",
-      "src/automation/production.mjs:88"
+      "src/automation/base.mjs:153"
     ],
     "fields": [
       {
@@ -660,12 +670,13 @@
       "../sea666-afk/sea666_cargo.py:85"
     ],
     "implementation": [
-      "src/automation/base.mjs:80",
-      "src/automation/base.mjs:253",
+      "src/automation/base.mjs:81",
+      "src/automation/base.mjs:371",
       "src/cargo.mjs:7",
       "src/dailies.mjs:284",
       "src/dailies.mjs:287",
-      "src/game.mjs:26",
+      "src/game.mjs:27",
+      "src/server.mjs:46",
       "src/world.mjs:262"
     ],
     "fields": [],
@@ -907,9 +918,9 @@
       "../sea666-afk/sea666_world.py:630"
     ],
     "implementation": [
-      "src/automation/world.mjs:334",
-      "src/pirates.mjs:202",
-      "src/pirates.mjs:204"
+      "src/automation/world.mjs:338",
+      "src/pirates.mjs:240",
+      "src/pirates.mjs:242"
     ],
     "fields": [
       {
@@ -949,7 +960,8 @@
       "../sea666-afk/sea666_battle.py:284"
     ],
     "implementation": [
-      "src/automation/battle.mjs:92",
+      "src/automation/battle.mjs:108",
+      "src/server.mjs:138",
       "src/stages.mjs:34"
     ],
     "fields": [
@@ -974,7 +986,7 @@
       "../sea666-afk/sea666_world_ext.py:667"
     ],
     "implementation": [
-      "src/automation/world.mjs:212"
+      "src/automation/world.mjs:215"
     ],
     "fields": [
       {
@@ -1007,7 +1019,7 @@
     "implementation": [
       "src/automation/welfare.mjs:51",
       "src/automation/welfare.mjs:52",
-      "src/game.mjs:50"
+      "src/game.mjs:53"
     ],
     "fields": [],
     "response": "ChannelRewardInfoResponse",
@@ -1021,7 +1033,7 @@
       "../sea666-afk/sea666_world_ext.py:143"
     ],
     "implementation": [
-      "src/automation/world.mjs:444"
+      "src/automation/world.mjs:460"
     ],
     "fields": [],
     "response": "ChipMineListResponse",
@@ -1035,7 +1047,7 @@
       "../sea666-afk/sea666_world_ext.py:155"
     ],
     "implementation": [
-      "src/automation/world.mjs:447"
+      "src/automation/world.mjs:463"
     ],
     "fields": [
       {
@@ -1059,7 +1071,7 @@
       "../sea666-afk/sea666_world_ext.py:182"
     ],
     "implementation": [
-      "src/automation/world.mjs:439"
+      "src/automation/world.mjs:455"
     ],
     "fields": [],
     "response": "ChipMineRewardResponse",
@@ -1073,7 +1085,7 @@
       "../sea666-afk/sea666_world_ext.py:270"
     ],
     "implementation": [
-      "src/automation/world.mjs:451"
+      "src/automation/world.mjs:467"
     ],
     "fields": [
       {
@@ -1113,7 +1125,7 @@
       "../sea666-afk/sea666_world_ext.py:534"
     ],
     "implementation": [
-      "src/automation/world.mjs:501"
+      "src/automation/world.mjs:534"
     ],
     "fields": [
       {
@@ -1137,7 +1149,7 @@
       "../sea666-afk/sea666_world_ext.py:543"
     ],
     "implementation": [
-      "src/automation/world.mjs:501"
+      "src/automation/world.mjs:534"
     ],
     "fields": [
       {
@@ -1392,11 +1404,14 @@
       "../sea666-afk/sea666_guild.py:347"
     ],
     "implementation": [
-      "src/automation/guild.mjs:56",
-      "src/automation/guild.mjs:75",
-      "src/automation/guild.mjs:98",
-      "src/automation/guild.mjs:130",
-      "src/game.mjs:47"
+      "src/automation/guild.mjs:58",
+      "src/automation/guild.mjs:77",
+      "src/automation/guild.mjs:100",
+      "src/automation/guild.mjs:132",
+      "src/automation/world.mjs:502",
+      "src/automation/world.mjs:509",
+      "src/automation/world.mjs:515",
+      "src/game.mjs:50"
     ],
     "fields": [],
     "response": "CounterInfoResponse",
@@ -1405,18 +1420,33 @@
     ]
   },
   {
+    "request": "CrossRankInfoRequest",
+    "reference": [
+      "docs/capture-analysis-20261105.md:24"
+    ],
+    "implementation": [
+      "src/automation/routines.mjs:48",
+      "src/automation/routines.mjs:58"
+    ],
+    "fields": [],
+    "response": "CrossRankInfoResponse",
+    "responses": [
+      "CrossRankInfoResponse"
+    ]
+  },
+  {
     "request": "DailyGiftPackRequest",
     "reference": [
       "../sea666-afk/sea666_welfare.py:596"
     ],
     "implementation": [
-      "src/automation/service.mjs:125",
+      "src/automation/service.mjs:246",
       "src/automation/welfare.mjs:41",
       "src/automation/welfare.mjs:43",
       "src/dailies.mjs:411",
-      "src/dailies.mjs:563",
-      "src/dailies.mjs:574",
-      "src/game.mjs:18"
+      "src/dailies.mjs:604",
+      "src/dailies.mjs:615",
+      "src/game.mjs:19"
     ],
     "fields": [],
     "response": "DailyGiftPackResponse",
@@ -1431,14 +1461,14 @@
     ],
     "implementation": [
       "src/app.mjs:24",
-      "src/automation/service.mjs:123",
-      "src/automation/service.mjs:124",
+      "src/automation/service.mjs:244",
+      "src/automation/service.mjs:245",
       "src/automation/welfare.mjs:26",
       "src/automation/welfare.mjs:28",
       "src/automation/welfare.mjs:29",
       "src/dailies.mjs:347",
-      "src/dailies.mjs:503",
-      "src/game.mjs:17",
+      "src/dailies.mjs:544",
+      "src/game.mjs:18",
       "src/log-errors.mjs:4"
     ],
     "fields": [],
@@ -1453,7 +1483,8 @@
       "../sea666-afk/sea666_equip.py:400"
     ],
     "implementation": [
-      "src/automation/cultivation.mjs:272"
+      "src/automation/cultivation.mjs:300",
+      "src/automation/service.mjs:296"
     ],
     "fields": [
       {
@@ -1489,7 +1520,7 @@
       "../sea666-afk/sea666_gather.py:210"
     ],
     "implementation": [
-      "src/automation/base.mjs:320",
+      "src/automation/base.mjs:438",
       "src/boats.mjs:55"
     ],
     "fields": [
@@ -1516,7 +1547,7 @@
     ],
     "implementation": [
       "src/actions.mjs:34",
-      "src/automation/base.mjs:357"
+      "src/automation/base.mjs:529"
     ],
     "fields": [
       {
@@ -1544,7 +1575,7 @@
     ],
     "implementation": [
       "src/actions.mjs:27",
-      "src/automation/base.mjs:348",
+      "src/automation/base.mjs:520",
       "src/dailies.mjs:200"
     ],
     "fields": [
@@ -1595,8 +1626,8 @@
     "implementation": [
       "src/actions.mjs:91",
       "src/automation/welfare.mjs:27",
-      "src/dailies.mjs:516",
-      "src/server.mjs:1581"
+      "src/dailies.mjs:557",
+      "src/server.mjs:2079"
     ],
     "fields": [
       {
@@ -1667,7 +1698,7 @@
       "../sea666-afk/sea666_cargo.py:165"
     ],
     "implementation": [
-      "src/automation/base.mjs:255",
+      "src/automation/base.mjs:373",
       "src/cargo.mjs:49"
     ],
     "fields": [
@@ -1696,7 +1727,7 @@
       "src/actions.mjs:124",
       "src/app.mjs:197",
       "src/dailies.mjs:90",
-      "src/dailies.mjs:548"
+      "src/dailies.mjs:589"
     ],
     "fields": [
       {
@@ -1718,11 +1749,11 @@
       "../sea666-afk/sea666_welfare.py:134"
     ],
     "implementation": [
-      "src/automation/service.mjs:133",
+      "src/automation/service.mjs:254",
       "src/automation/welfare.mjs:32",
       "src/automation/welfare.mjs:34",
       "src/claim-rewards.mjs:46",
-      "src/game.mjs:12"
+      "src/game.mjs:13"
     ],
     "fields": [
       {
@@ -1746,7 +1777,7 @@
       "../sea666-afk/sea666_gather.py:228"
     ],
     "implementation": [
-      "src/automation/base.mjs:330",
+      "src/automation/base.mjs:448",
       "src/boats.mjs:51"
     ],
     "fields": [
@@ -1770,7 +1801,7 @@
       "../sea666-afk/sea666_hero.py:415"
     ],
     "implementation": [
-      "src/automation/cultivation.mjs:98"
+      "src/automation/cultivation.mjs:99"
     ],
     "fields": [
       {
@@ -1812,7 +1843,7 @@
       "../sea666-afk/sea666_hero.py:353"
     ],
     "implementation": [
-      "src/automation/cultivation.mjs:92",
+      "src/automation/cultivation.mjs:93",
       "src/hero-equipment.mjs:118"
     ],
     "fields": [
@@ -1836,9 +1867,9 @@
       "../sea666-afk/sea666_hero.py:311"
     ],
     "implementation": [
-      "src/automation/cultivation.mjs:92",
-      "src/automation/cultivation.mjs:266",
-      "src/game.mjs:13",
+      "src/automation/cultivation.mjs:93",
+      "src/automation/cultivation.mjs:294",
+      "src/game.mjs:14",
       "src/hero-equipment.mjs:46",
       "src/hero-equipment.mjs:119"
     ],
@@ -1854,7 +1885,7 @@
       "../sea666-afk/sea666_battle.py:1004"
     ],
     "implementation": [
-      "src/automation/battle.mjs:290"
+      "src/automation/battle.mjs:597"
     ],
     "fields": [
       {
@@ -1887,7 +1918,7 @@
       "../sea666-afk/sea666_battle.py:893"
     ],
     "implementation": [
-      "src/automation/battle.mjs:287"
+      "src/automation/battle.mjs:594"
     ],
     "fields": [
       {
@@ -1920,7 +1951,7 @@
       "../sea666-afk/sea666_battle.py:945"
     ],
     "implementation": [
-      "src/automation/battle.mjs:275"
+      "src/automation/battle.mjs:582"
     ],
     "fields": [
       {
@@ -1951,7 +1982,7 @@
       "../sea666-afk/sea666_battle.py:682"
     ],
     "implementation": [
-      "src/automation/battle.mjs:295"
+      "src/automation/battle.mjs:602"
     ],
     "fields": [
       {
@@ -1973,13 +2004,13 @@
       "../sea666-afk/sea666_battle.py:581"
     ],
     "implementation": [
-      "src/automation/battle.mjs:266",
-      "src/automation/battle.mjs:275",
-      "src/automation/battle.mjs:283",
-      "src/automation/battle.mjs:290",
-      "src/automation/battle.mjs:293",
-      "src/automation/battle.mjs:295",
-      "src/automation/cultivation.mjs:262"
+      "src/automation/battle.mjs:573",
+      "src/automation/battle.mjs:582",
+      "src/automation/battle.mjs:590",
+      "src/automation/battle.mjs:597",
+      "src/automation/battle.mjs:600",
+      "src/automation/battle.mjs:602",
+      "src/automation/cultivation.mjs:290"
     ],
     "fields": [],
     "response": "ExpeditionInfoResponse",
@@ -1993,7 +2024,7 @@
       "../sea666-afk/sea666_battle.py:637"
     ],
     "implementation": [
-      "src/automation/battle.mjs:268"
+      "src/automation/battle.mjs:575"
     ],
     "fields": [
       {
@@ -2022,7 +2053,7 @@
       "../sea666-afk/sea666_island_once.py:488"
     ],
     "implementation": [
-      "src/automation/base.mjs:171",
+      "src/automation/base.mjs:268",
       "src/world.mjs:523",
       "src/world.mjs:853",
       "src/world.mjs:858"
@@ -2053,7 +2084,9 @@
       "../sea666-afk/sea666_farm.py:436"
     ],
     "implementation": [
-      "src/automation/base.mjs:211",
+      "src/automation/base.mjs:228",
+      "src/automation/base.mjs:288",
+      "src/automation/base.mjs:314",
       "src/world.mjs:653"
     ],
     "fields": [
@@ -2076,7 +2109,7 @@
       "../sea666-afk/sea666_farm.py:487"
     ],
     "implementation": [
-      "src/automation/base.mjs:217"
+      "src/automation/base.mjs:325"
     ],
     "fields": [
       {
@@ -2107,7 +2140,7 @@
       "../sea666-afk/sea666_cargo.py:233"
     ],
     "implementation": [
-      "src/automation/base.mjs:257",
+      "src/automation/base.mjs:375",
       "src/cargo.mjs:33"
     ],
     "fields": [
@@ -2141,7 +2174,8 @@
       "../sea666-afk/sea666_guild.py:444"
     ],
     "implementation": [
-      "src/automation/guild.mjs:62"
+      "src/automation/guild.mjs:64",
+      "src/automation/service.mjs:290"
     ],
     "fields": [
       {
@@ -2204,8 +2238,8 @@
     ],
     "implementation": [
       "src/actions.mjs:172",
-      "src/automation/base.mjs:239",
-      "src/automation/service.mjs:155",
+      "src/automation/base.mjs:357",
+      "src/automation/service.mjs:276",
       "src/world.mjs:573",
       "src/world.mjs:935"
     ],
@@ -2243,7 +2277,8 @@
       "../sea666-afk/sea666_pet.py:525"
     ],
     "implementation": [
-      "src/automation/cultivation.mjs:272"
+      "src/automation/cultivation.mjs:300",
+      "src/automation/service.mjs:295"
     ],
     "fields": [
       {
@@ -2265,7 +2300,7 @@
       "../sea666-afk/sea666_gather.py:115"
     ],
     "implementation": [
-      "src/automation/base.mjs:308",
+      "src/automation/base.mjs:426",
       "src/fishing.mjs:30"
     ],
     "fields": [],
@@ -2288,7 +2323,8 @@
     "implementation": [
       "src/actions.mjs:50",
       "src/automation/activity.mjs:221",
-      "src/automation/production.mjs:109",
+      "src/automation/common.mjs:37",
+      "src/automation/production.mjs:107",
       "src/world.mjs:395"
     ],
     "fields": [
@@ -2308,14 +2344,29 @@
     ]
   },
   {
+    "request": "GetDailyRewardRequest",
+    "reference": [
+      "docs/capture-analysis-20261105.md:25"
+    ],
+    "implementation": [
+      "src/automation/routines.mjs:62"
+    ],
+    "fields": [],
+    "response": "GotRewardResponse",
+    "responses": [
+      "GotRewardResponse"
+    ]
+  },
+  {
     "request": "GetFormationRequest",
     "reference": [
       "../sea666-afk/sea666_pet_museum.py:188"
     ],
     "implementation": [
-      "src/automation/cultivation.mjs:259",
-      "src/automation/cultivation.mjs:384",
-      "src/game.mjs:11"
+      "src/automation/cultivation.mjs:287",
+      "src/automation/cultivation.mjs:417",
+      "src/game.mjs:12",
+      "src/server.mjs:45"
     ],
     "fields": [
       {
@@ -2340,7 +2391,8 @@
       "../sea666-afk/sea666_pet_museum.py:103"
     ],
     "implementation": [
-      "src/automation/cultivation.mjs:198"
+      "src/automation/cultivation.mjs:226",
+      "src/automation/service.mjs:295"
     ],
     "fields": [],
     "response": null,
@@ -2354,7 +2406,7 @@
     ],
     "implementation": [
       "src/actions.mjs:165",
-      "src/automation/base.mjs:247",
+      "src/automation/base.mjs:365",
       "src/tasks.mjs:195"
     ],
     "fields": [],
@@ -2369,7 +2421,7 @@
     ],
     "implementation": [
       "src/actions.mjs:243",
-      "src/automation/world.mjs:432",
+      "src/automation/world.mjs:448",
       "src/world.mjs:1162"
     ],
     "fields": [
@@ -2461,7 +2513,7 @@
       "../sea666-afk/sea666_guild.py:331"
     ],
     "implementation": [
-      "src/automation/guild.mjs:12"
+      "src/automation/guild.mjs:13"
     ],
     "fields": [],
     "response": null,
@@ -2474,7 +2526,7 @@
       "../sea666-afk/sea666_welfare.py:634"
     ],
     "implementation": [
-      "src/automation/guild.mjs:41",
+      "src/automation/guild.mjs:42",
       "src/client.mjs:7",
       "src/guild.mjs:85"
     ],
@@ -2490,7 +2542,7 @@
       "../sea666-afk/sea666_hero.py:572"
     ],
     "implementation": [
-      "src/automation/cultivation.mjs:146"
+      "src/automation/cultivation.mjs:170"
     ],
     "fields": [],
     "response": null,
@@ -2502,7 +2554,7 @@
       "../sea666-afk/sea666_league.py:212"
     ],
     "implementation": [
-      "src/automation/battle.mjs:226"
+      "src/automation/battle.mjs:504"
     ],
     "fields": [],
     "response": null,
@@ -2514,7 +2566,7 @@
       "../sea666-afk/sea666_guild.py:295"
     ],
     "implementation": [
-      "src/automation/guild.mjs:70"
+      "src/automation/guild.mjs:72"
     ],
     "fields": [
       {
@@ -2536,7 +2588,7 @@
       "../sea666-afk/sea666_world.py:807"
     ],
     "implementation": [
-      "src/automation/world.mjs:583"
+      "src/automation/world.mjs:619"
     ],
     "fields": [],
     "response": "GotTradeAchievementResponse",
@@ -2550,7 +2602,7 @@
       "../sea666-afk/sea666_world.py:794"
     ],
     "implementation": [
-      "src/automation/world.mjs:582"
+      "src/automation/world.mjs:618"
     ],
     "fields": [],
     "response": "GotTTradeReportResponse",
@@ -2599,7 +2651,7 @@
       "../sea666-afk/sea666_world_ext.py:395"
     ],
     "implementation": [
-      "src/automation/world.mjs:485"
+      "src/automation/world.mjs:506"
     ],
     "fields": [],
     "response": null,
@@ -2611,7 +2663,7 @@
       "../sea666-afk/sea666_guild.py:497"
     ],
     "implementation": [
-      "src/automation/guild.mjs:112"
+      "src/automation/guild.mjs:114"
     ],
     "fields": [
       {
@@ -2643,7 +2695,7 @@
       "../sea666-afk/sea666_guild.py:271"
     ],
     "implementation": [
-      "src/automation/guild.mjs:126"
+      "src/automation/guild.mjs:128"
     ],
     "fields": [
       {
@@ -2674,8 +2726,8 @@
       "../sea666-afk/sea666_guild.py:140"
     ],
     "implementation": [
-      "src/automation/guild.mjs:73",
-      "src/automation/guild.mjs:133",
+      "src/automation/guild.mjs:75",
+      "src/automation/guild.mjs:135",
       "src/client.mjs:7",
       "src/dailies.mjs:324",
       "src/guild.mjs:53"
@@ -2702,7 +2754,7 @@
       "../sea666-afk/sea666_guild.py:367"
     ],
     "implementation": [
-      "src/automation/guild.mjs:53",
+      "src/automation/guild.mjs:54",
       "src/client.mjs:7",
       "src/dailies.mjs:323"
     ],
@@ -2718,10 +2770,10 @@
       "../sea666-afk/sea666_guild.py:356"
     ],
     "implementation": [
-      "src/automation/base.mjs:81",
-      "src/automation/guild.mjs:59",
+      "src/automation/base.mjs:82",
+      "src/automation/guild.mjs:61",
       "src/client.mjs:8",
-      "src/game.mjs:37"
+      "src/game.mjs:40"
     ],
     "fields": [],
     "response": "GuildOrderResponse",
@@ -2735,7 +2787,7 @@
       "../sea666-afk/sea666_guild.py:756"
     ],
     "implementation": [
-      "src/automation/guild.mjs:203"
+      "src/automation/guild.mjs:205"
     ],
     "fields": [
       {
@@ -2766,9 +2818,9 @@
       "../sea666-afk/sea666_guild.py:597"
     ],
     "implementation": [
-      "src/automation/guild.mjs:183",
-      "src/automation/guild.mjs:203",
-      "src/automation/guild.mjs:209"
+      "src/automation/guild.mjs:185",
+      "src/automation/guild.mjs:205",
+      "src/automation/guild.mjs:211"
     ],
     "fields": [],
     "response": "GuildShipResponse",
@@ -2782,7 +2834,7 @@
       "../sea666-afk/sea666_guild.py:805"
     ],
     "implementation": [
-      "src/automation/guild.mjs:209"
+      "src/automation/guild.mjs:211"
     ],
     "fields": [
       {
@@ -2804,9 +2856,9 @@
       "../sea666-afk/sea666_guild.py:523"
     ],
     "implementation": [
-      "src/automation/guild.mjs:16",
+      "src/automation/guild.mjs:17",
       "src/client.mjs:8",
-      "src/game.mjs:36"
+      "src/game.mjs:39"
     ],
     "fields": [],
     "response": "GuildTechInfoResponse",
@@ -2820,7 +2872,7 @@
       "../sea666-afk/sea666_hero.py:189"
     ],
     "implementation": [
-      "src/automation/cultivation.mjs:54"
+      "src/automation/cultivation.mjs:55"
     ],
     "fields": [
       {
@@ -2844,7 +2896,7 @@
       "../sea666-afk/sea666_hero.py:212"
     ],
     "implementation": [
-      "src/automation/cultivation.mjs:54"
+      "src/automation/cultivation.mjs:55"
     ],
     "fields": [
       {
@@ -2877,7 +2929,7 @@
       "../sea666-afk/sea666_hero.py:110"
     ],
     "implementation": [
-      "src/automation/cultivation.mjs:41",
+      "src/automation/cultivation.mjs:42",
       "src/heroes.mjs:258"
     ],
     "fields": [
@@ -2900,7 +2952,7 @@
       "../sea666-afk/sea666_hero.py:641"
     ],
     "implementation": [
-      "src/automation/cultivation.mjs:30"
+      "src/automation/cultivation.mjs:31"
     ],
     "fields": [
       {
@@ -2922,7 +2974,7 @@
       "../sea666-afk/sea666_hero.py:147"
     ],
     "implementation": [
-      "src/automation/cultivation.mjs:41",
+      "src/automation/cultivation.mjs:42",
       "src/heroes.mjs:261"
     ],
     "fields": [
@@ -2954,7 +3006,7 @@
       "../sea666-afk/sea666_hero.py:171"
     ],
     "implementation": [
-      "src/automation/cultivation.mjs:86"
+      "src/automation/cultivation.mjs:87"
     ],
     "fields": [
       {
@@ -2976,7 +3028,7 @@
       "../sea666-afk/sea666_hero.py:125"
     ],
     "implementation": [
-      "src/automation/cultivation.mjs:41",
+      "src/automation/cultivation.mjs:42",
       "src/heroes.mjs:260",
       "src/heroes.mjs:263",
       "src/log-errors.mjs:10"
@@ -3012,7 +3064,7 @@
       "../sea666-afk/sea666_league.py:290"
     ],
     "implementation": [
-      "src/automation/battle.mjs:233"
+      "src/automation/battle.mjs:511"
     ],
     "fields": [],
     "response": "LeagueBattlePassInfoResponse",
@@ -3026,7 +3078,7 @@
       "../sea666-afk/sea666_league.py:377"
     ],
     "implementation": [
-      "src/automation/battle.mjs:245"
+      "src/automation/battle.mjs:431"
     ],
     "fields": [
       {
@@ -3045,12 +3097,36 @@
     ]
   },
   {
+    "request": "LeagueFormationSequenceRequest",
+    "reference": [
+      "../抓包/fksj-analyzer/capture-fksj-20261021-094050/events.jsonl:198481"
+    ],
+    "implementation": [
+      "src/automation/battle.mjs:391"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "index",
+        "kind": "repeated",
+        "type": "int32",
+        "wire": "int32",
+        "required": false,
+        "optional": false
+      }
+    ],
+    "response": "LeagueFormationResponse",
+    "responses": [
+      "LeagueFormationResponse"
+    ]
+  },
+  {
     "request": "LeagueGotBonusDanRequest",
     "reference": [
       "../sea666-afk/sea666_league.py:253"
     ],
     "implementation": [
-      "src/automation/battle.mjs:230"
+      "src/automation/battle.mjs:508"
     ],
     "fields": [],
     "response": "LeagueGotBonusDanResponse",
@@ -3064,7 +3140,7 @@
       "../sea666-afk/sea666_league.py:312"
     ],
     "implementation": [
-      "src/automation/battle.mjs:235"
+      "src/automation/battle.mjs:513"
     ],
     "fields": [],
     "response": "LeagueGotPassRewardResponse",
@@ -3078,11 +3154,12 @@
       "../sea666-afk/sea666_league.py:159"
     ],
     "implementation": [
-      "src/automation/battle.mjs:225",
-      "src/automation/battle.mjs:226",
-      "src/automation/battle.mjs:228",
-      "src/automation/battle.mjs:241",
-      "src/automation/cultivation.mjs:261",
+      "src/automation/battle.mjs:394",
+      "src/automation/battle.mjs:503",
+      "src/automation/battle.mjs:504",
+      "src/automation/battle.mjs:506",
+      "src/automation/battle.mjs:520",
+      "src/automation/cultivation.mjs:289",
       "src/dailies.mjs:328"
     ],
     "fields": [],
@@ -3092,12 +3169,37 @@
     ]
   },
   {
+    "request": "LeagueOtherFormationRequest",
+    "reference": [
+      "../抓包/fksj-analyzer/capture-fksj-20261021-094050/events.jsonl:198381"
+    ],
+    "implementation": [
+      "src/automation/battle.mjs:313"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "playerId",
+        "kind": "scalar",
+        "type": "int64",
+        "wire": "int64",
+        "required": true,
+        "optional": false
+      }
+    ],
+    "response": "LeagueOtherFormationResponse",
+    "responses": [
+      "LeagueOtherFormationResponse"
+    ]
+  },
+  {
     "request": "LeagueRefreshRivalRequest",
     "reference": [
       "../sea666-afk/sea666_league.py:175"
     ],
     "implementation": [
-      "src/automation/battle.mjs:242"
+      "src/automation/battle.mjs:460",
+      "src/automation/battle.mjs:524"
     ],
     "fields": [
       {
@@ -3121,7 +3223,7 @@
       "../sea666-afk/sea666_world_ext.py:759"
     ],
     "implementation": [
-      "src/automation/world.mjs:222"
+      "src/automation/world.mjs:225"
     ],
     "fields": [],
     "response": null,
@@ -3133,7 +3235,7 @@
       "../sea666-afk/sea666_world_ext.py:744"
     ],
     "implementation": [
-      "src/automation/world.mjs:220"
+      "src/automation/world.mjs:223"
     ],
     "fields": [],
     "response": "LimitedBossInfoResponse",
@@ -3147,9 +3249,9 @@
       "../sea666-afk/sea666_world_ext.py:718"
     ],
     "implementation": [
-      "src/automation/world.mjs:219",
       "src/automation/world.mjs:222",
-      "src/game.mjs:41"
+      "src/automation/world.mjs:225",
+      "src/game.mjs:44"
     ],
     "fields": [],
     "response": "LimitedBossOpenResponse",
@@ -3163,7 +3265,7 @@
       "../sea666-afk/sea666_world_ext.py:797"
     ],
     "implementation": [
-      "src/automation/world.mjs:226"
+      "src/automation/world.mjs:229"
     ],
     "fields": [
       {
@@ -3185,9 +3287,9 @@
       "../sea666-afk/sea666_activity.py:224"
     ],
     "implementation": [
-      "src/automation/base.mjs:16",
+      "src/automation/base.mjs:17",
       "src/automation/welfare.mjs:8",
-      "src/server.mjs:628"
+      "src/server.mjs:1057"
     ],
     "fields": [],
     "response": null,
@@ -3288,12 +3390,12 @@
       "../sea666-afk/sea666_welfare.py:317"
     ],
     "implementation": [
-      "src/automation/service.mjs:119",
-      "src/automation/service.mjs:121",
+      "src/automation/service.mjs:240",
+      "src/automation/service.mjs:242",
       "src/automation/welfare.mjs:20",
       "src/automation/welfare.mjs:53",
       "src/automation/welfare.mjs:55",
-      "src/game.mjs:19",
+      "src/game.mjs:20",
       "src/log-errors.mjs:5",
       "src/tasks.mjs:72"
     ],
@@ -3309,7 +3411,8 @@
       "../sea666-afk/sea666_equip.py:264"
     ],
     "implementation": [
-      "src/automation/cultivation.mjs:287"
+      "src/automation/cultivation.mjs:317",
+      "src/automation/service.mjs:296"
     ],
     "fields": [
       {
@@ -3372,10 +3475,10 @@
       "../sea666-afk/sea666_welfare.py:384"
     ],
     "implementation": [
-      "src/automation/service.mjs:127",
+      "src/automation/service.mjs:248",
       "src/automation/welfare.mjs:37",
       "src/automation/welfare.mjs:38",
-      "src/game.mjs:22"
+      "src/game.mjs:23"
     ],
     "fields": [],
     "response": "MonthCardResponse",
@@ -3390,7 +3493,7 @@
       "../sea666-afk/sea666_world_ext.py:563"
     ],
     "implementation": [
-      "src/automation/world.mjs:503"
+      "src/automation/world.mjs:536"
     ],
     "fields": [
       {
@@ -3421,7 +3524,7 @@
       "../sea666-afk/sea666_pet_museum.py:151"
     ],
     "implementation": [
-      "src/automation/cultivation.mjs:367"
+      "src/automation/cultivation.mjs:400"
     ],
     "fields": [],
     "response": "MuseumCollectRevenueResponse",
@@ -3436,7 +3539,7 @@
       "../sea666-afk/sea666_pet_museum.py:300"
     ],
     "implementation": [
-      "src/automation/cultivation.mjs:377"
+      "src/automation/cultivation.mjs:410"
     ],
     "fields": [
       {
@@ -3460,10 +3563,10 @@
       "../sea666-afk/sea666_pet_museum.py:122"
     ],
     "implementation": [
-      "src/automation/cultivation.mjs:366",
-      "src/automation/cultivation.mjs:374",
-      "src/automation/cultivation.mjs:386",
-      "src/automation/service.mjs:131",
+      "src/automation/cultivation.mjs:399",
+      "src/automation/cultivation.mjs:407",
+      "src/automation/cultivation.mjs:419",
+      "src/automation/service.mjs:252",
       "src/dailies.mjs:327"
     ],
     "fields": [],
@@ -3478,7 +3581,7 @@
       "../sea666-afk/sea666_pet_museum.py:278"
     ],
     "implementation": [
-      "src/automation/cultivation.mjs:378"
+      "src/automation/cultivation.mjs:411"
     ],
     "fields": [
       {
@@ -3502,7 +3605,7 @@
       "../sea666-afk/sea666_pet_museum.py:291"
     ],
     "implementation": [
-      "src/automation/cultivation.mjs:372"
+      "src/automation/cultivation.mjs:405"
     ],
     "fields": [
       {
@@ -3535,7 +3638,7 @@
       "../sea666-afk/sea666_pet_museum.py:340"
     ],
     "implementation": [
-      "src/automation/cultivation.mjs:413"
+      "src/automation/cultivation.mjs:446"
     ],
     "fields": [
       {
@@ -3578,18 +3681,19 @@
       "../sea666-afk/sea666_world_ext.py:89"
     ],
     "implementation": [
-      "src/automation/common.mjs:69",
-      "src/automation/cultivation.mjs:256",
-      "src/automation/world.mjs:65",
-      "src/automation/world.mjs:84",
-      "src/automation/world.mjs:113",
-      "src/automation/world.mjs:141",
-      "src/automation/world.mjs:151",
-      "src/automation/world.mjs:171",
+      "src/automation/common.mjs:120",
+      "src/automation/cultivation.mjs:284",
+      "src/automation/world.mjs:68",
+      "src/automation/world.mjs:87",
+      "src/automation/world.mjs:116",
+      "src/automation/world.mjs:144",
+      "src/automation/world.mjs:154",
+      "src/automation/world.mjs:174",
       "src/fleet-formation.mjs:27",
       "src/fleet-formation.mjs:75",
-      "src/game.mjs:33",
-      "src/pirates.mjs:135",
+      "src/game.mjs:36",
+      "src/pirates.mjs:173",
+      "src/server.mjs:46",
       "src/world.mjs:156"
     ],
     "fields": [],
@@ -3604,11 +3708,11 @@
       "../sea666-afk/sea666_world.py:1022"
     ],
     "implementation": [
-      "src/automation/service.mjs:134",
-      "src/automation/service.mjs:135",
-      "src/automation/world.mjs:417",
-      "src/automation/world.mjs:432",
-      "src/game.mjs:35",
+      "src/automation/service.mjs:255",
+      "src/automation/service.mjs:256",
+      "src/automation/world.mjs:433",
+      "src/automation/world.mjs:448",
+      "src/game.mjs:38",
       "src/world.mjs:155"
     ],
     "fields": [],
@@ -3635,61 +3739,64 @@
       "src/automation/activity.mjs:227",
       "src/automation/activity.mjs:230",
       "src/automation/activity.mjs:232",
-      "src/automation/base.mjs:79",
-      "src/automation/base.mjs:89",
-      "src/automation/base.mjs:119",
-      "src/automation/base.mjs:125",
-      "src/automation/base.mjs:132",
-      "src/automation/base.mjs:144",
-      "src/automation/base.mjs:150",
-      "src/automation/base.mjs:159",
-      "src/automation/base.mjs:168",
-      "src/automation/base.mjs:172",
-      "src/automation/base.mjs:181",
-      "src/automation/base.mjs:193",
-      "src/automation/base.mjs:205",
-      "src/automation/base.mjs:211",
-      "src/automation/base.mjs:217",
-      "src/automation/base.mjs:223",
-      "src/automation/base.mjs:236",
-      "src/automation/base.mjs:243",
-      "src/automation/base.mjs:247",
+      "src/automation/base.mjs:80",
+      "src/automation/base.mjs:90",
+      "src/automation/base.mjs:133",
+      "src/automation/base.mjs:146",
+      "src/automation/base.mjs:153",
+      "src/automation/base.mjs:165",
+      "src/automation/base.mjs:171",
+      "src/automation/base.mjs:180",
+      "src/automation/base.mjs:250",
+      "src/automation/base.mjs:264",
       "src/automation/base.mjs:269",
-      "src/automation/base.mjs:285",
-      "src/automation/base.mjs:290",
-      "src/automation/base.mjs:300",
-      "src/automation/base.mjs:336",
-      "src/automation/base.mjs:340",
-      "src/automation/battle.mjs:159",
-      "src/automation/cultivation.mjs:114",
+      "src/automation/base.mjs:278",
+      "src/automation/base.mjs:296",
+      "src/automation/base.mjs:308",
+      "src/automation/base.mjs:314",
+      "src/automation/base.mjs:325",
+      "src/automation/base.mjs:331",
+      "src/automation/base.mjs:351",
+      "src/automation/base.mjs:361",
+      "src/automation/base.mjs:365",
+      "src/automation/base.mjs:387",
+      "src/automation/base.mjs:403",
+      "src/automation/base.mjs:408",
+      "src/automation/base.mjs:418",
+      "src/automation/base.mjs:454",
+      "src/automation/base.mjs:458",
+      "src/automation/battle.mjs:184",
+      "src/automation/common.mjs:32",
       "src/automation/cultivation.mjs:115",
-      "src/automation/cultivation.mjs:133",
-      "src/automation/cultivation.mjs:134",
-      "src/automation/cultivation.mjs:197",
-      "src/automation/cultivation.mjs:198",
-      "src/automation/cultivation.mjs:199",
-      "src/automation/cultivation.mjs:206",
-      "src/automation/cultivation.mjs:219",
-      "src/automation/cultivation.mjs:232",
-      "src/automation/cultivation.mjs:237",
-      "src/automation/cultivation.mjs:251",
-      "src/automation/cultivation.mjs:277",
-      "src/automation/cultivation.mjs:282",
-      "src/automation/cultivation.mjs:284",
-      "src/automation/cultivation.mjs:287",
-      "src/automation/production.mjs:82",
-      "src/automation/production.mjs:89",
-      "src/automation/production.mjs:96",
-      "src/automation/production.mjs:110",
-      "src/automation/production.mjs:124",
-      "src/automation/production.mjs:144",
-      "src/automation/production.mjs:153",
-      "src/automation/production.mjs:172",
-      "src/automation/service.mjs:122",
-      "src/automation/service.mjs:132",
-      "src/automation/service.mjs:138",
-      "src/automation/service.mjs:144",
-      "src/automation/service.mjs:155",
+      "src/automation/cultivation.mjs:116",
+      "src/automation/cultivation.mjs:141",
+      "src/automation/cultivation.mjs:225",
+      "src/automation/cultivation.mjs:226",
+      "src/automation/cultivation.mjs:227",
+      "src/automation/cultivation.mjs:234",
+      "src/automation/cultivation.mjs:247",
+      "src/automation/cultivation.mjs:260",
+      "src/automation/cultivation.mjs:265",
+      "src/automation/cultivation.mjs:279",
+      "src/automation/cultivation.mjs:307",
+      "src/automation/cultivation.mjs:312",
+      "src/automation/cultivation.mjs:314",
+      "src/automation/cultivation.mjs:317",
+      "src/automation/production.mjs:83",
+      "src/automation/production.mjs:88",
+      "src/automation/production.mjs:112",
+      "src/automation/production.mjs:127",
+      "src/automation/production.mjs:147",
+      "src/automation/production.mjs:156",
+      "src/automation/production.mjs:175",
+      "src/automation/routines.mjs:168",
+      "src/automation/routines.mjs:183",
+      "src/automation/routines.mjs:201",
+      "src/automation/service.mjs:243",
+      "src/automation/service.mjs:253",
+      "src/automation/service.mjs:259",
+      "src/automation/service.mjs:265",
+      "src/automation/service.mjs:276",
       "src/boats.mjs:62",
       "src/dailies.mjs:151",
       "src/dailies.mjs:151",
@@ -3698,12 +3805,13 @@
       "src/fishing.mjs:10",
       "src/fleet-formation.mjs:22",
       "src/fleet-formation.mjs:71",
-      "src/game.mjs:24",
+      "src/game.mjs:25",
       "src/log-errors.mjs:9",
-      "src/loop.mjs:345",
-      "src/loop.mjs:451",
-      "src/pirates.mjs:111",
-      "src/server.mjs:1405",
+      "src/loop.mjs:372",
+      "src/loop.mjs:481",
+      "src/pirates.mjs:149",
+      "src/server.mjs:46",
+      "src/server.mjs:1904",
       "src/tasks.mjs:167",
       "src/world.mjs:150"
     ],
@@ -3719,9 +3827,9 @@
       "../sea666-afk/sea666_battle.py:234"
     ],
     "implementation": [
-      "src/automation/battle.mjs:55",
-      "src/automation/battle.mjs:60",
-      "src/automation/battle.mjs:117"
+      "src/automation/battle.mjs:71",
+      "src/automation/battle.mjs:76",
+      "src/automation/battle.mjs:133"
     ],
     "fields": [
       {
@@ -3746,8 +3854,8 @@
       "../sea666-afk/sea666_battle.py:216"
     ],
     "implementation": [
-      "src/automation/battle.mjs:112",
-      "src/automation/battle.mjs:117"
+      "src/automation/battle.mjs:128",
+      "src/automation/battle.mjs:133"
     ],
     "fields": [
       {
@@ -3771,8 +3879,8 @@
       "../sea666-afk/sea666_battle.py:163"
     ],
     "implementation": [
-      "src/automation/battle.mjs:108",
-      "src/game.mjs:45"
+      "src/automation/battle.mjs:124",
+      "src/game.mjs:48"
     ],
     "fields": [],
     "response": "PassStageStateResponse",
@@ -3786,7 +3894,9 @@
       "../sea666-afk/sea666_pet.py:443"
     ],
     "implementation": [
-      "src/automation/cultivation.mjs:219"
+      "src/automation/cultivation.mjs:247",
+      "src/automation/routines.mjs:199",
+      "src/automation/service.mjs:295"
     ],
     "fields": [
       {
@@ -3817,7 +3927,8 @@
       "../sea666-afk/sea666_pet.py:335"
     ],
     "implementation": [
-      "src/automation/cultivation.mjs:206"
+      "src/automation/cultivation.mjs:234",
+      "src/automation/service.mjs:295"
     ],
     "fields": [
       {
@@ -3839,7 +3950,8 @@
       "../sea666-afk/sea666_pet.py:568"
     ],
     "implementation": [
-      "src/automation/cultivation.mjs:228"
+      "src/automation/cultivation.mjs:256",
+      "src/automation/service.mjs:295"
     ],
     "fields": [
       {
@@ -3861,7 +3973,8 @@
       "../sea666-afk/sea666_pet.py:236"
     ],
     "implementation": [
-      "src/automation/cultivation.mjs:235"
+      "src/automation/cultivation.mjs:263",
+      "src/automation/service.mjs:295"
     ],
     "fields": [
       {
@@ -3883,7 +3996,8 @@
       "../sea666-afk/sea666_pet.py:273"
     ],
     "implementation": [
-      "src/automation/cultivation.mjs:238"
+      "src/automation/cultivation.mjs:266",
+      "src/automation/service.mjs:295"
     ],
     "fields": [
       {
@@ -3905,7 +4019,8 @@
       "../sea666-afk/sea666_equip.py:199"
     ],
     "implementation": [
-      "src/automation/cultivation.mjs:283"
+      "src/automation/cultivation.mjs:313",
+      "src/automation/service.mjs:296"
     ],
     "fields": [
       {
@@ -3929,7 +4044,7 @@
       "../sea666-afk/sea666_gather.py:158"
     ],
     "implementation": [
-      "src/automation/base.mjs:306",
+      "src/automation/base.mjs:424",
       "src/collections.mjs:48"
     ],
     "fields": [
@@ -3978,9 +4093,9 @@
       "../sea666-afk/sea666_world.py:154"
     ],
     "implementation": [
-      "src/automation/world.mjs:318",
-      "src/game.mjs:34",
-      "src/pirates.mjs:133"
+      "src/automation/world.mjs:321",
+      "src/game.mjs:37",
+      "src/pirates.mjs:171"
     ],
     "fields": [],
     "response": "PirateKillRecordResponse",
@@ -3994,7 +4109,7 @@
       "../sea666-afk/sea666_world.py:759"
     ],
     "implementation": [
-      "src/automation/world.mjs:344",
+      "src/automation/world.mjs:358",
       "src/dailies.mjs:312"
     ],
     "fields": [
@@ -4026,7 +4141,7 @@
       "../sea666-afk/sea666_world.py:326"
     ],
     "implementation": [
-      "src/automation/world.mjs:164"
+      "src/automation/world.mjs:167"
     ],
     "fields": [
       {
@@ -4089,7 +4204,7 @@
       "../sea666-afk/sea666_world.py:1226"
     ],
     "implementation": [
-      "src/automation/world.mjs:358"
+      "src/automation/world.mjs:374"
     ],
     "equivalent": "按当前事件状态与用户选择类型逐条领取，避免领取被排除类型",
     "fields": [],
@@ -4102,7 +4217,7 @@
       "../sea666-afk/sea666_world.py:1249"
     ],
     "implementation": [
-      "src/automation/world.mjs:358"
+      "src/automation/world.mjs:374"
     ],
     "fields": [
       {
@@ -4124,10 +4239,10 @@
       "../sea666-afk/sea666_world.py:228"
     ],
     "implementation": [
-      "src/automation/world.mjs:355",
-      "src/automation/world.mjs:358",
-      "src/automation/world.mjs:359",
-      "src/game.mjs:48"
+      "src/automation/world.mjs:371",
+      "src/automation/world.mjs:374",
+      "src/automation/world.mjs:375",
+      "src/game.mjs:51"
     ],
     "fields": [],
     "response": "RadarInfoResponse",
@@ -4141,7 +4256,7 @@
       "../sea666-afk/sea666_world.py:1312"
     ],
     "implementation": [
-      "src/automation/world.mjs:372"
+      "src/automation/world.mjs:388"
     ],
     "fields": [
       {
@@ -4173,14 +4288,14 @@
     ],
     "implementation": [
       "src/antique-recruit.mjs:16",
-      "src/automation/cultivation.mjs:125",
-      "src/automation/cultivation.mjs:143",
-      "src/automation/cultivation.mjs:146",
-      "src/automation/service.mjs:128",
+      "src/automation/cultivation.mjs:133",
+      "src/automation/cultivation.mjs:167",
+      "src/automation/cultivation.mjs:170",
+      "src/automation/service.mjs:249",
       "src/dailies.mjs:151",
       "src/dailies.mjs:157",
       "src/dailies.mjs:420",
-      "src/game.mjs:15"
+      "src/game.mjs:16"
     ],
     "fields": [],
     "response": "RecruitInfoResponse",
@@ -4195,12 +4310,12 @@
       "../sea666-afk/sea666_hero.py:537"
     ],
     "implementation": [
-      "src/automation/cultivation.mjs:127",
-      "src/automation/service.mjs:162",
+      "src/automation/cultivation.mjs:135",
+      "src/automation/service.mjs:283",
       "src/dailies.mjs:161",
       "src/dailies.mjs:167",
       "src/log-errors.mjs:36",
-      "src/loop.mjs:195"
+      "src/loop.mjs:222"
     ],
     "fields": [
       {
@@ -4224,7 +4339,7 @@
       "../sea666-afk/sea666_activity.py:223"
     ],
     "implementation": [
-      "src/game.mjs:63"
+      "src/game.mjs:66"
     ],
     "fields": [],
     "response": null,
@@ -4236,7 +4351,7 @@
       "../sea666-afk/sea666_world.py:409"
     ],
     "implementation": [
-      "src/automation/world.mjs:177"
+      "src/automation/world.mjs:180"
     ],
     "fields": [
       {
@@ -4284,7 +4399,7 @@
     "implementation": [
       "src/automation/welfare.mjs:39",
       "src/automation/welfare.mjs:40",
-      "src/game.mjs:52"
+      "src/game.mjs:55"
     ],
     "fields": [],
     "response": "SeasonCardResponse",
@@ -4299,8 +4414,8 @@
       "../sea666-afk/sea666_choice_event.py:180"
     ],
     "implementation": [
-      "src/automation/base.mjs:276",
-      "src/automation/base.mjs:289"
+      "src/automation/base.mjs:394",
+      "src/automation/base.mjs:407"
     ],
     "fields": [
       {
@@ -4331,7 +4446,7 @@
       "../sea666-afk/sea666_world_ext.py:482"
     ],
     "implementation": [
-      "src/automation/world.mjs:490"
+      "src/automation/world.mjs:523"
     ],
     "fields": [
       {
@@ -4356,7 +4471,7 @@
       "../sea666-afk/sea666_farm.py:305"
     ],
     "implementation": [
-      "src/automation/base.mjs:181"
+      "src/automation/base.mjs:278"
     ],
     "fields": [
       {
@@ -4381,8 +4496,8 @@
     ],
     "implementation": [
       "src/actions.mjs:83",
-      "src/automation/base.mjs:150",
-      "src/automation/service.mjs:111"
+      "src/automation/base.mjs:171",
+      "src/automation/service.mjs:232"
     ],
     "fields": [
       {
@@ -4578,7 +4693,8 @@
       "../sea666-afk/sea666_equip.py:312"
     ],
     "implementation": [
-      "src/automation/cultivation.mjs:281"
+      "src/automation/cultivation.mjs:311",
+      "src/automation/service.mjs:296"
     ],
     "fields": [
       {
@@ -4614,7 +4730,7 @@
     "implementation": [
       "src/actions.mjs:220",
       "src/automation/activity.mjs:232",
-      "src/automation/production.mjs:122",
+      "src/automation/production.mjs:125",
       "src/world.mjs:828"
     ],
     "fields": [
@@ -4654,8 +4770,8 @@
       "../sea666-afk/sea666_world.py:455"
     ],
     "implementation": [
-      "src/automation/world.mjs:81",
-      "src/automation/world.mjs:113"
+      "src/automation/world.mjs:84",
+      "src/automation/world.mjs:116"
     ],
     "fields": [
       {
@@ -4725,11 +4841,11 @@
     "implementation": [
       "src/actions.mjs:188",
       "src/automation/activity.mjs:227",
-      "src/automation/base.mjs:159",
-      "src/automation/base.mjs:205",
-      "src/automation/production.mjs:170",
-      "src/automation/service.mjs:111",
-      "src/automation/service.mjs:150",
+      "src/automation/base.mjs:180",
+      "src/automation/base.mjs:308",
+      "src/automation/production.mjs:173",
+      "src/automation/service.mjs:232",
+      "src/automation/service.mjs:271",
       "src/world.mjs:729"
     ],
     "fields": [
@@ -4761,7 +4877,7 @@
       "../sea666-afk/sea666_gather.py:92"
     ],
     "implementation": [
-      "src/automation/base.mjs:308",
+      "src/automation/base.mjs:426",
       "src/fishing.mjs:23"
     ],
     "fields": [],
@@ -4776,7 +4892,7 @@
       "../sea666-afk/sea666_world.py:985"
     ],
     "implementation": [
-      "src/automation/world.mjs:628"
+      "src/automation/world.mjs:664"
     ],
     "fields": [
       {
@@ -4818,7 +4934,7 @@
       "../sea666-afk/sea666_world.py:875"
     ],
     "implementation": [
-      "src/automation/world.mjs:591"
+      "src/automation/world.mjs:627"
     ],
     "fields": [],
     "response": "TradeCargoUpgradeResponse",
@@ -4832,9 +4948,9 @@
       "../sea666-afk/sea666_world.py:823"
     ],
     "implementation": [
-      "src/automation/world.mjs:605",
-      "src/automation/world.mjs:607",
-      "src/automation/world.mjs:609"
+      "src/automation/world.mjs:641",
+      "src/automation/world.mjs:643",
+      "src/automation/world.mjs:645"
     ],
     "fields": [
       {
@@ -4858,15 +4974,15 @@
       "../sea666-afk/sea666_world.py:170"
     ],
     "implementation": [
-      "src/automation/world.mjs:461",
-      "src/automation/world.mjs:580",
-      "src/automation/world.mjs:582",
-      "src/automation/world.mjs:583",
-      "src/automation/world.mjs:591",
-      "src/automation/world.mjs:594",
-      "src/automation/world.mjs:615",
-      "src/automation/world.mjs:629",
-      "src/game.mjs:27"
+      "src/automation/world.mjs:477",
+      "src/automation/world.mjs:614",
+      "src/automation/world.mjs:618",
+      "src/automation/world.mjs:619",
+      "src/automation/world.mjs:627",
+      "src/automation/world.mjs:630",
+      "src/automation/world.mjs:651",
+      "src/automation/world.mjs:665",
+      "src/game.mjs:30"
     ],
     "fields": [],
     "response": "TradeInfoResponse",
@@ -4880,7 +4996,7 @@
       "../sea666-afk/sea666_world.py:944"
     ],
     "implementation": [
-      "src/automation/world.mjs:611"
+      "src/automation/world.mjs:647"
     ],
     "fields": [
       {
@@ -4922,7 +5038,7 @@
       "../sea666-afk/sea666_world.py:907"
     ],
     "implementation": [
-      "src/automation/world.mjs:598"
+      "src/automation/world.mjs:634"
     ],
     "fields": [
       {
@@ -4946,8 +5062,9 @@
       "../sea666-afk/sea666_world_ext.py:317"
     ],
     "implementation": [
-      "src/automation/world.mjs:290",
-      "src/automation/world.mjs:467"
+      "src/automation/world.mjs:280",
+      "src/automation/world.mjs:483",
+      "src/game.mjs:29"
     ],
     "fields": [],
     "response": "TreasureLootListResponse",
@@ -4961,8 +5078,8 @@
       "../sea666-afk/sea666_world_ext.py:359"
     ],
     "implementation": [
-      "src/automation/world.mjs:300",
-      "src/automation/world.mjs:471"
+      "src/automation/world.mjs:301",
+      "src/automation/world.mjs:487"
     ],
     "fields": [
       {
@@ -4993,8 +5110,8 @@
       "../sea666-afk/sea666_trial.py:360"
     ],
     "implementation": [
-      "src/automation/battle.mjs:174",
-      "src/automation/battle.mjs:219",
+      "src/automation/battle.mjs:201",
+      "src/automation/battle.mjs:251",
       "src/trials.mjs:88"
     ],
     "fields": [
@@ -5026,7 +5143,8 @@
       "../sea666-afk/sea666_trial.py:267"
     ],
     "implementation": [
-      "src/automation/battle.mjs:203",
+      "src/automation/battle.mjs:232",
+      "src/server.mjs:138",
       "src/trials.mjs:71"
     ],
     "fields": [
@@ -5060,12 +5178,12 @@
       "../sea666-afk/sea666_trial.py:211"
     ],
     "implementation": [
-      "src/automation/battle.mjs:157",
-      "src/automation/battle.mjs:198",
-      "src/automation/battle.mjs:203",
-      "src/automation/battle.mjs:213",
-      "src/automation/battle.mjs:219",
-      "src/automation/service.mjs:130",
+      "src/automation/battle.mjs:182",
+      "src/automation/battle.mjs:227",
+      "src/automation/battle.mjs:234",
+      "src/automation/battle.mjs:245",
+      "src/automation/battle.mjs:251",
+      "src/automation/service.mjs:251",
       "src/trials.mjs:4"
     ],
     "fields": [
@@ -5093,8 +5211,8 @@
     ],
     "implementation": [
       "src/actions.mjs:42",
-      "src/automation/base.mjs:355",
-      "src/automation/service.mjs:156"
+      "src/automation/base.mjs:527",
+      "src/automation/service.mjs:277"
     ],
     "fields": [
       {
@@ -5119,7 +5237,7 @@
     ],
     "implementation": [
       "src/actions.mjs:196",
-      "src/automation/service.mjs:143",
+      "src/automation/service.mjs:264",
       "src/world.mjs:792"
     ],
     "fields": [
@@ -5142,7 +5260,7 @@
       "../sea666-afk/sea666_guild.py:569"
     ],
     "implementation": [
-      "src/automation/guild.mjs:23"
+      "src/automation/guild.mjs:24"
     ],
     "fields": [
       {
@@ -5166,7 +5284,7 @@
       "../sea666-afk/sea666_world_ext.py:415"
     ],
     "implementation": [
-      "src/automation/world.mjs:482"
+      "src/automation/world.mjs:498"
     ],
     "fields": [],
     "response": "WarDeclarationResponse",
@@ -5182,9 +5300,8 @@
     ],
     "implementation": [
       "src/ad-shop.mjs:81",
-      "src/automation/battle.mjs:168",
-      "src/automation/cultivation.mjs:115",
-      "src/automation/cultivation.mjs:134"
+      "src/automation/battle.mjs:193",
+      "src/automation/cultivation.mjs:116"
     ],
     "fields": [
       {
@@ -5210,12 +5327,87 @@
     "responses": []
   },
   {
+    "request": "WeekBattlePassFinishTaskRequest",
+    "reference": [
+      "docs/capture-analysis-20261105.md:67"
+    ],
+    "implementation": [
+      "src/automation/routines.mjs:114"
+    ],
+    "fields": [
+      {
+        "number": 1,
+        "name": "taskId",
+        "kind": "scalar",
+        "type": "int32",
+        "wire": "int32",
+        "required": false,
+        "optional": true
+      }
+    ],
+    "response": "WeekBattlePassFinishTaskResponse",
+    "responses": [
+      "WeekBattlePassFinishTaskResponse"
+    ]
+  },
+  {
+    "request": "WeekBattlePassGotRewardRequest",
+    "reference": [
+      "src/automation/routines.mjs:125 (当前协议与客户端 WeekBattlePassUtil)"
+    ],
+    "implementation": [
+      "src/automation/routines.mjs:134"
+    ],
+    "fields": [],
+    "response": "WeekBattlePassGotRewardResponse",
+    "responses": [
+      "WeekBattlePassGotRewardResponse"
+    ]
+  },
+  {
+    "request": "WeekBattlePassInfoRequest",
+    "reference": [
+      "docs/capture-analysis-20261105.md:66"
+    ],
+    "implementation": [
+      "src/automation/routines.mjs:97",
+      "src/automation/routines.mjs:111",
+      "src/automation/routines.mjs:124",
+      "src/automation/routines.mjs:131",
+      "src/automation/routines.mjs:178"
+    ],
+    "fields": [],
+    "response": "WeekBattlePassInfoResponse",
+    "responses": [
+      "WeekBattlePassInfoResponse"
+    ]
+  },
+  {
+    "request": "WeekInfoRequest",
+    "reference": [
+      "docs/capture-analysis-20261105.md:60"
+    ],
+    "implementation": [
+      "src/activities.mjs:95",
+      "src/automation/activity.mjs:260",
+      "src/automation/activity.mjs:290",
+      "src/automation/routines.mjs:20",
+      "src/game.mjs:47",
+      "src/log-errors.mjs:6"
+    ],
+    "fields": [],
+    "response": "WeekInfoResponse",
+    "responses": [
+      "WeekInfoResponse"
+    ]
+  },
+  {
     "request": "WeekLotteryFreePackRequest",
     "reference": [
       "../sea666-afk/sea666_welfare.py:636"
     ],
     "implementation": [
-      "src/activities.mjs:251",
+      "src/activities.mjs:226",
       "src/automation/welfare.mjs:62"
     ],
     "fields": [],
@@ -5229,7 +5421,7 @@
     ],
     "implementation": [
       "src/activities.mjs:151",
-      "src/activities.mjs:194",
+      "src/activities.mjs:193",
       "src/automation/activity.mjs:299",
       "src/automation/welfare.mjs:59"
     ],
@@ -5269,7 +5461,7 @@
       "../sea666-afk/sea666_welfare.py:706"
     ],
     "implementation": [
-      "src/activities.mjs:200",
+      "src/activities.mjs:199",
       "src/automation/activity.mjs:302"
     ],
     "fields": [],
@@ -5300,7 +5492,7 @@
       "src/automation/activity.mjs:265",
       "src/automation/activity.mjs:283",
       "src/automation/activity.mjs:285",
-      "src/game.mjs:46",
+      "src/game.mjs:49",
       "src/log-errors.mjs:7"
     ],
     "fields": [],
@@ -5315,7 +5507,7 @@
       "../sea666-afk/sea666_world_ext.py:632"
     ],
     "implementation": [
-      "src/automation/world.mjs:207"
+      "src/automation/world.mjs:210"
     ],
     "fields": [],
     "response": null,
@@ -5327,9 +5519,9 @@
       "../sea666-afk/sea666_world_ext.py:612"
     ],
     "implementation": [
-      "src/automation/world.mjs:204",
       "src/automation/world.mjs:207",
-      "src/game.mjs:40"
+      "src/automation/world.mjs:210",
+      "src/game.mjs:43"
     ],
     "fields": [],
     "response": "WorldBossInfoResponse",

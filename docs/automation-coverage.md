@@ -3,6 +3,8 @@
 参考源为 `sea666-afk` 项目的 `sea666_*.py`，不把只有设置、没有执行器的功能计入范围。已审查请求及参考位置保存在仓库内的 `automation-protocol.json`；离线测试不需要相邻参考项目目录。
 所有新模块默认关闭；计划与执行共用同一处理函数，计划不提交写请求。
 
+跨服比拼日程、设置一次性迁移、主挂机固定领奖及每日海兽培育补做见 [跨服比拼与固定日常](competition-idle.md)。日期模式会叠加当前连接校时；“自动升星”沿用藏品碎片升星，不新增经验升级。主挂机固定领奖不受福利总开关控制，独立模块执行与预览不附带固定日常。
+
 | 目标模块 / 设置入口 | 参考逻辑 | 请求族 | 必须验收的业务规则 |
 | --- | --- | --- | --- |
 | island / factory | island_once、factory、demand | OnWater、Factory、Building | 禁用工厂、配方、库存、需求优先级与队列容量 |
@@ -75,8 +77,8 @@
 | 探宝加速 | sea666_pet_museum.py / run_museum_explore | cultivation.museum；MuseumSpeedUpExplore | museum.speedUp、speedUpDailyLimit、speedUpKeepStock | 日次数和道具保留共同限制；0 次额度禁止 |
 | 主线连续挑战与章节奖 | sea666_battle.py / run_stage | battle.battle；ChallengeStage、PassStageGotReward | battle.maxActions、stage.enabled、samePowerRetryCount、claimReward | 失败即停，显式设置才同战力重试；只领达标章节档位 |
 | 竞技场挑战/扫荡 | sea666_battle.py / run_arena_challenge、run_arena_sweep | battle.arena；ArenaChallenge、ArenaSweep | battle.arena.challenge、sweep | 当前排名/战力筛选，真实 isWin 判胜负 |
-| 三类试炼挑战/扫荡 | sea666_trial.py / run_trial_actions；VIP3 实机抓包 | battle.trial / vipTrialSweep；TrialRaidChallenge、WatchAdv、TrialRaidBuySweep | battle.trial.heroExp / forge / petExp：challenge、rubySweep；账号 vipFreeAd | passedStage 读回判胜；普通扫荡按 buyTimes 定价；角色等级 ≥10 且 VIP ≥3 时可独立领取每日广告额外扫荡，奖励回包确认、上海自然日写前记次防重；详见 vip-trial-sweep.md |
-| 联盟赛挑战、挂机、段位和战令奖 | sea666_league.py / run_challenge、run_hangup_reward、run_dan_reward、run_pass_reward | battle.league；LeagueFight、GotLeagueBonusItem、LeagueGotBonusDan、LeagueGotPassReward | battle.league.challenge、reservePoints、hangupReward、danReward、passReward | 现有积分满足保留量才挑战弱者；已领档不重复 |
+| 三类试炼挑战/扫荡 | sea666_trial.py / run_trial_actions；VIP3 实机抓包 | battle.trial / vipTrialSweep；TrialRaidChallenge、WatchAdv、TrialRaidBuySweep | battle.trial.heroExp / forge / petExp：challenge、rubySweep；账号 vipFreeAd | passedStage 读回判胜；普通扫荡按 buyTimes 定价；角色等级 ≥10 且 VIP ≥3 时可独立领取每日广告额外扫荡，奖励回包确认、当日写前记次防重；详见 vip-trial-sweep.md |
+| 联盟赛挑战、挂机、段位和战令奖 | sea666_league.py / run_challenge、run_hangup_reward、run_dan_reward、run_pass_reward；积分赛抓包 | battle.league；LeagueOtherFormation、LeagueFormationSequence、LeagueFight、LeagueRefreshRival、GotLeagueBonusItem、LeagueGotBonusDan、LeagueGotPassReward | battle.league.challenge、reservePoints、hangupReward、danReward、passReward | 按四人原始顺序；总战力较低且双舰队强对强均严格占优才挑战，回包必须两局全胜。无稳赢只在 refreshTimes=1 且换榜后钻石不变时免费刷新一次；仍无稳赢才强打弱、弱打强，回包一胜一负且 finalScore 不降才保分。reservePoints 保留的是 LEAGUE_POINT 挑战券，不是排名积分；读取/换位/回包异常均停止。 |
 | 远征挑战与血量停止 | sea666_battle.py / run_expedition_challenge | battle.expedition；ExpeditionChooseRaid、ExpeditionChooseBuff、ExpeditionChallenge | battle.expedition.challenge、challengeStopOnHeroDeath、challengeMinTeamHpPct | 仅当前已选副本；先选待选增益；阵亡/低血停止；重启保留本周期血量基线 |
 | 远征扫荡、最终奖与战令 | sea666_battle.py / run_expedition_sweep、run_expedition_final_reward、run_expedition_free_pass | battle.expedition / claimPass；ExpeditionSweep、ExpeditionGotFinalReward、BattlePassGotReward | battle.expedition.sweep、finalReward、freePass | 仅扫已通过副本；完成且未领才领奖；只领现有战令权益 |
 
@@ -90,7 +92,7 @@
 | 雷达派遣/领奖 | sea666_world.py / run_radar | world.radar；RadarSendFleets、RadarGetReward | world.radar.enabled、claim、kinds、fixed | 按所选类型逐条领奖，替代全部领奖；每次重新取闲置舰队 |
 | 已有资源田配比 | sea666_world.py / run_res_field | world.fields；MyResFields、GiveUpResField | world.resField.enabled、factory、oasis、tank | 按当前表真实产物分配；只释放已有超额类型，未知类型保留；不扫描新田 |
 | 芯片矿 | sea666_world_ext.py / run_chip_mine | world.chipMine；ChipMineReward、ChipMineList、ChipMine、ChipMineSendFleet | world.chipMine.enabled、hours、dailyCap、fleets | rewardInfo.myRewardTimes 和本地日次数共同约束；检查品质、空位、战斗次数 |
-| 宝藏掠夺与搁浅商船 | sea666_world_ext.py / run_treasure_loot；AutoJs merchantShip | world.treasure / world.merchantShip；TreasureLootList、TreasureLootSendFleets | world.treasureLoot；world.merchantShip.enabled、retryMinutes、fleets | 宝藏掠夺保留品质/空置/联盟过滤；搁浅商船仅在上海整点及同小时重试时匹配已确认的万吨货轮，按配置舰队逐艘派遣 |
+| 宝藏掠夺与搁浅商船 | sea666_world_ext.py / run_treasure_loot；AutoJs merchantShip | world.treasure / world.merchantShip；TreasureLootList、TreasureLootSendFleets | world.treasureLoot；world.merchantShip.enabled、retryMinutes、fleets | 宝藏掠夺保留品质/空置/联盟过滤；搁浅商船每轮检查当前万吨货轮，按目标 UID 和跨小时派遣间隔使用配置的空闲舰队；0 表示同一目标只尝试一次，新目标立即检查，无目标或舰队全忙不计时，城战时段保留舰队 |
 | 城战与在线奖励 | sea666_world_ext.py / run_city_war_online、run_city_war | world.cityWar；GotWorldOnlineRwd、SetAssembleCity、MoveFleetsToCity、SpeedUpFleet、CityRecruitDefence | world.cityWar.enabled、online、reattack、fleets[].marchSpeedUp | 开放时段、集结确认、进攻日记录防重复；行军加速只在派遣确认后按抓包协议提交并读回舰队状态；募防读取城市守军确认 |
 | 世界 Boss | sea666_world_ext.py / run_world_boss | world.world；WorldBossGetDamageReward、ChallengeWorldBoss | world.worldBoss.enabled、attackTimes | 奖励按当前伤害档；attackTimes 为每日上限；不复用已占用舰队 |
 | 限时 Boss | sea666_world_ext.py / run_limited_boss | world.world；LimitedBossGetReward、LimitedBossSendFleets | world.limitedBoss.enabled、challengeReward、fleets | 活动/当日时段和剩余血量同时满足；仅所选闲置舰队 |
@@ -135,7 +137,7 @@
 | 消费开关、账号总额、模块额、余额保留 | context.reserve | budget、account budget、paid legacy、week order、snap diamond |
 | 多角色共用账号总额，明细隔离 | settings.accountSpending / loadLedger | account budget、service status |
 | 写前预留、拒绝释放、成功结算、重启持久化 | context.action | budget、uncertain、confirmed failure |
-| 超时只读核对、不直接重发、跨日保留不明记录 | context.action、上海 businessDate | uncertain、date |
+| 超时只读核对、不直接重发、跨日保留不明记录 | context.action、businessDate | uncertain、date |
 | 规划不写业务，不假设多步已完成 | 同一执行器 dryRun | budget dry plan、API、service |
 | 库存、次数、舰队刷新 | context.refreshStock、common.idleFleets | factory demand、hero、module chain、chip mine、treasure |
 | 日常复用已启用对应玩法并去重 | service.dailyGameplay / handledDailyIds | daily gameplay、daily dedup |
@@ -178,7 +180,7 @@ CLI 沿用现有账号选择方式；settings 不连接游戏，plan/run 在明�
 
 运行 `npm run test:offline` 完成固定数据业务测试与当前协议自检。测试用临时隔离目录、固定配置和内存网关，模拟请求与响应都通过当前 codec；不读取真实凭证，不创建游戏 WebSocket。业务用例涵盖资源不足、满仓、未开放、未入盟、活动结束、重复领奖、失败停止、舰队争用、远征血量、跨日、停止、断线、不确定结果、预算持久化和多账号/多角色隔离。
 
-逐请求索引由 `node tools/audit-automation.mjs --write` 生成，见 [automation-requests.md](automation-requests.md) 和 [automation-protocol.json](automation-protocol.json)。216 种参考请求分别记录字段、实现入口、响应及两处等价替代；异名响应和 Snap 的两类回合响应也做编解码核对。该索引证明协议和源码入口存在，不能代替完整业务或真实网关验收。
+逐请求索引由 `node tools/audit-automation.mjs --write` 生成，见 [automation-requests.md](automation-requests.md) 和 [automation-protocol.json](automation-protocol.json)。218 种参考请求分别记录字段、实现入口、响应及两处等价替代；异名响应和 Snap 的两类回合响应也做编解码核对。该索引证明协议和源码入口存在，不能代替完整业务或真实网关验收。
 
 本地网页用 `test/local-console.mjs` 的隔离账号和 OfflineClient 验证：账号设置切换隔离、分类表单、英雄选择入口、一轮运行、循环等待状态、停止、按钮恢复、无横向溢出及无浏览器脚本错误。夹具仅监听本地端口，不连接真实账号。
 
