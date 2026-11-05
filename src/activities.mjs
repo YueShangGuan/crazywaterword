@@ -173,17 +173,16 @@ export async function activityView(client, festivals = [], config = null) {
   }
 }
 
-const passLocks = new WeakMap();
-
+/** 旧周期入口仅保留周抽奖礼包与次数奖；勇士战令由主挂机固定日常统一领取。 */
 export async function claimWeekly(client, config, enabled, report, playerLevel, scheduler) {
   const due = key => enabled(key) && (!scheduler || scheduler.due(key));
-  if (!['weekPass', 'weekTimes', 'weekGift'].some(due)) return;
+  if (!['weekTimes', 'weekGift'].some(due)) return;
   const midnight = scheduler?.nextDay();
   const schedule = await weekSchedule(client);
   const time = serverNow(client);
   const week = schedule.filter(row => open(row, time));
   if (scheduler) {
-    for (const [key, type] of [['weekPass', 1], ['weekGift', 4], ['weekTimes', 4]]) {
+    for (const [key, type] of [['weekGift', 4], ['weekTimes', 4]]) {
       if (!due(key) || week.some(row => row.type === type)) continue;
       const starts = schedule.filter(row => row.type === type && row.startTime > time).map(row => row.startTime);
       scheduler.defer(key, Math.min(starts.length ? Math.min(...starts) : time + 600, midnight));
@@ -208,64 +207,29 @@ export async function claimWeekly(client, config, enabled, report, playerLevel, 
         }
       } catch (error) { report({ label: '周抽奖次数奖励', ok: false, error: error.message }); }
     }
-    const key = row.type === 1 ? 'weekPass' : row.type === 4 ? 'weekGift' : null;
+    const key = row.type === 4 ? 'weekGift' : null;
     if (!key || !due(key)) continue;
     const allowed = () => enabled(key) && open(row, serverNow(client));
     const tables = config?.tables;
     try {
-      if (key === 'weekPass') {
-        const lock = passLocks.get(client);
-        if (lock?.endTime === row.endTime && lock.level === playerLevel && serverNow(client) < lock.retryAt) continue;
-        const state = normalize(await client.request('WeekBattlePassInfoRequest', {}, 'WeekBattlePassInfoResponse'));
-        if (!tables?.WeekPassTaskCfg || !tables?.WeekBattlePassCfg) throw new Error('缺少周战令配置');
-        let score = state.score ?? 0;
-        for (const task of state.task ?? []) {
-          const cfg = tables.WeekPassTaskCfg.data.find(t => t.taskId === task.taskId);
-          if (!allowed()) break;
-          if (!cfg || task.isGot || !(task.progress >= cfg.target)) continue;
-          const result = await client.request('WeekBattlePassFinishTaskRequest', { taskId: task.taskId }, 'WeekBattlePassFinishTaskResponse');
-          score = result.score;
-          report({ label: '周战令积分 · ' + cfg.desc, ok: true });
-        }
-        const ready = tables.WeekBattlePassCfg.data.some(cfg => {
-          if (cfg.periodId !== row.period || !(score >= cfg.reqScore)) return false;
-          const got = state.got?.find(item => item.stage === cfg.rwdId);
-          return (cfg.freeReward?.length && !got?.freeGot) || (state.activePay && cfg.payReward?.length && !got?.payGot);
-        });
-        if (ready && allowed()) {
-          await client.request('WeekBattlePassGotRewardRequest', {}, 'WeekBattlePassGotRewardResponse');
-          report({ label: '周战令档位奖励', ok: true });
-        }
-      } else {
-        const cfg = tables?.WeekLotteryPackCfg?.data.find(pack => pack.price === 0 && pack.limitedTimes > 0);
-        if (!cfg) throw new Error('缺少周抽奖免费礼包配置');
-        const claimed = info => info.gift?.find(item => item.giftId === cfg.packId)?.gotTimes ?? 0;
-        // Recheck a claimed pack at rollover or when this event ends, whichever is first.
-        const recheck = scheduler && Math.min(row.endTime, midnight);
-        const before = claimed(lotteryInfo ?? await readLottery());
-        if (before >= cfg.limitedTimes) {
-          scheduler?.defer(key, recheck);
-          continue;
-        }
-        if (!allowed()) continue;
-        await client.sendWatch('WeekLotteryFreePackRequest', {});
-        const after = claimed(await readLottery());
-        if (after <= before) throw new Error('服务端尚未确认礼包领取');
-        if (after >= cfg.limitedTimes) scheduler?.defer(key, recheck);
-        report({ label: '周抽奖免费礼包', ok: true });
+      const cfg = tables?.WeekLotteryPackCfg?.data.find(pack => pack.price === 0 && pack.limitedTimes > 0);
+      if (!cfg) throw new Error('缺少周抽奖免费礼包配置');
+      const claimed = info => info.gift?.find(item => item.giftId === cfg.packId)?.gotTimes ?? 0;
+      // Recheck a claimed pack at rollover or when this event ends, whichever is first.
+      const recheck = scheduler && Math.min(row.endTime, midnight);
+      const before = claimed(lotteryInfo ?? await readLottery());
+      if (before >= cfg.limitedTimes) {
+        scheduler?.defer(key, recheck);
+        continue;
       }
+      if (!allowed()) continue;
+      await client.sendWatch('WeekLotteryFreePackRequest', {});
+      const after = claimed(await readLottery());
+      if (after <= before) throw new Error('服务端尚未确认礼包领取');
+      if (after >= cfg.limitedTimes) scheduler?.defer(key, recheck);
+      report({ label: '周抽奖免费礼包', ok: true });
     } catch (error) {
-      if (key === 'weekPass' && error.message === 'server prompt: feature locked') {
-        const threshold = tables?.ModuleOpenCfg?.data.find(entry => entry.moduleId === '周活动')?.playerLevel;
-        const levelHint = playerLevel > 0 && playerLevel < threshold
-          ? `（当前 ${playerLevel} 级，周活动 ${threshold} 级开放）` : '';
-        const retryAt = Math.min(row.endTime, serverNow(client) + 1800);
-        passLocks.set(client, { endTime: row.endTime, level: playerLevel, retryAt });
-        scheduler?.defer('weekPass', retryAt);
-        report({ label: weekNames[row.type], skipped: true, reason: '账号尚未解锁' + levelHint + '，稍后自动复查' });
-      } else {
-        report({ label: weekNames[row.type], ok: false, error: error.message });
-      }
+      report({ label: weekNames[row.type], ok: false, error: error.message });
     }
   }
 }

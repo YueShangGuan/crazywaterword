@@ -1,5 +1,6 @@
 import { normalize } from './worlds.mjs';
 import { makeTypeResolver } from './world.mjs';
+import { pirateDailySweepLimit, pirateSweepProgress } from './pirates.mjs';
 
 // The read-only state queries the real client fires immediately after login, in the
 // order it sends them. Taken verbatim from a capture of the game entering its main UI.
@@ -24,6 +25,8 @@ export const ENTRY_QUERIES = [
   { name: 'OnWaterRequest' },
   { name: 'FishEncyclopediaRequest' },
   { name: 'CargoShipsRequest' },
+  { name: 'TreasureLootStatsRequest' },
+  { name: 'TreasureLootListRequest' },
   { name: 'TradeInfoRequest' },
   { name: 'TradeGuildRadarRequest' },
   { name: 'AppointInfoRequest' },
@@ -169,6 +172,19 @@ function summarizeCargoShip(ship, index) {
   };
 }
 
+/** 将万吨货轮奖励压成总览可直接展示的资产列表。 */
+function summarizeMerchantShip(state) {
+  // 万吨货轮沿用世界宝藏列表中的 color=5 标记，其他宝藏不能进入该卡片。
+  const treasure = asArray(state?.TreasureLootListRequest?.treasure)
+    .find((entry) => Number(entry.color) === 5);
+  const stats = state?.TreasureLootStatsRequest;
+  return {
+    remainingRewardTimes: stats?.todayRewardTimes ?? null,
+    uid: treasure?.uid ?? null,
+    reward: treasure ? summarizeAssets(treasure.reward?.asset) : [],
+  };
+}
+
 /** 从本地配置表建立海商王城市与商品的展示名称，协议仍保留原始 ID 供自动化使用。 */
 function tradeDisplayNames(config, scenarioId = 0) {
   const cityRows = config?.tables?.[`${scenarioId}_CityCfg`]?.data ?? config?.tables?.CityCfg?.data ?? [];
@@ -180,11 +196,18 @@ function tradeDisplayNames(config, scenarioId = 0) {
 /**
  * 将登录后的只读响应归并成总览和状态页使用的玩家视角快照。
  * @param {{ok?: Record<string, object>}} state 已归一化的协议响应。
- * @param {{now?: number, config?: object|null, scenarioId?: number, rawMaterialUpperBoundId?: number, cropVipLevel?: number}} options 当前时间、配置表、世界场景、仓库容量效果枚举和农作物容量使用的 VIP 等级。
+ * @param {{now?: number, config?: object|null, scenarioId?: number, rawMaterialUpperBoundId?: number, cropVipLevel?: number, pirateVipLevel?: number|null}} options 当前时间、配置表、世界场景、容量及海盗扫荡所用的角色 VIP 等级。
  * @returns {object} 可供 CLI、网页总览和自动化模块复用的状态摘要。
  */
-export function summarize(state, { now = Date.now() / 1000, config = null, scenarioId = 0, rawMaterialUpperBoundId = 16, cropVipLevel = 0 } = {}) {
+export function summarize(state, { now = Date.now() / 1000, config = null, scenarioId = 0, rawMaterialUpperBoundId = 16, cropVipLevel = 0, pirateVipLevel = null } = {}) {
   const q = state.ok || {};
+  const pirateSweepTimes = q.AllPirateRequest?.sweepTimes;
+  let pirateSweep = null;
+  // 总览允许角色身份、配置或计数缺失；显示为不可用而非套用固定 15 次，自动化写入仍会保守跳过。
+  if (q.AllPirateRequest) {
+    try { pirateSweep = pirateSweepProgress(pirateSweepTimes, pirateDailySweepLimit(config?.tables, pirateVipLevel)); }
+    catch { /* 海盗状态卡片使用“次数未返回”提示，不让单项异常影响其他总览数据。 */ }
+  }
   const water = q.OnWaterRequest || {};
   const afk = q.AfkInfoRequest?.afkInfo;
   const daily = q.DailyTaskInfoRequest;
@@ -197,6 +220,7 @@ export function summarize(state, { now = Date.now() / 1000, config = null, scena
   const resolveBuildingType = makeTypeResolver(config);
   const monthCard = asArray(q.MonthCardRequest?.cardItem);
   const { cityNames, goodsNames } = tradeDisplayNames(config, scenarioId);
+  const merchantShip = summarizeMerchantShip(q);
 
   const tasksDone = (list) => asArray(list).filter((task) => task.progress >= task.targetProgress);
   const claimable = (list) =>
@@ -342,7 +366,7 @@ export function summarize(state, { now = Date.now() / 1000, config = null, scena
     pirates: q.AllPirateRequest
       ? {
           count: asArray(q.AllPirateRequest.pirates).length,
-          sweepTimes: q.AllPirateRequest.sweepTimes,
+          sweep: pirateSweep,
           list: asArray(q.AllPirateRequest.pirates).map((pirate) => ({
             uid: pirate.uid,
             type: pirate.type,
@@ -369,6 +393,7 @@ export function summarize(state, { now = Date.now() / 1000, config = null, scena
         }
       : null,
     cargoList: asArray(q.CargoShipsRequest?.ship).map(summarizeCargoShip),
+    merchantShip,
     trade: q.TradeInfoRequest
       ? {
           period: q.TradeInfoRequest.period,
@@ -478,7 +503,8 @@ export function formatState(view) {
     ].filter(Boolean);
     lines.push(`  ${building.buildingId} ${bits.join(' ')}`);
   }
-  lines.push(`世界: 资源田 ${view.resFields?.count ?? 0}/${view.resFields?.max ?? 0} 舰队 ${view.fleets} 货船 ${view.cargo} 海盗 ${view.pirates?.count ?? 0}(扫荡${view.pirates?.sweepTimes ?? 0})`);
+  const pirateSweep = view.pirates?.sweep;
+  lines.push(`世界: 资源田 ${view.resFields?.count ?? 0}/${view.resFields?.max ?? 0} 舰队 ${view.fleets} 货船 ${view.cargo} 海盗 ${view.pirates?.count ?? 0}(${pirateSweep ? `扫荡已用${pirateSweep.used}/${pirateSweep.dailyLimit}，剩余${pirateSweep.remaining}` : '扫荡次数未返回'})`);
   lines.push(`  自动生产至 ${clock(view.water.autoProduceEndTime)} 永久=${view.water.autoProduceForever} 自动种植=${view.water.autoFarming}`);
   lines.push(`  钓鱼lv${view.water.fishingLevel ?? '-'} 打捞lv${view.water.salvageLevel ?? '-'} 潜水lv${view.water.divingLevel ?? '-'}`);
   if (view.worldBoss) lines.push(`  世界Boss bossId=${view.worldBoss.bossId} 最高伤害=${view.worldBoss.bestDamage} 已领档位=${view.worldBoss.gotRewardLevel}`);

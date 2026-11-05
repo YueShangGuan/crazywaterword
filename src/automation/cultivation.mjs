@@ -1,6 +1,7 @@
 import { planHeroes } from '../heroes.mjs';
 import { makeTypeResolver } from '../world.mjs';
 import { amount, idString } from './context.mjs';
+import { moduleActive, modeActive, serverTime } from './schedule.mjs';
 import { costs, mutate, repeat, succeeded, skip, referencedIds } from './common.mjs';
 
 const COLOR_COST = { BLUE: 'consumeBlue', PURPLE: 'consumePur', ORANGE: 'consumeOra', RED: 'consumeRed' };
@@ -118,20 +119,43 @@ export async function hero(ctx, options) {
   await recruits(ctx, options.recruit, false);
 }
 
-/** 招募仅使用免费次数或现有券，不把缺券自动转成钻石购买。 */
+/**
+ * 执行英雄或藏品招募；仅使用免费次数、现有券、任务积分或 VIP 免广告次数，不转为钻石购买。
+ *
+ * @param {import('./context.mjs').AutomationContext} ctx 当前自动化上下文。
+ * @param {object} options 当前模块的招募设置。
+ * @param {boolean} antique 是否为藏品招募。
+ * @returns {Promise<void>} 所有已启用且满足条件的招募处理完成后返回。
+ */
 async function recruits(ctx, options, antique) {
   if (!options.free && !options.tickets && !options.points && !options.watchVideo) return;
   const group = antique ? 'antique' : 'hero';
-  const info = (await ctx.query('RecruitInfoRequest'))[group];
+  let info = (await ctx.query('RecruitInfoRequest'))[group];
   if (!info) return skip(ctx, '招募尚未开放');
   const request = antique ? 'AntiqueRecruitRequest' : 'RecruitStartRequest';
   const body = antique ? { type: ctx.protocol.AntiqueRecruitType.RECRUIT_ANTIQUE } : {};
   if (options.watchVideo) {
-    // 广告收益 ID 是当前客户端业务枚举：招募英雄 2、藏品 7，不探测其他 ID。
-    const id = antique ? 7 : 2, type = ctx.protocol.AdvType.ADV_EFFECT;
+    // 招募广告的额度仍由广告配置约束：英雄业务 ID 为 2，藏品业务 ID 为 7。
+    const id = antique ? 7 : 2;
     const rule = ctx.rows('AdvEffectCfg').find(r => r.id === id);
     const status = (await ctx.query('OnWaterRequest')).adv?.find(a => a.id === id);
-    if (rule && status && status.gotTimes < rule.dailyLimit) await mutate(ctx, 'WatchAdvRequest', { type, id }, 'OnWaterRequest', s => s.adv?.find(a => a.id === id));
+    const countKey = `recruit.adv.${group}`;
+    if (!rule) skip(ctx, '缺少招募广告额度配置');
+    else if (!status) skip(ctx, '缺少服务端招募广告次数');
+    else if (amount(status.gotTimes) >= rule.dailyLimit || ctx.count(countKey) >= rule.dailyLimit) skip(ctx, '招募广告次数已用完');
+    else {
+      // 招募广告是 RecruitWay.RECRUIT_ADV，不是商店 GotAdvRewardRequest；回包次数递增才确认本次已开奖。
+      const result = await ctx.action(request, { ...body, way: ctx.protocol.RecruitWay.RECRUIT_ADV }, {
+        label: `${antique ? '藏品' : '英雄'}招募广告收益`,
+        response: antique ? 'AntiqueRecruitResponse' : 'RecruitStartResponse',
+        accept: value => amount(value?.recruitData?.recruitTimes) > amount(info.recruitTimes),
+      });
+      if (result.status === 'success') {
+        // 广告额度的 OnWater 回写可能异步，成功回包后记入本地当天计数以防重复发出写请求。
+        ctx.count(countKey, 1);
+        info = result.value.recruitData;
+      }
+    }
   }
   if (options.free && info.freeEndTimeSeconds <= ctx.now() / 1000) await ctx.action(request, { ...body, way: ctx.protocol.RecruitWay.RECRUIT_FREE });
   if (options.tickets) await repeat(ctx, options.maxDraws, async () => {
@@ -149,12 +173,14 @@ async function recruits(ctx, options, antique) {
 
 /** 藏品激活、升星和套装分别校验当前碎片、成员与大师等级上限。 */
 export async function antique(ctx, options) {
-  if (options.activate) for (const row of ctx.rows('AntiqueBaseCfg')) {
+  /** 每次实际提交前重查星期，避免午夜后继续消耗周三专用培养材料。 */
+  const allowed = mode => () => modeActive(mode, serverTime(ctx));
+  if (allowed(options.activate)()) for (const row of ctx.rows('AntiqueBaseCfg')) {
     const state = await ctx.query('AllAntiqueRequest');
     if (state.antiques?.some(a => a.id === row.antiqueId) || !(row.activeFrag > 0)) continue;
-    if (ctx.enough([[`${row.antiqueId}碎片`, row.activeFrag]])) await mutate(ctx, 'ActivateAntiqueRequest', { id: row.antiqueId }, 'AllAntiqueRequest', s => s.antiques, { expenses: [[`${row.antiqueId}碎片`, row.activeFrag]] });
+    if (ctx.enough([[`${row.antiqueId}碎片`, row.activeFrag]])) await mutate(ctx, 'ActivateAntiqueRequest', { id: row.antiqueId }, 'AllAntiqueRequest', s => s.antiques, { expenses: [[`${row.antiqueId}碎片`, row.activeFrag]], allowed: allowed(options.activate) });
   }
-  if (options.upgrade) await repeat(ctx, 50, async () => {
+  if (allowed(options.upgrade)()) await repeat(ctx, 50, async () => {
     let progressed = false;
     for (const entry of (await ctx.query('AllAntiqueRequest')).antiques ?? []) {
       const base = ctx.rows('AntiqueBaseCfg').find(r => r.antiqueId === entry.id);
@@ -164,18 +190,18 @@ export async function antique(ctx, options) {
       const expenses = [[`${entry.id}碎片`, Math.min(own, need)]];
       if (own < need) { if (!options.universal || !base.universalItemId) continue; expenses.push([base.universalItemId, need - own]); }
       if (!ctx.enough(expenses)) continue;
-      const result = await mutate(ctx, 'AntiqueStarUpRequest', { id: entry.id, universal: own < need }, 'AllAntiqueRequest', s => s.antiques?.find(a => a.id === entry.id), { expenses });
+      const result = await mutate(ctx, 'AntiqueStarUpRequest', { id: entry.id, universal: own < need }, 'AllAntiqueRequest', s => s.antiques?.find(a => a.id === entry.id), { expenses, allowed: allowed(options.upgrade) });
       if (!succeeded(result)) return false;
       progressed = true;
     }
     return progressed;
   });
-  if (options.suit.activate || options.suit.levelUp) for (const row of ctx.rows('AntiqueSuitCfg')) await repeat(ctx, 50, async () => {
+  if (allowed(options.suit.activate)() || options.suit.levelUp) for (const row of ctx.rows('AntiqueSuitCfg')) await repeat(ctx, 50, async () => {
     const state = await ctx.query('AllAntiqueRequest');
     const suit = state.suits?.find(s => s.id === row.suitId);
     let expenses = [];
     if (!suit) {
-      if (!options.suit.activate) return false;
+      if (!allowed(options.suit.activate)()) return false;
       const members = ctx.rows('AntiqueBaseCfg').filter(r => r.suitId === row.suitId);
       const owned = members.filter(m => state.antiques?.some(a => a.id === m.antiqueId)).length;
       if (!members.length || owned < (row.colorIndex >= 4 ? 2 : members.length)) return false;
@@ -187,13 +213,15 @@ export async function antique(ctx, options) {
       expenses = cfg.costArr;
       if (!ctx.enough(expenses)) return false;
     }
-    return succeeded(await mutate(ctx, 'AntiqueSuitLevelUpRequest', { id: row.suitId }, 'AllAntiqueRequest', s => s.suits, { expenses }));
+    return succeeded(await mutate(ctx, 'AntiqueSuitLevelUpRequest', { id: row.suitId }, 'AllAntiqueRequest', s => s.suits, { expenses, allowed: () => Boolean(suit) || allowed(options.suit.activate)() }));
   });
   await recruits(ctx, options.recruit, true);
 }
 
 /** 宠物培育、喂养和战备室培养只操作服务端给出的队列及材料需求。 */
 export async function pet(ctx, options) {
+  // 独立执行器入口同样遵守日期，不能依赖主调度才获得限制。
+  if (!moduleActive('pet', options, ctx)) return skip(ctx, '常规宠物未到执行日期或已关闭');
   let water = await ctx.query('OnWaterRequest');
   if (options.claim && water.building?.some(b => b.petBreed?.maturePets?.length)) await mutate(ctx, 'GetMaturePetRequest', {}, 'OnWaterRequest', s => s.building?.map(b => b.petBreed));
   water = await ctx.query('OnWaterRequest');
@@ -274,6 +302,8 @@ async function destroy(ctx, options, pets) {
 
 /** 装备领取后刷新制造状态，只有用户选择且材料足够的配方才开工。 */
 export async function equip(ctx, options) {
+  // 收装、制造、加速与分解共同受整个装备模块的日期模式约束。
+  if (!moduleActive('equip', options, ctx)) return skip(ctx, '装备未到执行日期或已关闭');
   const water = await ctx.query('OnWaterRequest');
   for (const b of water.building ?? []) {
     if (!b.equipMaking) continue;
@@ -352,12 +382,15 @@ function selectMuseumHeroes(ctx, stage, entries, usedHeroIds) {
  *
  * @param {import('./context.mjs').AutomationContext} ctx 当前自动化上下文。
  * @param {object} expedition 当前关卡的远征状态。
+ * @param {number} factor 本次探宝时间倍率；服务端按该倍率同时扣除基础材料。
  * @returns {Array<[string, number]>|null} 已知且库存足够的消耗；未知或不足时返回 null。
  */
-function museumStartCosts(ctx, expedition) {
-  const expenses = costs(expedition?.cost?.asset, ctx.protocol);
-  // 服务端未下发有效正数成本时，无法证明本次启动所需材料；不要把 0 或未知资源当成可发送依据。
-  if (!expenses.length || !expenses.every(([item, num]) => item && Number.isFinite(num) && num > 0) || !ctx.enough(expenses)) return null;
+function museumStartCosts(ctx, expedition, factor) {
+  const baseExpenses = costs(expedition?.cost?.asset, ctx.protocol);
+  // MuseumInfo 只给出单倍基础材料；倍数探宝会按请求 factor 同步放大消耗，必须先按实际扣料量校验。
+  const expenses = baseExpenses.map(([item, num]) => [item, num * factor]);
+  // 服务端未下发有效正数成本或倍率时，无法证明本次启动所需材料；不要把 0 或未知资源当成可发送依据。
+  if (!Number.isSafeInteger(factor) || factor < 1 || !expenses.length || !expenses.every(([item, num]) => item && Number.isFinite(num) && num > 0) || !ctx.enough(expenses)) return null;
   return expenses;
 }
 
@@ -405,7 +438,7 @@ export async function museum(ctx, options) {
       skip(ctx, `关卡 ${stage.stageId} 没有可用探宝英雄`);
       continue;
     }
-    const expenses = museumStartCosts(ctx, stage.expedition);
+    const expenses = museumStartCosts(ctx, stage.expedition, options.factor);
     if (!expenses) {
       skip(ctx, `关卡 ${stage.stageId} 缺少探宝消耗或库存不足`);
       continue;

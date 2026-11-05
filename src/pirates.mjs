@@ -2,6 +2,44 @@ import { displayMaterial } from './config.mjs';
 import { normalize } from './worlds.mjs';
 import { createHmac, randomBytes } from 'node:crypto';
 
+const PIRATE_SWEEP_VIP_EFFECT = '野怪扫荡次数';
+// 非 VIP 角色已实测每天拥有 10 次基础扫荡；VipLevelCfg 配置的是在此基础上的额外次数。
+const PIRATE_BASE_DAILY_SWEEP_LIMIT = 10;
+
+/**
+ * 从当前 CDN 配置和当前角色 VIP 等级读取海盗扫荡日总上限。
+ *
+ * @param {Record<string, {data?: object[]}>|null|undefined} tables 当前客户端使用的配置表。
+ * @param {unknown} vipLevel 当前角色最新的 VIP 等级。
+ * @returns {number} 该角色当天可扫荡的海盗次数上限。
+ */
+export function pirateDailySweepLimit(tables, vipLevel) {
+  if (!Number.isSafeInteger(vipLevel) || vipLevel < 0) throw new Error('未能读取当前角色的 VIP 等级');
+  // VIP0 没有配置行，直接使用所有角色共有的基础次数。
+  if (vipLevel === 0) return PIRATE_BASE_DAILY_SWEEP_LIMIT;
+  const vip = tables?.VipLevelCfg?.data?.find((row) => row.level === vipLevel);
+  const effect = vip?.effects?.find(([name]) => name === PIRATE_SWEEP_VIP_EFFECT);
+  const bonus = effect?.[1];
+  // 每个 VIP 档位的额外次数由客户端下发的配置定义；缺失时不能沿用上一档或猜测加成。
+  if (!Number.isSafeInteger(bonus) || bonus < 0) throw new Error('当前 VIP 等级没有海盗扫荡次数配置');
+  return PIRATE_BASE_DAILY_SWEEP_LIMIT + bonus;
+}
+
+/**
+ * 将服务端累计的海盗扫荡次数转换为角色当天可展示、可执行的额度。
+ *
+ * @param {unknown} sweepTimes 服务端返回的今日已扫荡次数。
+ * @param {unknown} dailyLimit 根据当前角色 VIP 配置读取的当日上限。
+ * @returns {{dailyLimit: number, used: number, remaining: number}} 当日上限、已使用和剩余次数。
+ */
+export function pirateSweepProgress(sweepTimes, dailyLimit) {
+  // 缺失或超出当日上限的响应不能猜测为可扫荡，避免协议变化后重复发送写请求。
+  if (!Number.isSafeInteger(dailyLimit) || dailyLimit < 0) throw new Error('当前角色海盗扫荡上限无效');
+  if (!Number.isSafeInteger(sweepTimes) || sweepTimes < 0 || sweepTimes > dailyLimit)
+    throw new Error('服务端返回的海盗今日已扫荡次数无效');
+  return { dailyLimit, used: sweepTimes, remaining: dailyLimit - sweepTimes };
+}
+
 // WorldIdRule.getSeason in the game client.
 export async function pirateTracker(client, config, player) {
   const worldId = normalize(player?.worldId);

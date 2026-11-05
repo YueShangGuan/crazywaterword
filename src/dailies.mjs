@@ -427,12 +427,20 @@ export async function surveyDailies(client, protocol, { config = null, player = 
 // claimRewards 走的是「收尾」：驱动动作发完服务端才更新完成数，所以这里重新问一次
 // DailyTaskInfoResponse，先把达标任务的奖励领了（奖励里的活跃度会把活跃度顶上去），
 // 再领活跃度宝箱。少了这一步，任务做完了奖励还挂在服务端上。
-/** 执行旧日常入口；付费请求必须进入账号共享预算，停止后不继续领取。 */
-export async function runDailies(client, protocol, survey, { allowMutate = false, allowPaid = false, claimRewards = true, config = null, timeout = 15000, accountId, player, actionExecutor, moduleExecutor, handledIds = [], stop = { aborted: false }, onStep, allowAction = () => true } = {}) {
+/**
+ * 执行旧日常入口；付费请求必须进入账号共享预算，停止后不继续领取。
+ *
+ * @param {object} client 当前游戏连接。
+ * @param {object} protocol 当前协议定义。
+ * @param {object} survey 日常只读调研结果。
+ * @param {object} options 执行权限、共享上下文与结果回调。
+ * @returns {Promise<object[]>} 每个日常动作的执行结果。
+ */
+export async function runDailies(client, protocol, survey, { allowMutate = false, allowPaid = false, claimRewards = true, config = null, timeout = 15000, accountId, player, actionExecutor, moduleExecutor, handledIds = [], stop = { aborted: false }, onStep, allowAction = () => true, context = null } = {}) {
   if (!allowMutate) throw new Error('完成日常会改变账号状态，需要 --yes');
   if (!actionExecutor) {
     const { gameplaySession, dailyGameplay } = await import('./automation/service.mjs');
-    return gameplaySession({ accountId, player, client, protocol, config: config ?? survey.config, stop, work: (execute, ctx) => runDailies(client, protocol, survey, { allowMutate, allowPaid, claimRewards, config, timeout, actionExecutor: execute, moduleExecutor: id => dailyGameplay(ctx, id), handledIds, stop, onStep, allowAction }) });
+    return gameplaySession({ accountId, player, client, protocol, config: config ?? survey.config, stop, work: (execute, ctx) => runDailies(client, protocol, survey, { allowMutate, allowPaid, claimRewards, config, timeout, actionExecutor: execute, moduleExecutor: id => dailyGameplay(ctx, id), handledIds, stop, onStep, allowAction, context: ctx }) });
   }
   const results = [];
   for (const entry of survey.tasks) {
@@ -448,6 +456,39 @@ export async function runDailies(client, protocol, survey, { allowMutate = false
         }
         continue;
       }
+    }
+    if (entry.status !== 'done' && entry.task.id === 1007 && context?.settings?.spending?.dailiesDiscountTickets2x === true) {
+      // 2 折目标券是独立授权：不受 shop 日常开关、--paid 与普通钻石额度影响，但仍复用共享账本和实时余额检查。
+      const { runPriorityDiscountShop } = await import('./automation/service.mjs');
+      const priority = await runPriorityDiscountShop(context, actionExecutor);
+      for (const outcome of priority.results) { results.push(outcome); onStep?.(outcome); }
+      if (priority.targetBought || priority.failed) continue;
+
+      // 免费刷新耗尽且未命中目标券时，重新读取最后一页，再按旧逻辑挑最便宜商品。
+      const shop = await context.query('DiscountShopRequest');
+      const items = (shop?.shopItem ?? []).filter(item => !item.isBuy);
+      if (!items.length) {
+        const outcome = { id: entry.task.id, title: entry.task.title, skipped: true, reason: '折扣商店没有可买商品' };
+        results.push(outcome); onStep?.(outcome); continue;
+      }
+      const cheapest = items
+        .map(item => ({ ...item, realPrice: Math.floor(item.price * item.discount) }))
+        .sort((a, b) => a.realPrice - b.realPrice)[0];
+      const fallback = { request: 'DiscountShopBuyRequest', body: { id: cheapest.id }, response: null, note: '购买折扣商品' };
+      if (!allowPaid) {
+        const outcome = { id: entry.task.id, title: entry.task.title, request: fallback.request, skipped: true, reason: '需要付费，未开 allowPaid' };
+        results.push(outcome); onStep?.(outcome); continue;
+      }
+      if (!allowAction(entry.task.id, fallback)) continue;
+      try {
+        const body = await actionExecutor(fallback);
+        const outcome = { id: entry.task.id, title: entry.task.title, request: fallback.request, note: fallback.note, ok: true, body };
+        results.push(outcome); onStep?.(outcome);
+      } catch (error) {
+        const outcome = { id: entry.task.id, title: entry.task.title, request: fallback.request, note: fallback.note, ok: false, error: error.message };
+        results.push(outcome); onStep?.(outcome);
+      }
+      continue;
     }
     if (!entry.actions?.length) continue;
     // 折扣商店的旧计划曾标为 ready，仍须按真实请求识别消费，不能靠显示状态绕过。

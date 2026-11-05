@@ -52,7 +52,6 @@ export function rewardSchedule(client) {
       case 'SCAllActivity':
         clearTask('weekGift');
         clearTask('weekTimes');
-        clearTask('weekPass');
         clearTask('newbieLogin');
         break;
       case 'SCNewbieActivityUpdate': clearTask('newbieLogin'); break;

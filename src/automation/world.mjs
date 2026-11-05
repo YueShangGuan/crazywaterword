@@ -1,12 +1,15 @@
 import { amount, idString } from './context.mjs';
 import { costs, idleFleets, inWindows, mutate, repeat, rewardAction, skip, succeeded } from './common.mjs';
 import { claimPass } from './battle.mjs';
+import { pirateDailySweepLimit, pirateSweepProgress } from '../pirates.mjs';
 
 const SPEED_UP_RUBY_TYPE = 1;
 const SPEED_UP_ITEM_TYPE = 2;
 const REPAIR_RUBY_PER_MINUTE = 10;
 const SPEED_UP_FLEET_RUBY_COST = 30;
 const REPAIR_SPEED_UP_ITEM_FAILURE_LIMIT = 3;
+// 城战在线礼包按服务端计数逐档解锁，每个城战日最多 7 档。
+const CITY_WAR_ONLINE_REWARD_LIMIT = 7;
 // 海商王服务端仅在上海时间 10:00 至 21:59 接受交易及相关操作。
 const TRADE_EXECUTION_HOURS = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21];
 
@@ -163,7 +166,7 @@ export async function world(ctx, options) {
     const campaignId = reports.reports?.filter(r => !r.received && r.rewards).map(r => idString(r.uid)) ?? [];
     if (campaignId.length) await mutate(ctx, 'QuickGotCampaignReportRequest', { campaignId, all: true }, 'CampaignReportsRequest', s => s.reports?.map(r => [idString(r.uid), r.received]), { stateBody: { pageNo: 0 } });
   }
-  // 万吨货轮在整点出现且由用户指定舰队抢占；必须早于维修等会改变舰队状态的操作。
+  // 当前存在万吨货轮即可按规则派遣；必须早于维修等会改变舰队状态的操作。
   if (options.merchantShip.enabled) await merchantShip(ctx, options.merchantShip);
   // 维修加速只针对城战中已明确指定的舰队，避免同一开关意外消耗其他舰队的加速资源。
   const cityWarRepairFleetIds = new Set(options.cityWar.fleets.filter(rule => rule.enabled && rule.buildingId).map(rule => rule.buildingId));
@@ -234,80 +237,80 @@ const TEN_THOUSAND_TON_SHIP_COLOR = 5;
 const CITY_WAR_EXECUTION_WINDOW = [{ start: '20:00', end: '20:59' }];
 
 /**
- * Returns the current Shanghai hour key and minute so the ship event follows the
- * game schedule instead of the computer's local timezone.
+ * 按货轮 UID 保存下次派遣时间，跨小时和循环重启仍遵守间隔；0 表示同一目标不重试。
  *
  * @param {import('./context.mjs').AutomationContext} ctx Current execution context.
- * @returns {{key: string, minute: number}} Shanghai hour identity and minute.
+ * @param {{targetUid: string, retryMinutes: number}} attempt 当前目标和重试间隔。
  */
-function merchantShipPeriod(ctx) {
-  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
-  }).formatToParts(ctx.now()).filter(part => part.type !== 'literal').map(part => [part.type, part.value]));
-  return { key: `${parts.year}-${parts.month}-${parts.day}T${parts.hour}`, minute: Number(parts.minute) };
-}
-
-/**
- * Schedules the next retry only within the current Shanghai hour. The retained
- * schedule survives loop restarts, which prevents duplicate dispatches during
- * the opening minute and preserves AutoJs's configurable recapture interval.
- *
- * @param {import('./context.mjs').AutomationContext} ctx Current execution context.
- * @param {{key: string, retryMinutes: number}} attempt Attempt identity and interval.
- */
-function scheduleMerchantShipRetry(ctx, { key, retryMinutes }) {
+function scheduleMerchantShipRetry(ctx, { targetUid, retryMinutes }) {
   if (ctx.dryRun) return;
-  const now = ctx.now();
-  const retryAt = retryMinutes > 0 ? now + retryMinutes * 60_000 : 0;
-  // China has no daylight-saving change; epoch hour boundaries remain Shanghai hour boundaries.
-  const hourEndsAt = Math.floor(now / 3_600_000 + 1) * 3_600_000;
-  ctx.memory('merchantShip.schedule', { key, retryAt: retryAt < hourEndsAt ? retryAt : 0 });
+  // 间隔归属这艘货轮，不在整点清零，避免跨小时后调度永久失效。
+  const retryAt = retryMinutes > 0 ? ctx.now() + retryMinutes * 60_000 : 0;
+  ctx.memory('merchantShip.schedule', { targetUid, retryAt });
 }
 
 /**
- * Sends the configured expedition ships to the currently listed 万吨货轮.
+ * 判断万吨货轮是否含有任一配置的材料类奖励。
+ *
+ * @param {{reward?: {asset?: Array<{type?: number, id?: string}>}}} target 当前万吨货轮。
+ * @param {string[]} rewardMaterials 用户指定的材料名称。
+ * @returns {boolean} 是否命中任一 type=0 的材料奖励。
+ */
+function merchantShipHasRewardMaterial(target, rewardMaterials) {
+  const expected = new Set(rewardMaterials);
+  return target.reward?.asset?.some(asset => asset.type === 0 && expected.has(asset.id)) ?? false;
+}
+
+/**
+ * 每轮查询当前万吨货轮，按目标的重试间隔派遣用户选中的空闲远征舰队。
  * Capture 20261029-180249 proves this UI event is TreasureLoot color 5 and is
  * dispatched through TreasureLootSendFleetsRequest, not a separate merchant API.
  *
  * @param {import('./context.mjs').AutomationContext} ctx Current execution context.
- * @param {{retryMinutes: number, fleets: Array<{enabled: boolean, buildingId: string}>}} options Saved account settings.
+ * @param {{retryMinutes: number, rewardMaterials: string[], fleets: Array<{enabled: boolean, buildingId: string}>}} options Saved account settings.
  */
 async function merchantShip(ctx, options) {
   // 城战和万吨货轮都会占用远征船；城战窗口内保留全部闲置舰队给联盟行动。
   if (inWindows(CITY_WAR_EXECUTION_WINDOW, ctx.now())) return skip(ctx, '城战时段保留舰队，不派遣万吨货轮');
-  const period = merchantShipPeriod(ctx);
-  const saved = ctx.memory('merchantShip.schedule');
-  const dueAtHourStart = saved?.key !== period.key && period.minute === 0;
-  const dueForRetry = saved?.key === period.key && saved.retryAt > 0 && ctx.now() >= saved.retryAt;
-  if (!dueAtHourStart && !dueForRetry) return;
-
   const selected = options.fleets.filter(rule => rule.enabled && rule.buildingId);
   if (!selected.length) {
     skip(ctx, '搁浅商船未配置出征舰队');
-    scheduleMerchantShipRetry(ctx, { key: period.key, retryMinutes: options.retryMinutes });
     return;
   }
   const state = await ctx.query('TreasureLootListRequest');
   const target = state.treasure?.find(ship => ship.color === TEN_THOUSAND_TON_SHIP_COLOR);
   if (!target) {
-    skip(ctx, '本时段未发现万吨货轮');
-    scheduleMerchantShipRetry(ctx, { key: period.key, retryMinutes: options.retryMinutes });
+    skip(ctx, '当前未发现万吨货轮');
     return;
   }
+  if (options.rewardMaterials.length && !merchantShipHasRewardMaterial(target, options.rewardMaterials)) {
+    // 空列表明确表示不筛选；已配置但不命中时必须在读取或写入重试调度前退出，保留该目标后续命中的派遣资格。
+    skip(ctx, `万吨货轮奖励未出现设置材料：${options.rewardMaterials.join('、')}`);
+    return;
+  }
+  const targetUid = idString(target.uid);
+  const saved = ctx.memory('merchantShip.schedule');
+  // 只限制同一艘货轮；新目标立即参与，不能被上一艘货轮的等待时间挡住。
+  if (saved?.targetUid === targetUid && (saved.retryAt === 0 || ctx.now() < saved.retryAt)) return;
+
+  let attempted = false;
   for (const rule of selected) {
     const fleet = (await idleFleets(ctx)).find(row => row.buildingId === rule.buildingId);
     if (!fleet) continue;
+    attempted = true;
     const result = await dispatch(ctx, 'TreasureLootSendFleetsRequest', { uid: target.uid, fleetBuildingIds: [fleet.buildingId] }, [fleet]);
     if (!succeeded(result)) {
-      scheduleMerchantShipRetry(ctx, { key: period.key, retryMinutes: options.retryMinutes });
+      scheduleMerchantShipRetry(ctx, { targetUid, retryMinutes: options.retryMinutes });
       return;
     }
   }
-  scheduleMerchantShipRetry(ctx, { key: period.key, retryMinutes: options.retryMinutes });
+  // 未找到空闲舰队不算派遣尝试，下一轮恢复空闲后仍应立即执行。
+  if (attempted) scheduleMerchantShipRetry(ctx, { targetUid, retryMinutes: options.retryMinutes });
+  else skip(ctx, '万吨货轮已出现，所选舰队当前无空闲舰队');
 }
 
 /**
- * 海盗挑战只选已解锁最高一档，扫荡只选已有击败记录且服务端明确给出剩余次数的目标。
+ * 海盗挑战只选已解锁最高一档；扫荡按每种海盗的明确次数分配执行，直至达到当天目标或服务端上限。
  *
  * @param {import('./context.mjs').AutomationContext} ctx 自动化执行上下文。
  * @param {object} options 当前账号的海盗自动化设置。
@@ -317,36 +320,49 @@ async function pirates(ctx, options) {
   if (!inWindows([options.attackTime], ctx.now())) return skip(ctx, '不在海盗执行时段');
   const records = (await ctx.query('PirateKillRecordRequest')).records ?? [];
   const state = await ctx.query('AllPirateRequest');
-  const reportedSweepTimes = state.sweepTimes;
-  // 扫荡次数是服务端实时限额。字段缺失时不能把默认值猜成可扫荡，避免重复触发拒绝。
-  if (options.sweep && (!Object.hasOwn(state, 'sweepTimes') || !Number.isInteger(reportedSweepTimes))) {
-    skip(ctx, '服务端未返回海盗可扫荡次数，已记录并跳过扫荡');
-    return;
+  let sweepProgress;
+  // sweepTimes 是今日已扫次数，不是剩余次数；字段异常时停止，不能将不确定状态当成未使用额度。
+  if (options.sweep) {
+    // VIP 推送优先于登录快照，确保角色升档后立即采用“基础 10 次 + VIP 配置额外次数”的新上限。
+    const vipLevel = ctx.pushes.get('SCVipUpdate')?.vipLevel ?? ctx.player.vip?.vipLevel;
+    try { sweepProgress = pirateSweepProgress(state.sweepTimes, pirateDailySweepLimit(ctx.config.tables, vipLevel)); }
+    catch (error) { skip(ctx, error.message); return; }
   }
-  let remainingSweepTimes = reportedSweepTimes;
-  for (const type of new Set([...options.attackTypes, ...options.sweepTypes])) {
+  for (const type of new Set(options.attackTypes)) {
     const killed = records.find(r => r.type === type)?.maxKilledLevel;
     if (killed === undefined) { skip(ctx, `海盗类型 ${type} 缺少击败记录`); continue; }
     const targets = (state.pirates ?? []).filter(p => p.type === type);
-    if (options.attack && options.attackTypes.includes(type)) {
+    if (options.attack) {
       const target = targets.filter(p => p.level <= killed + 1).sort((a, b) => b.level - a.level)[0];
       const fleets = await idleFleets(ctx);
       if (target && fleets.length) if (!succeeded(await dispatch(ctx, 'ChallengePirateRequest', { uid: target.uid, cityId: target.cityId, fleetBuildingIds: fleets.map(f => f.buildingId) }, fleets))) return;
     }
-    if (options.sweep && options.sweepTypes.includes(type)) {
-      // 同一轮可配置多个海盗类型；次数耗尽后不能再向后续类型继续发扫荡请求。
-      if (remainingSweepTimes <= 0) {
-        skip(ctx, '海盗可扫荡次数不足，停止本轮扫荡');
-        return;
-      }
-      const target = targets.filter(p => p.level <= killed).sort((a, b) => b.level - a.level)[0];
-      if (target) {
-        const result = await mutate(ctx, 'PirateSweepRequest', { uid: target.uid, cityId: target.cityId }, 'AllPirateRequest', s => s.sweepTimes);
-        // 成功回读才消耗本轮配额；被拒绝或状态未确认时立即停止，不能尝试其他类型。
-        if (!succeeded(result)) return;
-        remainingSweepTimes -= 1;
-      }
-    }
+  }
+  if (!options.sweep) return;
+  const sweepPlans = [];
+  for (const plan of options.sweepTypes) {
+    const type = plan.type;
+    const killed = records.find(r => r.type === type)?.maxKilledLevel;
+    if (killed === undefined) { skip(ctx, `海盗类型 ${type} 缺少击败记录`); continue; }
+    const target = (state.pirates ?? []).filter(p => p.type === type && p.level <= killed).sort((a, b) => b.level - a.level)[0];
+    if (target) sweepPlans.push({ ...plan, target });
+    else skip(ctx, `海盗类型 ${type} 没有可扫荡的已击败目标`);
+  }
+  if (!sweepPlans.length) return;
+  let remaining = Math.min(sweepProgress.remaining, Math.max(0, options.dailySweepLimit - sweepProgress.used));
+  if (!remaining) return skip(ctx, '海盗今日扫荡次数已达到设置上限');
+  for (const plan of sweepPlans) {
+    const times = Math.min(plan.times, remaining);
+    if (!times) break;
+    await repeat(ctx, times, async () => {
+      const result = await mutate(ctx, 'PirateSweepRequest', { uid: plan.target.uid, cityId: plan.target.cityId }, 'AllPirateRequest', value => value.sweepTimes);
+      // 成功回读必须体现“已扫次数”递增；被拒绝或状态未确认时立即停止当前类型。
+      if (!succeeded(result)) return false;
+      remaining -= 1;
+      return true;
+    });
+    // 预览每轮只产生一条计划，不能继续为后续类型伪造计划；真实执行则继续按配置顺序。
+    if (ctx.dryRun || remaining <= 0) break;
   }
 }
 
@@ -477,13 +493,30 @@ async function treasure(ctx, options) {
 
 /** 城战仅在上海时间 20:00–21:00 且服务器确认开放后执行，城市记录按角色业务日隔离。 */
 async function cityWar(ctx, options) {
-  if (!inWindows(CITY_WAR_EXECUTION_WINDOW, ctx.now())) return skip(ctx, '不在城战执行时段（上海时间 20:00–21:00）');
+  if (!inWindows(CITY_WAR_EXECUTION_WINDOW, ctx.now())) return skip(ctx, '不在城战执行时段（20:00–21:00）');
   // 先以服务端宣战状态二次确认，防止活动临时调整时在线奖请求被拒绝。
   const war = await ctx.query('WarDeclarationRequest');
   if (!(war.startTime <= ctx.now() / 1000 && war.endTime > ctx.now() / 1000)) return skip(ctx, '不在城战时段');
-  if (options.online && !ctx.count('cityWar.online')) {
-    const result = await rewardAction(ctx, 'GotWorldOnlineRwdRequest');
-    if (result.status === 'success' || result.status === 'rejected') ctx.count('cityWar.online', 1);
+  if (options.online) {
+    // 服务端计数代表已经领取的礼包档位；每次模块运行都读回最新值，才能在下一档倒计时结束后继续领取。
+    const counters = (await ctx.query('CounterInfoRequest')).counters ?? [];
+    let claimed = amount(counters.find(counter => counter.type === 'DAILY_WORLD_ONLINE_RWD')?.num);
+    while (claimed < CITY_WAR_ONLINE_REWARD_LIMIT) {
+      const before = claimed;
+      const result = await ctx.action('GotWorldOnlineRwdRequest', {}, {
+        response: 'GotRewardResponse',
+        confirm: async () => {
+          const latest = (await ctx.query('CounterInfoRequest')).counters ?? [];
+          return amount(latest.find(counter => counter.type === 'DAILY_WORLD_ONLINE_RWD')?.num) > before;
+        },
+      });
+      // 倒计时未到时服务端会拒绝本档；停止本轮，等待下一次城战窗口内的状态刷新。
+      if (result.status !== 'success') break;
+      const latest = (await ctx.query('CounterInfoRequest')).counters ?? [];
+      const next = amount(latest.find(counter => counter.type === 'DAILY_WORLD_ONLINE_RWD')?.num);
+      if (next <= before) break;
+      claimed = next;
+    }
   }
   if (war.assembleCityId && ctx.pushes.get('SCAssembleCity')?.cityId !== war.assembleCityId && options.fleets.some(f => f.enabled)) {
     // 集结城市由本次宣战状态提供，等待明确集结推送后才继续派遣。
@@ -573,11 +606,14 @@ function tradeRemainingCapacity(ctx, state) {
  * TradeCityReportRequest 没有专用回包，必须用 TradeCityResponse.isReport 读回确认；
  * TradeMoveRequest 则以最新抓包确认的 TradeMoveResponse.cargo 作为状态闭环。
  * 贸易玩法只在服务端允许的上海时间 10:00–22:00 执行，避免发送会被拒绝的请求。
+ * 活动关闭时服务端返回 period=0；没有有效周期就不再处理领奖、升级或交易。
  */
 async function trade(ctx, options) {
   // 在首次 TradeInfoRequest 前拦截，保证关闭窗口内不会产生任何贸易协议请求。
-  if (!hourAllowed(ctx, TRADE_EXECUTION_HOURS)) return skip(ctx, '不在贸易执行时段（上海时间 10:00–22:00）');
+  if (!hourAllowed(ctx, TRADE_EXECUTION_HOURS)) return skip(ctx, '不在贸易执行时段（10:00–22:00）');
   let state = await ctx.query('TradeInfoRequest');
+  // 每日执行窗口不代表本期活动已开放；先拦截关闭活动的空状态，避免连续误报缺配置或缺城市。
+  if (!Number.isSafeInteger(state.period) || state.period <= 0) return skip(ctx, '海商王活动未开放');
   if (options.claim) {
     if (ctx.rows('TradeDayRewardCfg').some(r => r.id > state.gotReportRwdId && r.roleNum <= state.guildReportNum)) await ctx.action('GotTradeReportRequest', {}, { response: 'GotTTradeReportResponse', confirm: async () => (await ctx.query('TradeInfoRequest')).gotReportRwdId > state.gotReportRwdId });
     if (ctx.rows('TradeAchieveRewardCfg').some(r => r.rewardId > state.gotAchieveRwdId && r.target <= state.player?.profit)) await mutate(ctx, 'GotTradeAchievementRequest', {}, 'TradeInfoRequest', s => s.gotAchieveRwdId);
