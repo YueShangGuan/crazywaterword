@@ -33,6 +33,8 @@ export function overviewPage() {
 <div className="who" id="who"><span className="dim">还没连上。点顶部的「连接」，或先去「账号」页添加账号。</span></div>
       <div className="overview-meta"><span id="overview-updated" className="dim" role="status" /><Button id="overview-refresh" variant="outline" size="sm" disabled>立即刷新</Button></div>
     </Panel>
+    <Panel title="收益日报"><div id="income-view" className="income-view"><span className="dim">挂机运行后开始记录</span></div>
+    </Panel>
     <Panel title="资源"><div className="icons" id="res"><span className="dim">连接后显示</span></div>
     </Panel>
     <Panel title="库存"><div className="icons" id="items"><span className="dim">连接后显示</span></div>

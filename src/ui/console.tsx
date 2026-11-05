@@ -26,6 +26,67 @@ export function idlePanel(tasks: AutoTask[]) {
         <div className="dim" id="loop-hint" role="status" />
       </CardContent>
     </Card>
+    <Card>
+      <CardHeader>
+        <CardTitle>断线重连</CardTitle>
+        <CardDescription>只在持续挂机时生效。凭证失效时不会重试。设置按账号保存。</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <form id="reconnect-form" className="settings-form">
+          <div className="task-setting">
+            <label htmlFor="reconnect-enabled">掉线后自动重连</label>
+            <Switch id="reconnect-enabled" className="p-0" disabled />
+          </div>
+          <div className="bar">
+            <label htmlFor="reconnect-base">首次间隔（秒）</label>
+            <Input id="reconnect-base" type="number" min="1" max="3600" step="1" required className="w-24" disabled />
+            <label htmlFor="reconnect-max">最长间隔（秒）</label>
+            <Input id="reconnect-max" type="number" min="1" max="86400" step="1" required className="w-24" disabled />
+            <label htmlFor="reconnect-attempts">最多次数（0 为不限）</label>
+            <Input id="reconnect-attempts" type="number" min="0" max="100000" step="1" required className="w-24" disabled />
+          </div>
+          <div className="bar">
+            <label htmlFor="reconnect-kicked">被顶号后</label>
+            <select id="reconnect-kicked" className="settings-select" disabled>
+              <option value="stop">停止挂机并通知</option>
+              <option value="retry">等待后自动重连</option>
+            </select>
+            <label htmlFor="reconnect-kicked-minutes">等待（分钟）</label>
+            <Input id="reconnect-kicked-minutes" type="number" min="1" max="1440" step="1" required className="w-24" disabled />
+            <Button id="reconnect-save" type="submit" variant="outline" disabled>保存</Button>
+          </div>
+          <p className="dim">选择自动重连时，如果你正在玩游戏，到时间后会被顶下线。</p>
+          <div className="dim" id="reconnect-hint" role="status" />
+        </form>
+      </CardContent>
+    </Card>
+    <Card>
+      <CardHeader>
+        <CardTitle>异常通知</CardTitle>
+        <CardDescription>通过 Webhook 发送，所有账号共用。同一账号的同一事件 30 分钟内只通知一次。</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <form id="notify-form" className="settings-form">
+          <div className="bar">
+            <label htmlFor="notify-webhook">Webhook 地址</label>
+            <Input id="notify-webhook" type="url" placeholder="留空表示不发送" className="settings-url" disabled />
+            <label htmlFor="notify-format">格式</label>
+            <select id="notify-format" className="settings-select" disabled>
+              <option value="generic">通用 JSON</option>
+              <option value="wecom">企业微信、钉钉</option>
+              <option value="feishu">飞书</option>
+            </select>
+          </div>
+          <div id="notify-events" className="task-grid" />
+          <div className="bar">
+            <Button id="notify-save" type="submit" variant="outline" disabled>保存</Button>
+            <Button id="notify-test" type="button" variant="outline" disabled>发送测试通知</Button>
+          </div>
+          <p className="dim">Webhook 消息包含账号备注或昵称，只填写你信任的地址。</p>
+          <div className="dim" id="notify-hint" role="status" />
+        </form>
+      </CardContent>
+    </Card>
     <div className="idle-groups">{Array.from(new Set(tasks.map(t => t.group))).map(group => <Card key={group}>
       <CardHeader><CardTitle>{group}</CardTitle></CardHeader>
       <CardContent className="task-grid">

@@ -31,6 +31,9 @@ import { describeLogError } from './log-errors.mjs';
 import { operationLabels } from './operation-labels.mjs';
 import { automationTasks, defaultFishingGoldReserve, defaultCompassSpinCount, maxCompassSpinCount, taskSettings, worldTaskKey } from './automation.mjs';
 import { rewardSchedule } from './reward-schedule.mjs';
+import { normalizeReconnect, parseReconnect, reconnectDelaySeconds, recoveryDecision } from './reconnect.mjs';
+import { createNotifier, loadNotifySettings, notifyEvents, parseNotifySettings, saveNotifySettings, webhookFormats } from './notify.mjs';
+import { incomeView, readIncomeSnapshot, recordIncome } from './income-report.mjs';
 import { createStageTask } from './stages.mjs';
 import { runAction } from './actions.mjs';
 import { loadStore, saveStore, upsertAccount, removeAccount, setActive, pickAccount, describeAccount, revealAccount, DATA_DIR } from './accounts.mjs';
@@ -38,6 +41,9 @@ import { startCapture, stopCapture, captureState, DEFAULT_PROXY_PORT } from './c
 import { iconIndex, atlasFile, itemIcon, resourceIcon, materialIcon, heroIcon, heroCard, buildingIcon, workerIcon } from './art.mjs';
 
 const LOG_LIMIT = 400;
+const OUTAGE_ALERT_ATTEMPT = 3;
+const TASK_FAILURE_ALERT_ROUNDS = 5;
+const INCOME_SAMPLE_MS = 10 * 60 * 1000;
 const validSpinCount = count => Number.isSafeInteger(count) && count >= 1 && count <= maxCompassSpinCount;
 const overviewQueries = ENTRY_QUERIES.filter(({ name }) => [
   'AllResourceRequest', 'AllItemRequest', 'AllHeroRequest', 'MainTaskInfoRequest', 'DailyTaskInfoRequest',
@@ -62,6 +68,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
   const streams = new Set();
   const sessions = new Map();
   let logId = 0;
+  const notifier = createNotifier({ onError: message => emit(null, 'warn', '通知发送失败：' + message) });
 
   const logLimit = (list) => {
     while (list.length > LOG_LIMIT) list.shift();
@@ -130,6 +137,10 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       appointmentJob: null,
       residentJobs: new Map(),
       progressionJobs: new Map(),
+      recovery: null,
+      failStreak: new Map(),
+      stats: { rounds: 0, failures: 0, outages: 0 },
+      incomeAt: 0,
       log: [],
       loop: {
         running: false,
@@ -139,6 +150,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         tasks: taskSettings(saved?.tasks),
         fishingGoldReserve: saved?.fishingGoldReserve ?? defaultFishingGoldReserve,
         compassSpinCount: saved?.compassSpinCount ?? defaultCompassSpinCount,
+        reconnect: normalizeReconnect(saved?.reconnect),
         controller: null, job: null,
         history: [],
         error: null,
@@ -188,7 +200,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       if (name === 'SCPlayerExpUpdate' && session.client === instance && session.player && body.level > 0) {
         if (session.player.level !== body.level) {
           for (const key of ['adShop', 'weekPass', 'trialSweep', 'dailyRewards', 'chests',
-            'museumCollect', 'museumExplore', 'petCollect', 'petBreed']) rewardSchedule(instance).clearTask(key);
+            'museumCollect', 'museumExplore', 'petCollect', 'petBreed', 'worldOnline', 'tradeTasks', 'seasonTasks',
+            'museumRevenue', 'museumAchievements', 'heroGrowth', 'stageAuto', 'treasureLoot']) rewardSchedule(instance).clearTask(key);
         }
         session.player.level = body.level;
         session.player.exp = body.exp;
@@ -213,6 +226,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         }
       }
       if (name === 'SCAllActivity') {
+        instance.tradeActivity = normalize(body.trade);
         instance.festivals = body.festivalActivities ?? [];
         instance.festivalDay = undefined;
         syncFestivalDay(instance);
@@ -232,14 +246,115 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     instance.on('warn', (message) => emit(session, 'warn', message === 'ping timeout' ? '服务器心跳超时，连接可能已经断了' : message));
     instance.on('fatal', ({ reason }) => {
       const message = reason === 'SCChannelExpired' ? '这个账号在别处登录了，本条连接被顶掉' : `连接被服务器中断（${reason}）`;
-      if (session.client === instance) { session.stages.stop(message); stopLoop(session, message); }
+      instance.fatalReason = reason;
       emit(session, 'error', message);
     });
     instance.on('error', (error) => emit(session, 'error', error.message));
     instance.on('close', () => {
-      if (session.client === instance) { session.stages.stop('连接已断开'); stopLoop(session, '连接已断开'); }
+      connectionLost(session, instance);
       emit(session, 'state', '连接已断开');
     });
+  }
+
+  function alert(session, event, title, message) {
+    const account = loadStore().accounts.find(item => item.id === session.id);
+    const name = account ? describeAccount(account).title : session.id;
+    notifier.send(event, session.id, name + '：' + title, message)
+      .catch(error => emit(session, 'warn', '通知发送失败：' + error.message));
+  }
+
+  function cancelRecovery(session) {
+    const waiting = Boolean(session.recovery?.timer);
+    clearTimeout(session.recovery?.timer);
+    session.recovery = null;
+    return waiting;
+  }
+
+  function connectionLost(session, instance) {
+    if (instance.lostHandled || instance.stopping || session.client !== instance) return;
+    instance.lostHandled = true;
+    const kicked = instance.fatalReason === 'SCChannelExpired';
+    const reason = kicked ? '账号在别处登录，连接被顶掉' : '连接已断开';
+    session.stages.stop(reason);
+    const loop = session.loop;
+    if (!loop.running || loop.controller?.signal.aborted) return;
+    if (loop.rounds !== 0) { stopLoop(session, reason); return; }
+    session.stats.outages += 1;
+    loop.controller.abort();
+    emit(session, 'info', reason);
+    requestRecovery(session, kicked ? 'kicked' : 'network', reason);
+  }
+
+  // 只有持续挂机才恢复。有限轮数的任务和用户主动停止都不会走到这里。
+  function requestRecovery(session, kind, reason) {
+    const settings = session.loop.reconnect;
+    const attempt = (session.recovery?.attempts ?? 0) + 1;
+    const decision = recoveryDecision(settings, kind, attempt);
+    clearTimeout(session.recovery?.timer);
+    if (decision.action === 'stop') {
+      session.recovery = null;
+      saveAutomation(session.id, { enabled: false });
+      if (decision.reason === 'kicked') {
+        emit(session, 'warn', '账号被顶号，已停止挂机。需要时请在挂机页重新开始，或在设置中改为自动重连');
+        alert(session, 'kicked', '账号被顶号', '已停止挂机，需要时请手动恢复。');
+      } else {
+        const message = decision.reason === 'exhausted' ? '已重连 ' + settings.maxAttempts + ' 次仍未恢复，已停止挂机' : '未开启自动重连，已停止挂机';
+        emit(session, 'warn', message);
+        alert(session, 'disconnect', '挂机已停止', message + '（' + reason + '）');
+      }
+      return;
+    }
+    const seconds = reconnectDelaySeconds(settings, attempt, kind);
+    const recovery = { kind, attempts: attempt, reason, nextAt: Date.now() + seconds * 1000, connected: false, timer: null };
+    recovery.timer = setTimeout(() => recoverSession(session, recovery), seconds * 1000);
+    recovery.timer.unref?.();
+    session.recovery = recovery;
+    emit(session, 'info', seconds + ' 秒后自动重连（第 ' + attempt + ' 次）');
+    if (kind === 'kicked' && attempt === 1) alert(session, 'kicked', '账号被顶号', settings.kickedMinutes + ' 分钟后自动重连，这可能把正在玩的游戏顶下线。');
+    if (kind !== 'kicked' && attempt === OUTAGE_ALERT_ATTEMPT) alert(session, 'disconnect', '掉线后仍未恢复', '已尝试重连 ' + attempt + ' 次，会继续重试。原因：' + reason);
+  }
+
+  async function recoverSession(session, recovery) {
+    recovery.timer = null;
+    recovery.nextAt = null;
+    await session.loop.job;
+    if (session.recovery !== recovery || session.loop.running) return;
+    const account = loadStore().accounts.find(item => item.id === session.id);
+    if (session.paused || !account) { cancelRecovery(session); return; }
+    if (!session.client?.connected) {
+      session.client?.stop();
+      session.client = null;
+      session.player = null;
+    }
+    try { startLoop(session, account); }
+    catch (error) { requestRecovery(session, recovery.kind, error.message); }
+  }
+
+  function trackRound(session, summary) {
+    if (session.recovery && !session.recovery.timer) session.recovery = null;
+    const results = [...summary.tasks.results, ...summary.dailies.results, ...summary.world.results];
+    const failed = results.filter(entry => !entry.skipped && entry.ok === false);
+    session.stats.rounds += 1;
+    session.stats.failures += failed.length;
+    const streak = new Map();
+    for (const entry of failed) {
+      const id = entry.key || entry.label || entry.title || entry.step?.label || '自动任务';
+      const count = (session.failStreak.get(id) ?? 0) + 1;
+      streak.set(id, count);
+      if (count === TASK_FAILURE_ALERT_ROUNDS) {
+        alert(session, 'taskFailing', '自动任务连续失败', (entry.label || entry.title || id) + ' 已连续 ' + count + ' 轮失败：' + (entry.error || '未返回原因'));
+      }
+    }
+    session.failStreak = streak;
+    if (Date.now() - session.incomeAt < INCOME_SAMPLE_MS) return;
+    session.incomeAt = Date.now();
+    enqueue(session, async () => {
+      const client = session.client;
+      if (!client?.connected) return;
+      const snapshot = await readIncomeSnapshot(client, session.player);
+      recordIncome(session.id, snapshot, session.stats);
+      session.stats = { rounds: 0, failures: 0, outages: 0 };
+    }).catch(error => emit(session, 'warn', '记录收益日报失败：' + error.message));
   }
 
   // 每次连接把服务端给的昵称/等级/区服写回账号文件，账号列表里就能看到人话标记。
@@ -310,6 +425,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       state: session.client?.snapshot?.().state ?? 'IDLE',
       busy: session.busy,
       looping: session.loop.running,
+      recovering: Boolean(session.recovery?.timer),
     };
   }
 
@@ -643,6 +759,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         removeAccount(store, account.id);
         saveStore(store);
         const removed = sessions.get(account.id);
+        if (removed) cancelRecovery(removed);
         removed?.loop.controller?.abort();
         removed?.stages.stop('账号已删除');
         removed?.client?.stop();
@@ -1162,6 +1279,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         const payload = jsonBody();
         needConfirm(payload);
         const { account, session } = scoped_(parsed);
+        cancelRecovery(session);
         startLoop(session, account, { rounds: payload.rounds ?? 0, everySeconds: payload.everySeconds });
         json(loopView(session));
         return;
@@ -1175,6 +1293,40 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         return;
       }
 
+      if (route === 'POST /api/loop/reconnect') {
+        const { session } = scoped_(parsed);
+        const reconnect = parseReconnect(jsonBody());
+        saveAutomation(session.id, { reconnect });
+        session.loop.reconnect = reconnect;
+        if (!reconnect.enabled && cancelRecovery(session)) {
+          saveAutomation(session.id, { enabled: false });
+          emit(session, 'info', '已关闭自动重连，取消等待中的重连');
+        } else emit(session, 'info', '自动重连设置已保存');
+        json(loopView(session));
+        return;
+      }
+      if (route === 'GET /api/notify') {
+        json({ settings: loadNotifySettings(), events: notifyEvents, formats: webhookFormats });
+        return;
+      }
+      if (route === 'POST /api/notify/save') {
+        const settings = parseNotifySettings(jsonBody());
+        saveNotifySettings(settings);
+        emit(null, 'info', '通知设置已保存');
+        json({ settings });
+        return;
+      }
+      if (route === 'POST /api/notify/test') {
+        const result = await notifier.test();
+        if (result.failures.length) throw new Error(result.failures.join('；'));
+        emit(null, 'info', '测试通知已发送');
+        json(result);
+        return;
+      }
+      if (route === 'GET /api/income') {
+        json(incomeView(scoped_(parsed).session.id));
+        return;
+      }
       if (route === 'POST /api/loop/compass-spin-count') {
         const { session } = scoped_(parsed);
         const { compassSpinCount } = jsonBody();
@@ -1230,6 +1382,10 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
   }
 
   function stopLoop(session, reason) {
+    if (cancelRecovery(session)) {
+      if (!session.paused) saveAutomation(session.id, { enabled: false });
+      emit(session, 'info', reason);
+    }
     const loop = session.loop;
     if (!loop.running || loop.controller.signal.aborted) return;
     if (!session.paused) saveAutomation(session.id, { enabled: false });
@@ -1250,10 +1406,18 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       history: [], error: null, controller: new AbortController() });
     const { signal } = loop.controller;
     emit(session, 'info', `自动挂机开始，每 ${everySeconds} 秒检查一次`);
+    let credentialFailed = false, retryReason = null;
     loop.job = (async () => {
       try {
         const client = await ensureConnected(session, account);
         if (signal.aborted) return;
+        if (session.recovery && !session.recovery.connected) {
+          session.recovery.connected = true;
+          emit(session, 'info', '已自动重连，继续挂机');
+          if (session.recovery.attempts >= OUTAGE_ALERT_ATTEMPT || session.recovery.kind === 'kicked') {
+            alert(session, 'recovered', '已恢复挂机', '重连 ' + session.recovery.attempts + ' 次后恢复。');
+          }
+        }
         const { appId, channelId, originVersion } = account.login?.eworldClientInfo ?? {};
         await runLoop(client, protocol, { config: loadConfigSafe(), player: session.player,
           adChannel: { clientInfo: { appId, channelId, originVersion }, language: account.login?.language },
@@ -1262,7 +1426,9 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
           isEnabled: key => loop.tasks[key] === true,
           getFishingGoldReserve: () => loop.fishingGoldReserve,
           getCompassSpinCount: () => loop.compassSpinCount,
+          isStageBusy: () => session.stages.view().running,
           onRound(summary) {
+            trackRound(session, summary);
             if (summary.world.factories?.length) {
               try {
                 fs.writeFileSync(factoryReportFile(session.id), JSON.stringify({ time: new Date().toLocaleString('zh-CN'), lines: summary.world.factories }));
@@ -1284,14 +1450,25 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       } catch (error) {
         if (!signal.aborted) {
           loop.error = error.message;
-          saveAutomation(account.id, { enabled: false });
-          emit(session, 'error', `自动挂机中止：${error.message}`);
+          if (error.loginResponse) credentialFailed = true;
+          else if (rounds === 0 && loop.reconnect.enabled) retryReason = error.message;
+          else {
+            saveAutomation(account.id, { enabled: false });
+            alert(session, 'loopError', '挂机异常停止', error.message);
+          }
+          emit(session, retryReason ? 'warn' : 'error', `自动挂机中止：${error.message}`);
         }
       } finally {
         loop.running = false;
         loop.controller = null;
         loop.job = null;
         emit(session, 'info', '自动挂机结束');
+        if (credentialFailed) {
+          cancelRecovery(session);
+          saveAutomation(account.id, { enabled: false });
+          emit(session, 'error', '服务器拒绝登录，凭证可能已失效。请在账号页重新采集后再开始挂机');
+          alert(session, 'credential', '登录凭证可能已失效', '服务器拒绝登录，挂机已停止。请重新采集账号凭证。');
+        } else if (retryReason) requestRecovery(session, session.recovery?.kind === 'kicked' ? 'kicked' : 'network', retryReason);
       }
     })();
   }
@@ -1306,6 +1483,9 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         key, label, group, enabled: loop.tasks[key], nextCheck: loop.tasks[key] ? rewards?.nextCheck(key) : null,
       })),
       fishingGoldReserve: loop.fishingGoldReserve,
+      reconnect: loop.reconnect,
+      recovery: session.recovery ? { kind: session.recovery.kind, attempts: session.recovery.attempts,
+        nextAt: session.recovery.nextAt, reason: session.recovery.reason } : null,
       rounds: loop.rounds,
       completed: loop.completed,
       everyMs: loop.everyMs,
@@ -1339,6 +1519,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       }),
     close: () => {
       for (const session of sessions.values()) {
+        cancelRecovery(session);
         session.loop.controller?.abort();
         session.stages.stop('控制台已关闭');
         session.client?.stop();

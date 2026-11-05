@@ -7,6 +7,7 @@ const componentCss = readFileSync(new URL('./ui/dist/theme.css', import.meta.url
 const consoleCss = readFileSync(new URL('./console.css', import.meta.url), 'utf8');
 const progressionScript = readFileSync(new URL('./ui/progression.js', import.meta.url), 'utf8');
 const activitiesScript = readFileSync(new URL('./ui/activities.js', import.meta.url), 'utf8');
+const connectionScript = readFileSync(new URL('./ui/connection.js', import.meta.url), 'utf8');
 
 export const PAGE = `<!doctype html>
 <html lang="zh-CN">
@@ -554,6 +555,7 @@ function renderOverviewMeta() {
     : '更新于 ' + time + '，每 20 秒自动刷新';
 }
 async function refreshOverview() {
+  if (!$('tab-overview').classList.contains('hidden')) refreshIncome();
   if (overviewPending || claiming || !current || snapshot.paused || disconnected.has(current) || document.hidden || $('tab-overview').classList.contains('hidden')) return;
   const account = current;
   overviewPending = true;
@@ -690,8 +692,10 @@ function renderLoop(data) {
   $('loop-every').disabled = $('loop-rounds').disabled = data.running;
   $('loop-start').disabled = data.running;
   $('loop-stop').disabled = !data.running || data.stopping;
+  renderReconnect(data);
   $('loop-hint').textContent = (data.running ? '挂机中，已完成 ' : '未在挂机，累计 ') + data.completed + ' 轮' + (data.error ? '，已中止' : '');
   if (data.stopping) $('loop-hint').textContent = '正在暂停，等待在途请求结束';
+  if (data.recovery?.nextAt) $('loop-hint').textContent = '连接中断，' + logTime.format(data.recovery.nextAt) + ' 第 ' + data.recovery.attempts + ' 次自动重连';
 }
 
 async function refreshLoop() {
@@ -1431,6 +1435,7 @@ $('cap-stop').onclick = async () => {
 // ---- 启动 ------------------------------------------------------------------
 ${activitiesScript}
 ${progressionScript}
+${connectionScript}
 document.querySelectorAll('[data-subtabs]').forEach((group) => {
   const tabs = [...group.querySelectorAll('[role=tab]')];
   const choose = (tab, focus) => {

@@ -22,5 +22,7 @@ export const operationLabels = {
   '/api/tasks': '查看任务', '/api/tasks/run': '领取任务奖励',
   '/api/stages': '查看推关进度', '/api/stages/start': '开始推关', '/api/stages/stop': '停止推关',
   '/api/loop': '查看挂机设置', '/api/loop/start': '开始挂机', '/api/loop/stop': '暂停挂机',
+  '/api/loop/reconnect': '设置自动重连', '/api/notify': '读取通知设置', '/api/notify/save': '保存通知设置', '/api/notify/test': '发送测试通知',
+  '/api/income': '读取收益日报',
   '/api/loop/task': '修改自动任务', '/api/loop/fishing-reserve': '设置钓具预留金币', '/api/loop/compass-spin-count': '设置罗盘抽奖券用量',
 };

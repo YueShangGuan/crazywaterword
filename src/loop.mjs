@@ -29,6 +29,10 @@ import { claimRewards } from './claim-rewards.mjs';
 import { claimWeekly, runLinkage, readWeekOrder, weekSchedule } from './activities.mjs';
 import { claimFestivalRewards, claimWeeklyRewards, claimVipDaily, festivalRewardKeys, weeklyRewardKeys } from './free-rewards.mjs';
 import { claimCampaignReports, claimOpenRanks } from './pirate-board.mjs';
+import { claimExtraRewards, extraRewardKeys } from './extra-rewards.mjs';
+import { serviceGuildAid } from './guild-aid.mjs';
+import { serviceHeroGrowth, serviceStageAuto } from './progress-automation.mjs';
+import { serviceTreasureLoot } from './treasure-loot.mjs';
 import { automationTasks, dailyTaskKey, defaultFishingGoldReserve, worldTaskKey } from './automation.mjs';
 
 const defaultSleep = (ms, signal) => pause(ms, undefined, { signal });
@@ -65,6 +69,7 @@ export async function runLoop(client, protocol, {
   isEnabled,
   getFishingGoldReserve = () => defaultFishingGoldReserve,
   getCompassSpinCount = () => undefined,
+  isStageBusy = () => false,
   schedule = work => work(),
   onRound,
   onStep,
@@ -257,6 +262,7 @@ export async function runLoop(client, protocol, {
           } catch (error) { phaseFailure('tasks', '周活动奖励', error); }
         }
         if (enabled('vipDaily')) await claimVipDaily(client, config, player, enabled, rewardReport('领奖'), rewards);
+        if (extraRewardKeys.some(enabled)) await claimExtraRewards(client, config, player, enabled, serviceReport('tasks', '领奖'), rewards, active);
         for (const [key, label, claim] of [['campaignReports', '战报奖励', claimCampaignReports], ['openRankRewards', '开服冲榜', claimOpenRanks]]) {
           if (!enabled(key)) continue;
           try { await claim(client, config, player, enabled, rewardReport('领奖'), rewards); }
@@ -393,6 +399,10 @@ export async function runLoop(client, protocol, {
             scheduler: rewards, report: serviceReport('dailies', '联盟订单') });
         } catch (error) { phaseFailure('dailies', '联盟订单检查', error); }
       }
+      if (isEnabled && enabled('guildAidHelp')) {
+        await serviceGuildAid(client, protocol, config, { player, enabled: () => active('guildAidHelp'),
+          scheduler: rewards, report: serviceReport('dailies', '联盟互助') });
+      }
       if (isEnabled && ['equipmentCollect', 'equipmentCraft'].some(enabled)) {
         try {
           await serviceEquipmentCrafting(client, config, { player, enabled: active,
@@ -405,6 +415,10 @@ export async function runLoop(client, protocol, {
             scheduler: rewards, report: serviceReport('dailies', '联盟情报') });
         } catch (error) { phaseFailure('dailies', '联盟情报检查', error); }
       }
+      if (isEnabled && enabled('treasureLoot')) {
+        await serviceTreasureLoot(client, config, { player, enabled: () => active('treasureLoot'),
+          scheduler: rewards, report: serviceReport('dailies', '世界宝藏') });
+      }
       if (isEnabled && ['museumCollect', 'museumExplore'].some(enabled)) {
         try {
           await serviceMuseum(client, protocol, config, { player, enabled: active,
@@ -416,6 +430,15 @@ export async function runLoop(client, protocol, {
           await servicePetBreeding(client, protocol, config, { player, enabled: active,
             scheduler: rewards, report: serviceReport('world', '海兽培育') });
         } catch (error) { phaseFailure('world', '海兽培育检查', error); }
+      }
+      // 先养成再推图，这样同一轮提升的战力能立刻用上。
+      if (isEnabled && enabled('heroGrowth')) {
+        await serviceHeroGrowth(client, protocol, config, { player, enabled: () => active('heroGrowth'),
+          scheduler: rewards, report: serviceReport('dailies', '成长') });
+      }
+      if (isEnabled && enabled('stageAuto')) {
+        await serviceStageAuto(client, config, { player, enabled: () => active('stageAuto'), isBusy: isStageBusy,
+          scheduler: rewards, report: serviceReport('dailies', '成长') });
       }
       for (const key of serviceWait.keys()) if (!active(key)) serviceWait.delete(key);
     });

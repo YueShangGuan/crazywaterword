@@ -216,3 +216,14 @@ dialog::backdrop { background:#102d398c }
   .connection select { min-width:100px; max-width:48vw }
   .bar label { max-width:100% }
 }
+
+.settings-form { display:grid; gap:10px }
+.settings-form .bar { margin:0 }
+.settings-form p { margin:0 }
+.settings-select { height:36px; padding:0 8px; border:1px solid #d4e0dc; border-radius:6px; background:var(--card, #fff); color:inherit }
+.settings-url { width:min(100%, 420px) }
+.notify-event { display:flex; align-items:center; gap:8px; font-size:14px }
+.income-view { overflow-x:auto }
+.income-view table { min-width:640px; margin-top:0 }
+.income-view p { margin:8px 0 0 }
+#tab-overview [data-slot=card]:has(#income-view) { grid-column:1/-1 }
