@@ -10,6 +10,7 @@ import { activity } from './activity.mjs';
 import { snap } from './snap.mjs';
 import { costs, mutate } from './common.mjs';
 import { makeTypeResolver } from '../world.mjs';
+import { modeActive, serverTime, moduleActive, moduleConfigured } from './schedule.mjs';
 
 export const HANDLERS = Object.fromEntries(MODULES.map(id => [id, base[id] ?? cultivation[id] ?? { battle, world, guild, welfare, activity, snap }[id]]));
 const runs = new Map();
@@ -43,8 +44,17 @@ export function stopAutomation(accountId, { manual = false, unexpectedDisconnect
   return automationStatus(accountId);
 }
 
-/** 计划和执行使用同一注册表；缺模块或未知选择直接拒绝，防止静默漏跑。 */
-export async function runAutomation({ selector = 'all', settings, ...args }) {
+/**
+ * 计划和执行使用同一注册表；缺模块或未知选择直接拒绝，防止静默漏跑。
+ *
+ * @param {object} options 自动化执行参数。
+ * @param {string|string[]} [options.selector] 要执行的模块选择器。
+ * @param {object} [options.settings] 已解析或待加载的账号设置。
+ * @param {Function} [options.onQuery] 成功只读查询回包的回调。
+ * @param {Function} [options.onModuleComplete] 单个模块批次结束后的分类刷新回调。
+ * @returns {Promise<object>} 自动化运行状态和步骤结果。
+ */
+export async function runAutomation({ selector = 'all', settings, onModuleComplete, ...args }) {
   const resolved = validateSettings(settings ?? loadSettings(args.accountId));
   const selected = selectModules(selector);
   for (const id of selected) if (!HANDLERS[id]) throw new Error(`自动化模块缺少执行器 ${id}`);
@@ -54,15 +64,18 @@ export async function runAutomation({ selector = 'all', settings, ...args }) {
     runs.set(args.accountId, state);
     let ctx;
     try {
-      ctx = createContext({ ...args, settings: resolved, stop: state.stop, onStep: row => { state.results.push(row); args.onStep?.(row); } });
+      ctx = createContext({ ...args, settings: resolved, stop: state.stop, onStep: row => { state.results.push(row); args.onStep?.(row); }, onQuery: args.onQuery });
       state.ledger = ctx.ledger;
       for (const id of selected) {
         ctx.assertReady(); state.module = id; ctx.setModule(id);
         const options = resolved.modules[id];
-        if (!options.enabled) { ctx.record({ status: 'disabled', label: LABELS[id] }); continue; }
+        if (!moduleActive(id, options, ctx)) { ctx.record({ status: moduleConfigured(id, options) ? 'skipped' : 'disabled', label: LABELS[id], reason: '当前执行模式未启用或未到指定星期' }); continue; }
         await ctx.refreshStock();
         try { await HANDLERS[id](ctx, options); }
         catch (error) { state.error = error.message; ctx.record({ status: 'error', reason: error.message }); ctx.assertReady(); }
+        // 分类缓存必须等整个模块批次结束后再刷新，避免农田收割后又被后续种植覆盖成中间状态。
+        try { await onModuleComplete?.(id, ctx); }
+        catch (error) { ctx.record({ status: 'error', reason: `缓存刷新失败：${error.message}` }); }
         const blockedReason = ctx.consumeModuleBlock();
         if (blockedReason) ctx.record({ status: 'blocked', label: LABELS[id], reason: blockedReason });
       }
@@ -72,7 +85,94 @@ export async function runAutomation({ selector = 'all', settings, ...args }) {
   });
 }
 
-/** 原有日常付费点金和折扣购买也必须查询当前价格并走持久化额度。 */
+/**
+ * 判断折扣商店商品是否为未购买且不高于 2 折的目标券。
+ *
+ * @param {object} item 当前折扣商店商品。
+ * @returns {'hero'|'antique'|null} 目标券类别；不匹配时返回 null。
+ */
+function priorityDiscountTicket(item) {
+  if (item?.isBuy || !Number.isFinite(item?.discount) || item.discount > 0.2) return null;
+  const assetIds = (item.reward?.asset ?? []).map(asset => asset.id);
+  if (assetIds.includes('抽卡券')) return 'hero';
+  if (assetIds.includes('藏品券')) return 'antique';
+  return null;
+}
+
+/**
+ * 判断指定刷新档位是否免费；收费刷新从流程层直接禁止，避免误触钻石消费。
+ *
+ * @param {object[]} rows ShopRefreshCfg 配置行。
+ * @param {number} refreshCount 即将发送的刷新次数。
+ * @returns {boolean} 该档位是否明确配置为空成本。
+ */
+function freeDiscountRefresh(rows, refreshCount) {
+  const tier = rows.find(row => Number(row.times) === Number(refreshCount));
+  return Boolean(tier && Array.isArray(tier.cost) && tier.cost.length === 0);
+}
+
+/**
+ * 执行折扣商店的2折英雄/藏品券优先策略。
+ *
+ * @param {object} ctx 当前账号自动化上下文。
+ * @param {(step: object) => Promise<unknown>} execute 统一旧日常写入执行器。
+ * @returns {Promise<{results: object[], targetSeen: boolean, targetBought: boolean, failed: boolean}>} 执行结果及目标券状态。
+ */
+export async function runPriorityDiscountShop(ctx, execute) {
+  const boughtKinds = new Set();
+  const results = [];
+  let targetSeen = false;
+  let shop = await ctx.query('DiscountShopRequest');
+
+  while (shop) {
+    const targets = (shop.shopItem ?? [])
+      .map(item => ({ item, kind: priorityDiscountTicket(item) }))
+      .filter(target => target.kind);
+    if (targets.length) targetSeen = true;
+    for (const { item, kind } of targets) {
+      const step = {
+        request: 'DiscountShopBuyRequest',
+        body: { id: item.id },
+        response: null,
+        note: kind === 'hero' ? '强制购买2折英雄招募券' : '强制购买2折藏品券',
+        bypassSpendingLimits: true,
+      };
+      try {
+        const body = await execute(step);
+        boughtKinds.add(kind);
+        results.push({ id: 1007, title: '折扣商店购买', request: step.request, note: step.note, ok: true, body });
+      } catch (error) {
+        // 目标券出现但余额不足或请求失败时禁止回退购买普通商品，避免把强制目标变成随机消费。
+        results.push({ id: 1007, title: '折扣商店购买', request: step.request, note: step.note, ok: false, error: error.message });
+        return { results, targetSeen, targetBought: false, failed: true };
+      }
+    }
+
+    if (boughtKinds.size === 2) break;
+    const nextRefreshCount = Number(shop.refreshCount ?? 0) + 1;
+    if (!freeDiscountRefresh(ctx.rows('ShopRefreshCfg'), nextRefreshCount)) break;
+    const previousRefreshCount = Number(shop.refreshCount ?? 0);
+    const refreshStep = { request: 'DiscountShopRefreshRequest', body: {}, response: 'DiscountShopResponse', note: '免费刷新折扣商店' };
+    try {
+      const refreshed = await execute(refreshStep);
+      results.push({ id: 1007, title: '折扣商店购买', request: refreshStep.request, note: refreshStep.note, ok: true, body: refreshed });
+      if (!refreshed || Number(refreshed.refreshCount ?? 0) <= previousRefreshCount) break;
+      shop = refreshed;
+    } catch (error) {
+      results.push({ id: 1007, title: '折扣商店购买', request: refreshStep.request, note: refreshStep.note, ok: false, error: error.message });
+      return { results, targetSeen, targetBought: false, failed: true };
+    }
+  }
+  return { results, targetSeen, targetBought: boughtKinds.size > 0, failed: false };
+}
+
+/**
+ * 原有日常付费点金和折扣购买也必须查询当前价格并走持久化额度。
+ *
+ * @param {object} ctx 当前账号自动化上下文。
+ * @param {object} step 待执行的日常动作。
+ * @returns {Promise<unknown>} 服务端业务回包。
+ */
 export async function guardedDailyAction(ctx, step) {
   let ruby = 0, confirm;
   if (step.request === 'ClickGoldRequest' && step.body.free === false) {
@@ -83,31 +183,52 @@ export async function guardedDailyAction(ctx, step) {
     confirm = async () => (await ctx.query('ClickGoldInfoRequest')).info?.paidTimes >= before + step.body.times;
   }
   if (step.request === 'DiscountShopBuyRequest') {
-    const goods = (await ctx.query('DiscountShopRequest')).shopItem?.find(s => s.id === step.body.id && !s.isBuy);
-    if (!goods || !Number.isFinite(goods.price) || !Number.isFinite(goods.discount)) throw new Error('缺少当前折扣商品价格');
+    const key = `${step.request}:${JSON.stringify(step.body)}`;
+    const item = (await ctx.query('DiscountShopRequest')).shopItem?.find(s => s.id === step.body.id);
+    confirm = async () => (await ctx.query('DiscountShopRequest')).shopItem?.find(s => s.id === step.body.id)?.isBuy === true;
+    // 已购商品只可能用于结算本地未确认写入；没有待确认记录时不能把外部购买视为本次成功。
+    if (item?.isBuy) {
+      if (!ctx.hasPending(key)) throw new Error('当前折扣商品已购买');
+      const settled = await ctx.action(step.request, step.body, { confirm, response: step.response, label: step.note, key });
+      if (settled.status !== 'success') throw new Error(settled.reason ?? `操作${settled.status}`);
+      return settled.value;
+    }
+    if (!item || !Number.isFinite(item.price) || !Number.isFinite(item.discount)) throw new Error('缺少当前折扣商品价格');
+    const goods = item;
     ruby = Math.floor(goods.price * goods.discount);
     if (!(ruby >= 0)) throw new Error('折扣商品价格无效');
-    confirm = async () => (await ctx.query('DiscountShopRequest')).shopItem?.find(s => s.id === step.body.id)?.isBuy === true;
   }
   await ctx.refreshStock();
-  const result = await ctx.action(step.request, step.body, { ruby, confirm, response: step.response, label: step.note });
+  const result = await ctx.action(step.request, step.body, { ruby, confirm, response: step.response, label: step.note, bypassSpendingLimits: step.bypassSpendingLimits === true });
   if (result.status !== 'success') throw new Error(result.reason ?? `操作${result.status}`);
   return result.value;
 }
 
-/** 旧入口使用同一连接上下文、互斥文件和未确认记录，不能跳过新执行规则。 */
-export async function gameplaySession({ accountId, client, protocol, config, player, stop, module = 'dailies', work }) {
+/** 旧入口与固定日常使用同一角色互斥、未确认记录和查询回调，不能跳过执行规则。 */
+export async function gameplaySession({ accountId, client, protocol, config, player, stop, module = 'dailies', onQuery, onStep, initialPushes, work }) {
   return withRoleLock(accountId, player?.playerId, async () => {
-    const ctx = createContext({ accountId, client, protocol, config, player, stop, settings: loadSettings(accountId) });
+    const ctx = createContext({ accountId, client, protocol, config, player, stop, onQuery, onStep, initialPushes, settings: loadSettings(accountId) });
     ctx.setModule(module);
     try { await ctx.refreshStock(); return await work(step => legacyAction(ctx, step), ctx); }
     finally { ctx.dispose(); }
   });
 }
 
-/** 旧计划仅保留其原业务选择，写入、读回、停止和消费检查由新上下文执行。 */
+/**
+ * 执行旧日常计划中的单步请求，并将付费折扣购买、免费刷新统一接入共享上下文。
+ *
+ * @param {object} ctx 当前账号自动化上下文。
+ * @param {object} step 旧日常生成的请求描述。
+ * @returns {Promise<unknown>} 服务端业务回包。
+ */
 export async function legacyAction(ctx, step) {
   if (step.request === 'DiscountShopBuyRequest' || (step.request === 'ClickGoldRequest' && step.body.free === false)) return guardedDailyAction(ctx, step);
+  if (step.request === 'DiscountShopRefreshRequest') {
+    // 刷新请求没有钻石消费，但必须使用专用回包确认服务端已切换商品页。
+    const result = await ctx.action(step.request, step.body ?? {}, { response: 'DiscountShopResponse', label: step.note ?? step.label });
+    if (result.status !== 'success') throw new Error(result.reason ?? `操作${result.status}`);
+    return result.value;
+  }
   if (ctx.settings.modules.island.enabled && ['StartFactoryProduceRequest', 'SetFactoryAutoProduceRequest'].includes(step.request)) {
     // 旧循环仍保留排产能力，但不能重新启用用户已在新设置禁用的工厂。
     const type = makeTypeResolver(ctx.config)(step.body.buildingId);
@@ -160,7 +281,22 @@ export async function legacyAction(ctx, step) {
   }
   if (step.body.speedUp) expenses = [['加速器', step.body.speedUp.useNum]];
   if (step.request === 'RecruitStartRequest' && step.body.way === ctx.protocol.RecruitWay.RECRUIT_SINGLE) expenses = [['抽卡券', 1]];
-  const options = { label: step.note ?? step.label, response: step.response, expenses };
+  // 套装激活和升级共用同一协议；旧入口也必须按服务端是否已有套装区分授权。
+  const existingSuit = step.request === 'AntiqueSuitLevelUpRequest'
+    ? (await ctx.query('AllAntiqueRequest')).suits?.some(suit => suit.id === step.body.id) : false;
+  /** 旧任务提交点也使用当前模式，不能从日常入口绕过指定星期或模块总开关。 */
+  const allowed = () => {
+    const modules = ctx.settings.modules;
+    if (step.request === 'FinishGuildOrderRequest') return modules.guild.enabled && modeActive(modules.guild.order.enabled, serverTime(ctx));
+    if (['ActivateAntiqueRequest', 'AntiqueStarUpRequest'].includes(step.request)) return modules.antique.enabled
+      && modeActive(modules.antique[step.request === 'ActivateAntiqueRequest' ? 'activate' : 'upgrade'], serverTime(ctx));
+    if (step.request === 'AntiqueSuitLevelUpRequest') return modules.antique.enabled && (existingSuit
+      ? modules.antique.suit.levelUp : modeActive(modules.antique.suit.activate, serverTime(ctx)));
+    if (['PetBreedRequest', 'GetMaturePetRequest', 'PetFeedRequest', 'PetLevelUpRequest', 'PetUpgradeFeedRequest', 'PetUpgradeRequest', 'FreePetRequest'].includes(step.request)) return moduleActive('pet', modules.pet, ctx);
+    if (['SpeedMakeEquipRequest', 'PickMadeEquipRequest', 'MakeEquipRequest', 'DecomposeEquipRequest'].includes(step.request)) return moduleActive('equip', modules.equip, ctx);
+    return true;
+  };
+  const options = { label: step.note ?? step.label, response: step.response, expenses, allowed };
   let result;
   if (state) result = await mutate(ctx, step.request, step.body, state[0], state[1], { ...options, stateBody: state[2] });
   else result = await ctx.action(step.request, step.body, options);
@@ -174,6 +310,8 @@ export function handledDailyIds(settings) {
   const ids = [];
   if (modules.hero.enabled && Object.values(modules.hero.recruit).some(v => v === true)) ids.push(1002);
   if (modules.afk.enabled && modules.afk.claim) ids.push(1004);
+  // 挂机模块已按 paidTimes 执行目标次数时，旧日常 1006 不能在同一循环再次发起付费点金。
+  if (modules.afk.enabled && settings.spending.clickGoldTimes > 0) ids.push(1006);
   if (modules.battle.enabled) {
     if (modules.battle.stage.enabled) ids.push(1003);
     if (modules.battle.arena.challenge || modules.battle.arena.sweep) ids.push(1005);
@@ -187,7 +325,8 @@ export function handledDailyIds(settings) {
     if (modules.world.cityWar.enabled) ids.push(1015);
   }
   if (modules.guild.enabled) {
-    if (modules.guild.order.enabled) ids.push(1012);
+    // 日期模式即使今天不执行，也持有该任务，防止旧日常绕过周一限制。
+    if (modules.guild.order.enabled !== 'off') ids.push(1012);
     if (modules.guild.aid.help) ids.push(1013);
     if (modules.guild.aid.ask) ids.push(1014);
   }

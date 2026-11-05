@@ -1,4 +1,4 @@
-// 自动循环：每轮依次跑 任务领取 → 日常（含任务奖励与活跃度宝箱） → 海面（收成品/竣工/建造/交单/排产/升级）。
+// 主挂机：每日战令培育补做 → 普通模块和现有任务 → 固定领取跨服积分宝箱与勇士战令。
 //
 // 循环是显式开的：必须同时给 --loop 与 --yes，且每轮都是「先只读探测，再算计划，再执行」，
 // 所以第二轮起没有可做的事时计划自然为空，不会重复发同样的请求。
@@ -43,7 +43,8 @@ function nextFactoryCheck(buildings, offset, collect) {
   return Math.max(now + 3000, next);
 }
 
-import { runAutomation, handledDailyIds } from './automation/service.mjs';
+import { runFixedRoutines } from './automation/routines.mjs';
+import { runAutomation, gameplaySession, handledDailyIds } from './automation/service.mjs';
 import { loadSettings, selectLoopModules } from './automation/settings.mjs';
 const ISLAND_ACTION_KINDS = new Set(['collectProduct', 'gainFactory', 'finishUpgrade', 'build', 'upgrade', 'speedUpUpgrade', 'startProduce', 'speedUpProduce', 'weekFactory', 'buildSupply']);
 
@@ -64,7 +65,17 @@ export function shouldRunLegacyWorldStep(step, settings) {
   return !settings.modules.island.enabled || !ISLAND_ACTION_KINDS.has(step.kind);
 }
 
-/** 所有已启用新玩法每轮都由统一执行服务处理，旧日常跳过这些玩法以免重复操作。 */
+/**
+ * 所有已启用新玩法每轮都由统一执行服务处理，旧日常跳过这些玩法以免重复操作。
+ *
+ * @param {object} client 当前账号游戏连接。
+ * @param {object} protocol 当前协议定义。
+ * @param {object} options 循环设置和状态回调。
+ * @param {Function} [options.onQuery] 成功只读查询回包的回调。
+ * @param {Function} [options.onModuleComplete] 新版模块批次结束后的分类刷新回调。
+ * @param {Function} [options.onBatchComplete] 旧版任务、日常和海面批次结束后的分类刷新回调。
+ * @returns {Promise<object>} 循环历史和每轮执行摘要。
+ */
 export async function runLoop(client, protocol, {
   config = null,
   player = null,
@@ -87,6 +98,9 @@ export async function runLoop(client, protocol, {
   schedule = work => work(),
   onRound,
   onStep,
+  onQuery = () => {},
+  onModuleComplete = async () => {},
+  onBatchComplete = async () => {},
 } = {}) {
   if (!allowMutate) throw new Error('循环会持续改变账号状态，需要 --yes');
   // CLI 会使用默认 all；循环入口统一规范化，不能让已下架模块从任一入口重新进入执行器。
@@ -118,7 +132,7 @@ export async function runLoop(client, protocol, {
       freeRecruit: 'hero', ticketRecruit: 'hero', freeAntiqueRecruit: 'antique', antiqueRecruitRewards: 'antique',
       guildWelfare: 'guild', arena: 'battle', pirate: 'world',
       tasks: 'welfare', dailyRewards: 'welfare', chests: 'welfare', gift: 'welfare', mail: 'welfare',
-      weekGift: 'welfare', weekTimes: 'welfare', weekPass: 'welfare',
+      weekGift: 'welfare', weekTimes: 'welfare',
       evilExpel: 'activity', edict: 'activity', compassReward: 'activity',
     };
     // 新挑战模块仅在普通试炼开启时处理免费档；VIP 广告扫荡是另一份权益，不能吞掉上游免费扫荡。
@@ -145,11 +159,24 @@ export async function runLoop(client, protocol, {
     }
     if (stop.aborted || !client.connected) break;
 
+    /** 固定日常只属于主挂机，独立执行和预览不附带培育或领奖。 */
+    async function fixedRoutines(phase) {
+      if (automationOnly || !accountId || !player?.playerId || stop.aborted) return;
+      await gameplaySession({ accountId, client, protocol, config, player, stop, module: 'welfare', onQuery, initialPushes,
+        onStep: row => {
+          summary.routines ??= [];
+          summary.routines.push(row);
+          onStep?.({ round, phase: 'tasks', ...row, ok: row.status === 'success', skipped: row.status === 'skipped', error: row.reason });
+        }, work: (_execute, ctx) => runFixedRoutines(ctx, phase) });
+    }
     await schedule(async () => {
       if (stop.aborted) return;
+      await fixedRoutines('before');
       if (settings) {
         summary.automation = await runAutomation({ client, protocol, config, player, accountId, settings,
           selector: selectedAutomationModules, initialPushes, stop,
+          onQuery,
+          onModuleComplete,
           onStep: row => onStep?.({ round, phase: 'automation', ...row, ok: row.status === 'success', error: row.reason }) });
         if (summary.automation.error || stop.aborted) return;
       }
@@ -287,7 +314,7 @@ export async function runLoop(client, protocol, {
           });
         } catch (error) { phaseFailure('tasks', '船只检查', error); }
       }
-      if (isEnabled && ['weekPass', 'weekGift', 'weekTimes'].some(enabled)) {
+      if (isEnabled && ['weekGift', 'weekTimes'].some(enabled)) {
         try {
           await claimWeekly(client, config, enabled, entry => {
             if (!entry.skipped) summary.tasks.planned++;
@@ -400,7 +427,10 @@ export async function runLoop(client, protocol, {
           } catch (error) { phaseFailure('world', '贸易港', error); }
         }
       }
+      await fixedRoutines('after');
     });
+    // 旧版任务、日常和海面动作作为一轮批次完成后统一刷新分类和库存，避免总览读取到中间状态。
+    await onBatchComplete(['production', 'fleets', 'cargo', 'world', 'tasks', 'inventory']);
     if (stop.aborted) break;
 
     history.push(summary);
@@ -485,7 +515,7 @@ export function formatLoopStep(entry) {
 /** 汇总上游任务及新版模块结果，避免模块执行未计入本轮统计。 */
 export function formatLoopRound(summary) {
   const results = [...summary.tasks.results, ...summary.dailies.results, ...summary.world.results,
-    ...(summary.automation?.results ?? []).map(row => ({ ok: row.status === 'success', skipped: ['skipped', 'disabled', 'planned'].includes(row.status) }))];
+    ...[...(summary.automation?.results ?? []), ...(summary.routines ?? [])].map(row => ({ ok: row.status === 'success', skipped: ['skipped', 'disabled', 'planned'].includes(row.status) }))];
   const skipped = results.filter(entry => entry.skipped).length;
   const failed = results.filter(entry => !entry.skipped && entry.ok === false).length;
   const sent = results.filter(entry => !entry.skipped && entry.ok && 'sent' in entry).length;
