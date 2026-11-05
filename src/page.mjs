@@ -51,12 +51,14 @@ ${chrome(iconEntry)}
 
   <section id="tab-automation" class="hidden">
     <div class="bar"><button id="automation-load">重新加载设置</button><button id="automation-save">保存设置</button><span id="automation-hint" class="warn"></span></div>
-    <p class="dim">设置按账号保存，日记录按角色和上海日期隔离。赛季 0 会跳过需要赛季配置的功能。钻石消费需同时开启功能、总开关、每日总额度及模块额度，并满足保留量；“每日”均按上海自然日，“保留量”是当前角色的实时余额下限，不是每日可用额度。所有新模块默认关闭。</p>
+    <p class="dim">设置按账号保存，日记录按角色和日期隔离。赛季 0 会跳过需要赛季配置的功能。钻石消费需同时开启功能、总开关、每日总额度及模块额度，并满足保留量；“保留量”是当前角色的实时余额下限，不是每日可用额度。所有新模块默认关闭。</p>
     <div class="bar"><select id="automation-select"></select><button id="automation-plan">计划预览</button><button id="automation-run" class="primary">执行一轮</button><button id="automation-stop" class="danger">停止</button></div>
     <div class="bar log-heading"><span class="k">自动化运行日志</span><button id="automation-log-copy">一键复制当前日志</button><span id="automation-log-copy-hint" class="dim"></span></div>
     <pre id="automation-view">预览会查询当前游戏状态；执行需确认。结果不明的写请求会保留预留额度并停止后续动作。</pre>
     <details class="automation-group"><summary>循环模块选择</summary><div id="automation-loop-modules"></div><div class="bar"><label>轮数 <input id="automation-rounds" type="number" min="0" value="1" style="width:72px"></label><label>间隔秒 <input id="automation-every" type="number" min="1" value="60" style="width:72px"></label><button id="automation-loop" class="primary">开始循环</button></div></details>
     <div id="automation-settings"></div>
+    <button id="automation-floating-save" class="automation-floating-save" type="button" hidden>保存设置</button>
+    <button id="automation-back-to-top" class="automation-back-to-top" type="button" hidden><span aria-hidden="true">↑</span> 回到顶部</button>
   </section>
 
   <section id="tab-account" class="hidden">
@@ -82,6 +84,7 @@ let messageTab = 'world';
 let messageStore = { world: [], notice: [], private: [], guild: [] };
 let messageErrors = [];
 const MESSAGE_TAB_LABELS = { world: '世界', notice: '通知', private: '私聊', guild: '联盟' };
+const CONNECTION_STATE_MESSAGES = new Set(['连接中', '已连接', '连接失败', '服务器拒绝登录', '连接已断开', '已停止']);
 
 function num(v) {
   if (v == null || typeof v !== 'object') return v;
@@ -107,7 +110,7 @@ async function call(path, options) {
   if (current && url.indexOf('/api/') === 0 && url.indexOf('account=') < 0) {
     url += (url.indexOf('?') < 0 ? '?' : '&') + 'account=' + encodeURIComponent(current);
   }
-  const business = ['heroes','dailies','tasks','world','overview','automation/plan','automation/run'].some(name => path.startsWith('/api/'+name));
+  const business = ['heroes','dailies','tasks','world','overview','automation/plan','automation/run','gift-codes/redeem'].some(name => path.startsWith('/api/'+name));
   if (business) activeBusinessRequests++;
   const account = current;
   try {
@@ -342,6 +345,107 @@ const logTime = new Intl.DateTimeFormat('zh-CN', {
 });
 let logAccount;
 let onlyIssues = false;
+let giftRedeemBatchId = null;
+let giftRedeemRunning = false;
+const giftRedeemResults = [];
+
+/** 更新批量兑换按钮，避免页面在同一批未结束时再次提交相同或不同兑换码。 */
+function renderGiftRedeemControls() {
+  const button = $('batch-redeem-run');
+  button.disabled = giftRedeemRunning;
+  button.textContent = giftRedeemRunning ? '批量兑换中...' : '批量兑换';
+}
+
+/** 将当前批次的结构化结果渲染成账号页的紧凑进度列表。 */
+function renderGiftRedeemResults() {
+  const box = $('batch-redeem-results');
+  box.replaceChildren();
+  if (!giftRedeemResults.length) {
+    box.textContent = giftRedeemRunning ? '批次已启动，正在等待在线账号…' : '兑换后会在这里显示每个账号的结果。';
+    return;
+  }
+  for (const result of giftRedeemResults) {
+    const row = el('div', 'batch-redeem-result ' + result.status);
+    row.appendChild(el('div', 'account', result.accountTitle || '全部账号'));
+    const detail = [result.code ? '兑换码 ' + result.code : null, result.rewards || result.reason || result.message]
+      .filter(Boolean).join(' · ');
+    row.appendChild(el('div', 'detail', detail));
+    box.appendChild(row);
+  }
+}
+
+/**
+ * 消费服务端批量兑换事件；开始事件建立本批边界，防止历史批次和实时批次混在同一结果面板。
+ *
+ * @param {object} entry SSE 日志条目。
+ */
+function consumeGiftRedeemEvent(entry) {
+  const event = entry.extra?.batchRedeem;
+  if (!event) return;
+  if (event.phase === 'start') {
+    giftRedeemBatchId = event.id;
+    giftRedeemRunning = true;
+    giftRedeemResults.length = 0;
+    $('batch-redeem-hint').textContent = '正在处理在线账号…';
+  } else if (event.id !== giftRedeemBatchId) {
+    return;
+  } else if (event.phase === 'summary') {
+    giftRedeemRunning = false;
+    $('batch-redeem-hint').textContent = entry.message.replace(/^批量兑换 · /, '');
+    $('batch-redeem-summary').textContent = '成功 ' + (event.succeeded ?? 0) + ' · 失败 ' + (event.failed ?? 0) + ' · 离线 ' + (event.offline ?? 0);
+  } else {
+    giftRedeemResults.push({ ...event, message: entry.message, status: event.status || event.phase });
+  }
+  renderGiftRedeemControls();
+  renderGiftRedeemResults();
+}
+
+/**
+ * 发送已确认的批量兑换请求；按钮锁定直到 SSE 汇总事件到达，网络失败才立即解锁。
+ *
+ * @param {string} codes 用户原样输入的兑换码文本。
+ */
+async function submitGiftCodeBatch(codes) {
+  const button = $('batch-redeem-run');
+  // 新提交先清除上一批的局部结果；服务端 start 事件会再次建立同一批的边界。
+  giftRedeemResults.length = 0;
+  giftRedeemBatchId = null;
+  button.disabled = true;
+  $('batch-redeem-hint').textContent = '正在启动批次…';
+  renderGiftRedeemResults();
+  try {
+    const data = await call('/api/gift-codes/redeem', { method: 'POST', body: JSON.stringify({ confirm: true, codes }) });
+    // 极快结束的全离线批次可能先收到 summary；同一 batchId 时不能把按钮重新锁死。
+    if (giftRedeemBatchId !== data.batchId) {
+      giftRedeemBatchId = data.batchId;
+      giftRedeemRunning = true;
+      $('batch-redeem-hint').textContent = '批次已启动，正在等待在线账号…';
+    }
+    renderGiftRedeemControls();
+    renderGiftRedeemResults();
+  } catch (error) {
+    $('batch-redeem-hint').textContent = error.message;
+    giftRedeemRunning = false;
+    renderGiftRedeemControls();
+  }
+}
+
+/** 打开确认框并启动后台批量兑换；确认标记由服务端再次校验，页面不会自动重试。 */
+function startGiftCodeBatch() {
+  const codes = $('batch-redeem-codes').value;
+  if (!codes.trim()) {
+    $('batch-redeem-hint').textContent = '请先输入兑换码';
+    return;
+  }
+  if (giftRedeemRunning) return;
+  openConfirm('开始批量兑换码', [
+    el('div', null, '将按已保存账号顺序处理当前在线账号。离线账号不会自动登录；正在挂机或执行操作的账号会等待，直到你停止原操作。'),
+  ], () => submitGiftCodeBatch(codes));
+}
+
+$('batch-redeem-run').onclick = startGiftCodeBatch;
+renderGiftRedeemControls();
+
 function updateLogSummary() {
   const count = onlyIssues ? logEl.querySelectorAll('.error,.warn').length : logEl.childElementCount;
   $('log-count').textContent = String(count);
@@ -388,6 +492,7 @@ function appendLog(entry) {
     for (const id of logEl.firstChild.logIds) seen.delete(id);
     logEl.removeChild(logEl.firstChild);
   }
+  consumeGiftRedeemEvent(entry);
   updateLogSummary();
   if (atEnd) logEl.scrollTop = logEl.scrollHeight;
 }
@@ -428,6 +533,15 @@ function subscribe() {
     appendLog(entry);
     if (entry.extra?.pauseChanged && entry.account === current) void loadAccounts(false);
     if (entry.extra?.worldUpdated && entry.account === current && Date.now() - entry.t < 10_000) refreshManualWorld();
+    if (entry.level === 'state' && entry.account === current
+      && (CONNECTION_STATE_MESSAGES.has(entry.message) || entry.message.startsWith('已自动重连：'))) {
+      // 连接可能在页面首次读取账号后才完成；同步状态后立即重试总览，避免按钮和数据停留在断线快照。
+      void loadAccounts(false).then(() => {
+        if (entry.account !== current) return;
+        refreshOverview();
+        loadMessages().catch((error) => { $('messages-status').textContent = '消息加载失败：' + error.message; });
+      }).catch((error) => reportError(error, '同步连接状态'));
+    }
   };
 }
 
@@ -522,7 +636,8 @@ function renderAccountSelect() {
   $('busy').textContent = snapshot.paused ? '已暂停 · 可自行上号' : snapshot.connected ? '已连接' : '未连接';
   $('connect').disabled = snapshot.paused || snapshot.connected || !accounts.length;
   $('disconnect').disabled = !snapshot.connected;
-  $('overview-refresh').disabled = !snapshot.connected || overviewRefreshing;
+  // 连接状态可能正在从重连中的旧快照切换；按钮保持可用，由刷新流程先读取最新账号状态。
+  $('overview-refresh').disabled = !current || snapshot.paused || overviewRefreshing;
   $('overview-refresh').textContent = overviewRefreshing ? '刷新中...' : '刷新数据';
 }
 
@@ -754,6 +869,60 @@ function renderOverviewFleets(data) {
   panel.appendChild(list);
 }
 
+/**
+ * Renders the trade overview only for an active Sea Merchant event. A refresh
+ * can change the activity period, so inactive data must clear and hide the
+ * prior card instead of leaving stale voyage details on the dashboard.
+ *
+ * @param {object} data Current overview payload.
+ */
+function renderOverviewTrade(data) {
+  const card = $('overview-trade');
+  const trade = data.trade || {};
+  // TradeInfoResponse uses a positive period only while the event is open.
+  const tradeOpen = Number(trade.period) > 0;
+  card.hidden = !tradeOpen;
+  if (!tradeOpen) {
+    clear(card);
+    return;
+  }
+
+  const tradePlayer = trade.player || {};
+  const tradeCargo = trade.cargo || {};
+  const tradeMoving = tradeCargo.moveEndTime && tradeCargo.moveEndTime > Date.now() / 1000;
+  const tradeGoods = (tradePlayer.goods || []).filter((goods) => (goods.num ?? 0) > 0);
+  const tradeRadar = data.tradeRadar || [];
+  renderOverviewCard('overview-trade', '海商王', [
+    ['开放状态', '已开放，第 ' + trade.period + ' 期'],
+    ['贸易船', '等级 ' + (tradeCargo.cargoLv ?? '-') + '，' + (tradeMoving ? '航行中' : '已停靠')],
+    ['航线', tradeCargo.cityId ? String(tradeCargo.cityId) + ' → ' + (tradeCargo.moveToCityId || '-') : null],
+    ['到港时间', tradeMoving ? when(tradeCargo.moveEndTime * 1000) : '当前已到港'],
+    ['贸易金币', fmt(tradePlayer.coins ?? 0) + ' / ' + fmt(tradePlayer.maxCoins ?? 0)],
+    ['累计利润', fmt(tradePlayer.profit ?? 0)],
+    ['船舱货物', tradeGoods.length ? overviewList(tradeGoods, (goods) => '货物' + goods.goodsId + ' ×' + goods.num) : '空'],
+    ['联盟商情', () => tradeRadarDisclosure(tradeRadar)],
+    ['贸易任务', trade.guildTask ? '利润 ' + fmt(trade.guildTask.profit ?? 0) + '，贸易次数 ' + fmt(trade.guildTask.tradeTimes ?? 0) : null],
+    ['可领奖励', '成就 #' + (trade.gotAchieveRwdId ?? 0) + '，商情 #' + (trade.gotReportRwdId ?? 0)],
+  ]);
+}
+
+/** 渲染当前万吨货轮的领奖次数、奖品和角色占有排名。 */
+function renderOverviewMerchantShip(data) {
+  const merchant = data.merchantShip || {};
+  const rows = [
+    ['今日剩余领奖次数', merchant.remainingRewardTimes == null ? null : String(merchant.remainingRewardTimes) + ' 次'],
+  ];
+  if (merchant.uid == null) {
+    rows.push(['状态', '当前不存在万吨货轮']);
+  } else {
+    // 奖励列表为空时保留明确状态，避免把协议缺失误报成没有万吨货轮。
+    const rewards = (merchant.reward || []).map((asset) => (asset.name || asset.id || '未知奖励') + ' ×' + (asset.num ?? 0));
+    rows.push(['当前奖品', rewards.join('、') || '暂无奖品']);
+    rows.push(['当前占有排名', merchant.rank == null ? '暂未上榜' : '第 ' + merchant.rank + ' 名']);
+  }
+  renderOverviewCard('overview-merchant-ship', '万吨货轮', rows);
+}
+
 /** 渲染采集层已经拿到、但原总览没有展示的状态字段。 */
 function renderOverviewStatus(data) {
   renderOverviewFleets(data);
@@ -808,32 +977,15 @@ function renderOverviewStatus(data) {
   ]);
 
   renderOverviewProduction(data);
-
-  const trade = data.trade || {};
-  const tradePlayer = trade.player || {};
-  const tradeCargo = trade.cargo || {};
-  const tradeMoving = tradeCargo.moveEndTime && tradeCargo.moveEndTime > Date.now() / 1000;
-  const tradeGoods = (tradePlayer.goods || []).filter((goods) => (goods.num ?? 0) > 0);
-  const tradeRadar = data.tradeRadar || [];
-  renderOverviewCard('overview-trade', '海商王', [
-    ['开放状态', data.trade ? (trade.period > 0 ? '已开放，第 ' + trade.period + ' 期' : '未开放') : null],
-    ['贸易船', data.trade ? '等级 ' + (tradeCargo.cargoLv ?? '-') + '，' + (tradeMoving ? '航行中' : '已停靠') : null],
-    ['航线', data.trade && tradeCargo.cityId ? String(tradeCargo.cityId) + ' → ' + (tradeCargo.moveToCityId || '-') : null],
-    ['到港时间', tradeMoving ? when(tradeCargo.moveEndTime * 1000) : '当前已到港'],
-    ['贸易金币', data.trade ? fmt(tradePlayer.coins ?? 0) + ' / ' + fmt(tradePlayer.maxCoins ?? 0) : null],
-    ['累计利润', data.trade ? fmt(tradePlayer.profit ?? 0) : null],
-    ['船舱货物', data.trade ? (tradeGoods.length ? overviewList(tradeGoods, (goods) => '货物' + goods.goodsId + ' ×' + goods.num) : '空') : null],
-    ['联盟商情', data.tradeRadar ? () => tradeRadarDisclosure(tradeRadar) : null],
-    ['贸易任务', trade.guildTask ? '利润 ' + fmt(trade.guildTask.profit ?? 0) + '，贸易次数 ' + fmt(trade.guildTask.tradeTimes ?? 0) : null],
-    ['可领奖励', trade ? '成就 #' + (trade.gotAchieveRwdId ?? 0) + '，商情 #' + (trade.gotReportRwdId ?? 0) : null],
-  ]);
+  renderOverviewTrade(data);
+  renderOverviewMerchantShip(data);
 
   const cargo = data.cargo || {};
   const radar = data.radar || {};
   renderOverviewCard('overview-world', '世界状态', [
     ['资源田', data.resFields ? String(data.resFields.count ?? 0) + '/' + String(data.resFields.max ?? 0) : null],
     ['货船', String(cargo.count ?? 0) + ' 艘' + (cargo.list?.length ? '：' + overviewList(cargo.list, (ship) => '#' + ship.index + ' ' + (ship.filledCount ?? 0) + '/' + (ship.orderCount ?? 0)) : '')],
-    ['海盗', data.pirates ? String(data.pirates.count ?? 0) + ' 个，可扫荡 ' + String(data.pirates.sweepTimes ?? 0) + ' 次' : null],
+    ['海盗', data.pirates ? String(data.pirates.count ?? 0) + ' 个，' + (data.pirates.sweep ? '今日已扫 ' + String(data.pirates.sweep.used) + '/' + String(data.pirates.sweep.dailyLimit) + ' 次，剩余 ' + String(data.pirates.sweep.remaining) + ' 次' : '扫荡次数未返回') : null],
     ['雷达', data.radar ? 'lv' + (radar.level ?? '-') + '，事件 ' + (radar.events?.length ?? 0) + '，储存 ' + (radar.storedNum ?? 0) : null],
     ['世界 Boss', data.worldBoss ? 'Boss ' + (data.worldBoss.bossId ?? 0) + '，最高伤害 ' + fmt(data.worldBoss.bestDamage ?? 0) : null],
   ]);
@@ -900,7 +1052,8 @@ function renderOverviewProduction(data) {
         : chip('waiting', farm.ripeTime ? '生长至 ' + when(farm.ripeTime * 1000) : '种植中');
     return [
       farm.buildingId,
-      farm.productId ? { cell: { id: farm.productId, icon: farm.icon } } : '未种植',
+      // 图文单元格使用 name 作为展示文本；productId 已是游戏返回的本地化作物名称。
+      farm.productId ? { cells: [{ name: farm.productId, icon: farm.icon }] } : '未种植',
       status,
     ];
   });
@@ -911,10 +1064,11 @@ function renderOverviewProduction(data) {
   factoryPane.appendChild(el('h4', null, '工厂（' + factories.length + ' 座）'));
   const factoryRows = factories.map((factory) => {
     const queue = factory.queue || [];
+    // 通用表格只读取 name；不能把协议字段 productId 另存为未被消费的 id。
     const products = queue.length
-      ? queue.map((job) => ({ id: job.productId, icon: job.icon }))
+      ? queue.map((job) => ({ name: job.productId, icon: job.icon }))
       : factory.autoProductId
-        ? [{ id: '自动：' + factory.autoProductId, icon: factory.autoIcon }]
+        ? [{ name: '自动：' + factory.autoProductId, icon: factory.autoIcon }]
         : [];
     const status = queue.length
       ? chip('waiting', '生产中 ' + queue.length + ' 项')
@@ -937,6 +1091,20 @@ function renderOverviewProduction(data) {
 
 /** 渲染总览的账号、资源、英雄和扩展状态卡片。 */
 function renderOverview(data) {
+  const cache = data.cache || {};
+  const categoryNames = { inventory: '库存', heroes: '角色', production: '生产', fleets: '舰队', cargo: '货船', world: '世界', tasks: '任务', activities: '活动', guild: '联盟', other: '其他' };
+  const stale = Object.entries(cache.categories || {}).filter(([, entry]) => entry?.stale);
+  // 过期分类保留旧值，同时把最后成功时间和本次错误交给操作员判断可信度。
+  const staleText = stale.map(([category, entry]) => {
+    const updated = entry.updatedAt ? new Date(entry.updatedAt) : null;
+    const lastSuccess = updated && !Number.isNaN(updated.getTime()) ? '上次成功 ' + updated.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '尚无成功数据';
+    return (categoryNames[category] || category) + '（' + lastSuccess + '）' + (entry.error ? '：' + entry.error : '');
+  });
+  $('hint').textContent = cache.initialSync || cache.syncing
+    ? '正在同步总览数据…'
+    : stale.length
+      ? '部分总览数据可能滞后：' + staleText.join('；')
+      : '';
   renderWho(data);
   const res = clear($('res'));
   for (const entry of data.resources || []) res.appendChild(cell(entry.icon, 34, entry.name, fmt(entry.amount), false));
@@ -977,7 +1145,7 @@ function renderOverview(data) {
 
 let overviewPending = false;
 let claiming = false;
-/** 总览只查询已连接的空闲账号，加载本地页面不会自动使用保存凭证登录游戏。 */
+/** 总览只查询已连接账号，允许在挂机循环中读取，并且不会使用保存凭证隐式登录游戏。 */
 async function refreshOverview(manual = false) {
   if (!current) return;
   const account = current;
@@ -991,14 +1159,14 @@ async function refreshOverview(manual = false) {
       renderMessages({ connected: false });
       return;
     }
-    if (activeBusinessRequests || snapshot.busy || (!manual && snapshot.looping) || (typeof automationRunning !== 'undefined' && automationRunning)) return;
+    // 总览只读采集不会与挂机循环的单步写请求并发；服务端会通过 busy 状态保护正在执行的写操作。
+    if ((!manual && activeBusinessRequests) || (!manual && snapshot.busy) || (!manual && typeof automationRunning !== 'undefined' && automationRunning)) return;
     const data = await call('/api/overview');
     // 断开或切换账号后的迟到回包不能把页面重新显示成已连接。
     if (account !== current || !snapshot.connected || snapshot.paused || disconnected.has(account)) return;
     snapshot = data.status;
     renderAccountSelect();
     renderOverview(data);
-    $('hint').textContent = '';
     $('busy').textContent = data.status.connected ? '已连接' : '未连接';
   } catch (error) {
     reportError(error, '刷新总览');
@@ -1007,7 +1175,7 @@ async function refreshOverview(manual = false) {
 
 /** 手动刷新当前账号的总览数据，并在请求期间锁定按钮避免重复采集。 */
 $('overview-refresh').onclick = async () => {
-  if (overviewRefreshing || !snapshot.connected) return;
+  if (overviewRefreshing || !current || snapshot.paused) return;
   overviewRefreshing = true;
   renderAccountSelect();
   try {
@@ -2053,6 +2221,7 @@ ${AUTOMATION_SCRIPT}
 // ---- 启动 ------------------------------------------------------------------
 ${progressionScript}
 document.querySelectorAll('#tabs button').forEach((button) => {
+  /** 切换功能页并同步页面入口，再读取该页需要的账号数据。 */
   button.onclick = () => {
     for (const other of document.querySelectorAll('#tabs button')) other.removeAttribute('aria-current');
     button.setAttribute('aria-current', 'page');
@@ -2060,6 +2229,8 @@ document.querySelectorAll('#tabs button').forEach((button) => {
       section.classList.toggle('hidden', section.id !== 'tab-' + button.dataset.tab);
     }
     $('page-title').textContent = button.textContent;
+    // 切页时同步浮动入口，避免沿用上一个页面的滚动状态。
+    updateAutomationBackToTop();
     refreshProgression();
     if (button.dataset.tab === 'overview') refreshOverview();
     if (button.dataset.tab === 'account') {

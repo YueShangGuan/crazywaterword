@@ -2,7 +2,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { GameClient } from './client.mjs';
+import { GameClient, toNumber } from './client.mjs';
 import { challengeTrial, trialProgress } from './trials.mjs';
 import { readHeroEquipment, equipHeroEmptySlots, enhanceHeroEquipment } from './hero-equipment.mjs';
 import { readGuild, claimGuildWelfare } from './guild.mjs';
@@ -11,11 +11,11 @@ import { loadProtocol } from './proto.mjs';
 import { PAGE } from './page.mjs';
 import { MOBILE_PAGE } from './mobile-page.mjs';
 import { listWorlds, enterWorld, describeRole } from './worlds.mjs';
-import { collectState, summarize, formatState } from './game.mjs';
+import { ENTRY_QUERIES, collectState, summarize, formatState } from './game.mjs';
 import { claimRewards } from './claim-rewards.mjs';
 import { fishView, newbieView } from './collections.mjs';
 import { normalize } from './worlds.mjs';
-import { pirateTracker, pirateHuntOptions, startPirateHunt } from './pirates.mjs';
+import { pirateDailySweepLimit, pirateSweepProgress, pirateTracker, pirateHuntOptions, startPirateHunt } from './pirates.mjs';
 import { activityView } from './activities.mjs';
 import { displayMaterial, getConfig } from './config.mjs';
 import { planHeroes, formatHeroPlan } from './heroes.mjs';
@@ -34,11 +34,43 @@ import { startCapture, stopCapture, captureState, DEFAULT_PROXY_PORT } from './c
 import { iconIndex, atlasFile, itemIcon, resourceIcon, materialIcon, heroIcon, heroCard, buildingIcon, workerIcon } from './art.mjs';
 import { runAutomation, automationStatus, stopAutomation } from './automation/service.mjs';
 import { loadSettings, saveSettings, LABELS, MODULES, selectModules, selectLoopModules } from './automation/settings.mjs';
+import { hasConfiguredAutomation } from './automation/schedule.mjs';
 import { automationFormOptions } from './automation/form-options.mjs';
 import { sendWecomTextNotification } from './notifications.mjs';
 import { appendMessage, createMessageStore, loadInitialMessages, messagesFromPush, snapshotMessages } from './messages.mjs';
 
 const LOG_LIMIT = 400;
+const CACHE_REFRESH_MS = 30_000;
+const CORE_CACHE_QUERIES = new Set([
+  'AllItemRequest', 'AllResourceRequest', 'AllHeroRequest', 'GetFormationRequest',
+  'GameEffectRequest', 'OnWaterRequest', 'CargoShipsRequest', 'MyFleetsRequest',
+]);
+const CACHE_QUERY_CATEGORIES = {
+  AllItemRequest: 'inventory', AllResourceRequest: 'inventory', GameEffectRequest: 'inventory',
+  AllHeroRequest: 'heroes', GetFormationRequest: 'heroes', EquipsRequest: 'heroes',
+  BadgesRequest: 'heroes', RecruitInfoRequest: 'heroes', AppointInfoRequest: 'heroes',
+  OnWaterRequest: 'production', CargoShipsRequest: 'cargo', MyFleetsRequest: 'fleets',
+  TreasureLootStatsRequest: 'world', TreasureLootListRequest: 'world', TreasureLootRankRequest: 'world',
+  TradeInfoRequest: 'world', TradeGuildRadarRequest: 'world', PirateKillRecordRequest: 'world',
+  MyResFieldsRequest: 'world', WorldBossInfoRequest: 'world', LimitedBossOpenRequest: 'world',
+  RadarInfoRequest: 'world', AllPirateRequest: 'world', MyFormationPresetRequest: 'world',
+  EmailBoxRequest: 'tasks', AchievementInfoRequest: 'tasks', DailyTaskInfoRequest: 'tasks',
+  DailyGiftPackRequest: 'tasks', MainTaskInfoRequest: 'tasks', AfkInfoRequest: 'tasks',
+  MonthCardRequest: 'tasks', CounterInfoRequest: 'tasks', ChannelRewardInfoRequest: 'tasks',
+  LimitTicketRequest: 'tasks', SeasonTaskStageRequest: 'activities', SeasonRankInfoRequest: 'activities',
+  PassStageStateRequest: 'activities', WeekInfoRequest: 'activities', WeekOrderInfoRequest: 'activities',
+  SeasonCardRequest: 'activities', AllAntiqueRequest: 'activities', AllPetRequest: 'activities',
+  FishEncyclopediaRequest: 'activities', AllGuildAbstractionRequest: 'guild', GuildTechInfoRequest: 'guild',
+  GuildOrderRequest: 'guild', GuideInfoRequest: 'tasks', EnvSkinListRequest: 'activities',
+  BlackListRequest: 'activities', UltraOpenRequest: 'activities', ChurnInfoRequest: 'activities',
+};
+// 自动化模块可能在执行中消耗或产出物品/资源；完成后须重新发布库存快照，不能只停留在模块内的暂存查询。
+const MODULE_CACHE_CATEGORIES = {
+  farm: ['production', 'inventory'], island: ['production', 'inventory'], cargo: ['cargo', 'inventory'], world: ['fleets', 'world', 'inventory'],
+  gather: ['production', 'fleets', 'inventory'], resident: ['production', 'tasks', 'inventory'], welfare: ['tasks', 'inventory'],
+  hero: ['heroes', 'inventory'], antique: ['activities', 'inventory'], pet: ['heroes', 'inventory'], equip: ['heroes', 'inventory'],
+  battle: ['heroes', 'world', 'inventory'], guild: ['guild', 'inventory'], activity: ['activities', 'inventory'], afk: ['tasks', 'inventory'],
+};
 // 协议帧不再进界面，但仍然要能事后查。默认只写文件，CW_DEBUG=1 时才同时打到终端。
 const TRACE_PATH = path.resolve(import.meta.dirname, '../data/protocol.log');
 // 协议日志只用于故障取证；达到上限后轮转，避免长期挂机耗尽工作盘。
@@ -57,14 +89,71 @@ const STATE_TEXT = {
 // VIP免广告资格由当前登录角色实时状态判断：VIP 至少 3，角色等级至少 10。
 const VIP_FREE_AD_MIN_ROLE_LEVEL = 10;
 const VIP_FREE_AD_MIN_VIP_LEVEL = 3;
+const GIFT_CODE_BATCH_ROUTE = 'POST /api/gift-codes/redeem';
 
-/** 创建本地账号控制台，网页执行与 CLI 共用自动化服务及持久化设置。 */
+/**
+ * 解析批量兑换码输入：只接受逗号或换行分隔，保留大小写，并按首次出现顺序去重。
+ *
+ * @param {unknown} value 页面提交的原始输入。
+ * @returns {string[]} 可按顺序提交给游戏的兑换码。
+ */
+export function parseGiftCodes(value) {
+  const unique = new Set();
+  for (const item of String(value ?? '').split(/[,，\r\n]+/)) {
+    const code = item.trim();
+    if (code) unique.add(code);
+  }
+  return [...unique];
+}
+
+/**
+ * 将协议回包中的奖励资产转换为可阅读摘要；资源枚举和普通道具使用不同配置表入口。
+ *
+ * @param {object} reward GotRewardResponse 中的奖励对象。
+ * @param {object|null} config 已加载的游戏配置，缺失时回退展示协议 ID。
+ * @param {object} protocol 当前游戏协议枚举。
+ * @returns {string} 奖励摘要。
+ */
+export function formatGiftCodeRewards(reward, config, protocol) {
+  const assets = Array.isArray(reward?.asset) ? reward.asset : [];
+  if (!assets.length) return '服务器未返回奖励明细';
+  return assets.map((asset) => {
+    const id = asset?.id;
+    const amount = toNumber(asset?.num);
+    // type=1 使用 Resource 枚举，普通道具则由 ItemCfg/ResourceCfg 的 materialName 解析。
+    const name = Number(asset?.type) === 1
+      ? config?.resourceName?.(Number(id)) ?? `资源 #${id}`
+      : config?.materialName?.(id) ?? String(id ?? '未知道具');
+    return `${name} × ${Number.isFinite(amount) ? amount.toLocaleString('zh-CN') : String(asset?.num ?? '?')}`;
+  }).join('、');
+}
+
+/**
+ * 将自动化步骤结果映射为控制台日志级别。
+ *
+ * @param {{request?: string, status?: string}} entry 自动化步骤结果。
+ * @returns {'info' | 'error'} 控制台中应显示的日志级别。
+ */
+export function automationEntryLogLevel(entry) {
+  // 已收到战报但未通关是正常的推进结果；带原因的 failed 仍表示读回或连接等执行异常。
+  if (['ChallengeStageRequest', 'TrialRaidChallengeRequest'].includes(entry.request)
+    && entry.status === 'failed' && !entry.reason) return 'info';
+  return ['error', 'uncertain', 'failed', 'rejected'].includes(entry.status) ? 'error' : 'info';
+}
+
+/**
+ * 创建本地账号控制台，网页执行与 CLI 共用自动化服务及持久化设置。
+ *
+ * @param {{host?: string, port?: number}} [options] HTTP 监听地址。
+ * @returns {{server: import('node:http').Server, listen: Function, close: Function, emit: Function, sessions: Map, captureState: Function}} 控制台运行句柄。
+ */
 export function createConsole({ host = '127.0.0.1', port = 17321 }) {
   const protocol = loadProtocol();
   const globalLog = [];
   const streams = new Set();
   const sessions = new Map();
   let logId = 0;
+  let giftCodeBatch = null;
 
   const logLimit = (list) => {
     while (list.length > LOG_LIMIT) list.shift();
@@ -194,16 +283,15 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       player: null,
       stages: createStageTask(),
       busy: null,
-      overviewRead: null,
       claiming: null,
       heroJob: null,
       queueTail: null,
       appointmentJob: null,
       residentJobs: new Map(),
       progressionJobs: new Map(),
-      // 浏览器刷新可能取消旧 HTTP 响应，但服务端采集仍在继续；新总览请求复用这条采集结果。
-      overviewPromise: null,
       pushes: new Map(),
+      // 总览只读缓存按账号会话保存；进程重启后由下一次登录重新建立。
+      cache: createOverviewCache(),
       // 消息只存在当前进程；按账号隔离，断线重连保留，进程重启自然清空。
       messages: createMessageStore(),
       messageErrors: [],
@@ -229,6 +317,341 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       // 用户主动断开后禁止业务轮询隐式重连，必须由连接按钮重新解除这个状态。
       manualDisconnect: false,
     };
+  }
+
+  /** 创建不带任何历史数据的账号级总览缓存。 */
+  function createOverviewCache() {
+    return {
+      queries: new Map(),
+      // 挂机确认查询先放在暂存区；只有批次结束的分类回读成功后才进入公开快照。
+      stagedQueries: new Map(),
+      categories: new Map(),
+      updatedAt: null,
+      syncing: false,
+      initialSync: true,
+      lastError: null,
+      syncPromise: null,
+      refreshTimer: null,
+    };
+  }
+
+  /** 将协议查询映射到前端总览使用的缓存分类。 */
+  function cacheCategoryForQuery(name) {
+    return CACHE_QUERY_CATEGORIES[name] ?? 'other';
+  }
+
+  /** 记录一条只读回包；失败时保留旧值，只更新分类的过期状态。 */
+  function recordCachedQuery(session, name, body, error = null) {
+    const cache = session.cache;
+    const category = cacheCategoryForQuery(name);
+    const previous = cache.categories.get(category) ?? { updatedAt: null, stale: true, error: null };
+    if (!error) {
+      cache.queries.set(name, normalize(body));
+      cache.stagedQueries.delete(name);
+      cache.categories.set(category, { updatedAt: new Date().toISOString(), stale: false, error: null });
+      cache.updatedAt = new Date().toISOString();
+      return;
+    }
+    cache.categories.set(category, { ...previous, stale: true, error: error.message || String(error) });
+    cache.lastError = error.message || String(error);
+  }
+
+  /** 暂存挂机确认查询的最新回包，但不提前推进对外分类版本。 */
+  function stageCachedQuery(session, name, body) {
+    session.cache.stagedQueries.set(name, normalize(body));
+  }
+
+  /** 返回定时器和 API 使用的稳定缓存状态快照。 */
+  function cacheStatus(session) {
+    return {
+      updatedAt: session.cache.updatedAt,
+      syncing: session.cache.syncing,
+      initialSync: session.cache.initialSync,
+      lastError: session.cache.lastError,
+      categories: Object.fromEntries(session.cache.categories),
+    };
+  }
+
+  /** 从协议查询表筛选一组分类需要的查询。 */
+  function cacheQueriesForCategories(categories) {
+    const wanted = new Set(categories);
+    return ENTRY_QUERIES.filter(query => wanted.has(cacheCategoryForQuery(query.name)));
+  }
+
+  /** 同步指定查询到账号缓存；同一账号同时只允许一条缓存同步任务。 */
+  async function syncOverviewCache(session, account, { queries = ENTRY_QUERIES, reason = 'full' } = {}) {
+    if (!session.client?.connected || session.manualDisconnect || session.paused) return;
+    if (session.cache.syncPromise) return session.cache.syncPromise;
+    const client = session.client;
+    const cache = session.cache;
+    session.cache.syncing = true;
+    const work = (async () => {
+      const failedCategories = new Set();
+      const reportedFailures = new Set();
+      const { ok, failed } = await collectState(client, protocol, {
+        timeout: 15000,
+        includeChat: false,
+        queries,
+        onResult: (name, body, error) => {
+          // 断线重连或角色替换会换掉整个缓存对象；旧连接的迟到回包不能污染新会话。
+          if (session.cache !== cache || session.client !== client) return;
+          if (error) {
+            failedCategories.add(cacheCategoryForQuery(name));
+            reportedFailures.add(name);
+          }
+          recordCachedQuery(session, name, body, error);
+        },
+      });
+      // 缺少协议类型的查询不会触发 collectState.onResult，仍要把对应分类标记为过期。
+      if (session.cache !== cache || session.client !== client) return { ok, failed };
+      for (const [name, message] of Object.entries(failed)) {
+        failedCategories.add(cacheCategoryForQuery(name));
+        if (!reportedFailures.has(name)) recordCachedQuery(session, name, null, new Error(message));
+      }
+      // 同一分类只要本轮有一项失败，就不能用其他成功查询把分类误标为新鲜。
+      for (const category of failedCategories) {
+        const previous = session.cache.categories.get(category) ?? { updatedAt: null, stale: true, error: null };
+        session.cache.categories.set(category, { ...previous, stale: true, error: previous.error ?? failed[category] ?? '分类查询失败' });
+      }
+      // 万吨货轮排名依赖当前宝藏 UID，属于完整总览和世界分类刷新中的补充查询。
+      if (session.cache !== cache || session.client !== client) return { ok, failed };
+      if (reason !== 'core' && ok.TreasureLootListRequest?.treasure) {
+        const target = ok.TreasureLootListRequest.treasure.find(entry => Number(entry.color) === 5);
+        if (target && protocol.TreasureLootRankRequest && protocol.TreasureLootRankResponse) {
+          try {
+            const rank = await client.request('TreasureLootRankRequest', { uid: target.uid }, 'TreasureLootRankResponse', 15000);
+            if (session.cache === cache && session.client === client) recordCachedQuery(session, 'TreasureLootRankRequest', rank);
+          } catch (error) {
+            if (session.cache === cache && session.client === client) recordCachedQuery(session, 'TreasureLootRankRequest', null, error);
+            failed.TreasureLootRankRequest = error.message;
+          }
+        }
+      }
+      if (session.cache === cache && Object.keys(failed).length) session.cache.lastError = Object.values(failed)[0];
+      return { ok, failed };
+    })();
+    cache.syncPromise = work;
+    try { return await work; }
+    finally {
+      if (session.cache === cache) {
+        if (cache.syncPromise === work) cache.syncPromise = null;
+        cache.syncing = false;
+      }
+    }
+  }
+
+  /** 在挂机启动和结束之间管理账号级定时总览同步。 */
+  function stopOverviewCacheTimer(session) {
+    if (!session.cache.refreshTimer) return;
+    clearInterval(session.cache.refreshTimer);
+    session.cache.refreshTimer = null;
+  }
+
+  /** 启动非挂机状态下的 30 秒总览缓存刷新。 */
+  function startOverviewCacheTimer(session, account) {
+    stopOverviewCacheTimer(session);
+    session.cache.refreshTimer = setInterval(() => {
+      if (!session.client?.connected || session.paused || session.loop.running || session.busy || automationStatus(session.id).running) return;
+      void syncOverviewCache(session, account).catch(error => { session.cache.lastError = error.message; });
+    }, CACHE_REFRESH_MS);
+    session.cache.refreshTimer.unref?.();
+  }
+
+  /** 在一批挂机动作结束后刷新其对应的缓存分类。 */
+  async function refreshOverviewCategories(session, account, categories) {
+    const queries = cacheQueriesForCategories(categories);
+    if (!queries.length) return;
+    const cache = session.cache;
+    try {
+      await syncOverviewCache(session, account, { queries, reason: 'category' });
+    } catch (error) {
+      // 连接级读取异常没有机会进入 collectState.onResult；仍按本批分类保留旧值并标记过期。
+      if (session.cache === cache) {
+        for (const category of categories) {
+          const previous = cache.categories.get(category) ?? { updatedAt: null, stale: true, error: null };
+          cache.categories.set(category, { ...previous, stale: true, error: error.message });
+        }
+        cache.lastError = error.message;
+      }
+    } finally {
+      // 分类回读失败时不能把动作中的确认快照泄露到总览；下一次批次会重新采集。
+      if (session.cache === cache) for (const query of queries) cache.stagedQueries.delete(query.name);
+    }
+  }
+
+  /** 登录后先同步核心数据，再后台补齐完整总览并启用空闲定时刷新。 */
+  async function startOverviewCacheLifecycle(session, account) {
+    session.cache = createOverviewCache();
+    const cache = session.cache;
+    // 连接接口不等待几十条只读请求；核心数据、完整总览和定时器按顺序在后台建立。
+    void (async () => {
+      try {
+        await syncOverviewCache(session, account, { queries: ENTRY_QUERIES.filter(query => CORE_CACHE_QUERIES.has(query.name)), reason: 'core' });
+        if (session.cache !== cache) return;
+        cache.initialSync = false;
+        await syncOverviewCache(session, account);
+        if (session.cache === cache && session.client?.connected && !session.manualDisconnect && !session.paused
+          && !session.loop.running && !session.busy && !automationStatus(session.id).running) startOverviewCacheTimer(session, account);
+      } catch (error) {
+        if (session.cache !== cache) return;
+        cache.lastError = error.message;
+        cache.initialSync = false;
+        cache.syncing = false;
+      }
+    })();
+  }
+
+  /**
+   * 判断该账号是否仍有会与兑换写请求交叉的工作。
+   * 挂机、推关和新版自动化即使暂时没有网络包，也必须保持等待，避免下一步交叉发包。
+   *
+   * @param {object} session 当前账号会话。
+   * @returns {boolean} 是否应继续等待。
+   */
+  function hasActiveGiftRedeemConflict(session) {
+    return Boolean(session.busy
+      || session.loop.running
+      || session.stages.view().running
+      || automationStatus(session.id).running);
+  }
+
+  /**
+   * 等待在线账号腾出原有业务锁；离线时返回 null，绝不因批量兑换重新登录账号。
+   *
+   * @param {object} session 当前账号会话。
+   * @param {object} account 当前账号凭证。
+   * @param {{id: string}} batch 当前批次。
+   * @returns {Promise<GameClient|null>} 已占用业务锁的连接，或已离线标记。
+   */
+  async function acquireGiftRedeemSlot(session, account, batch) {
+    let announced = false;
+    while (session.client?.connected) {
+      if (!hasActiveGiftRedeemConflict(session)) {
+        // 业务锁在真正发送前才占用：既不打断已有操作，也会阻止新的写操作插队。
+        session.busy = GIFT_CODE_BATCH_ROUTE;
+        return session.client;
+      }
+      if (!announced) {
+        announced = true;
+        emitGiftRedeemLog('warn', account, batch, 'waiting', '这个账号正在执行操作，请等待或先停止');
+      }
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+    return null;
+  }
+
+  /**
+   * 把批量兑换的每个阶段同时写入全局运行日志和账号页结果流。
+   * 全局日志不带单账号 SSE 过滤，切换账号期间仍能持续看到本批进度。
+   *
+   * @param {'info'|'warn'|'error'} level 日志级别。
+   * @param {object|null} account 对应账号；开始和汇总阶段可为空。
+   * @param {{id: string}} batch 当前批次。
+   * @param {'start'|'offline'|'waiting'|'result'|'summary'} phase 批次阶段。
+   * @param {string} message 可读结果。
+   * @param {object} [details] 页面结果面板需要的结构化字段。
+   */
+  function emitGiftRedeemLog(level, account, batch, phase, message, details = {}) {
+    const title = account ? describeAccount(account).title : null;
+    const prefix = title ? `批量兑换 · ${title} · ` : '批量兑换 · ';
+    // 批量任务跨账号执行，必须作为全局事件广播；否则账号页只能看到当前选中账号的局部结果。
+    emit(null, level, prefix + message, {
+      batchRedeem: {
+        id: batch.id,
+        phase,
+        accountId: account?.id ?? null,
+        accountTitle: title,
+        ...details,
+      },
+    });
+  }
+
+  /**
+   * 在该账号的既有业务队列中完成全部兑换码，避免手动领取、任命等排队写操作插入两次兑换之间。
+   *
+   * @param {object} session 当前账号会话。
+   * @param {object} account 当前账号凭证。
+   * @param {{id: string}} batch 当前唯一批次。
+   * @param {string[]} codes 已规范化的兑换码。
+   * @param {{online: number, offline: number, succeeded: number, failed: number}} summary 本批汇总计数。
+   * @returns {Promise<void>} 当前账号处理结束后完成。
+   */
+  async function redeemGiftCodesForAccount(session, account, batch, codes, summary) {
+    const client = await acquireGiftRedeemSlot(session, account, batch);
+    if (!client) {
+      summary.offline += 1;
+      emitGiftRedeemLog('warn', account, batch, 'offline', '账号已离线，未调用兑换接口');
+      return;
+    }
+
+    summary.online += 1;
+    try {
+      for (let index = 0; index < codes.length; index += 1) {
+        const code = codes[index];
+        try {
+          const response = await client.request('GotGiftCodeRequest', { giftCode: code }, 'GotRewardResponse');
+          // 配置包可能很大；只在收到首个成功回包后加载，不能让后台批次在启动后无声卡住。
+          const rewards = formatGiftCodeRewards(response?.reward, loadConfigSafe(), protocol);
+          summary.succeeded += 1;
+          emitGiftRedeemLog('info', account, batch, 'result', `兑换码 ${code} 兑换成功：${rewards}`, {
+            status: 'success', code, rewards,
+          });
+        } catch (error) {
+          summary.failed += 1;
+          const reason = error instanceof Error ? error.message : String(error);
+          emitGiftRedeemLog('error', account, batch, 'result', `兑换码 ${code} 兑换失败：${reason}`, {
+            status: 'failed', code, reason,
+          });
+          // Prompt 已确认本码被服务器拒绝；其余异常没有本码终态，不能让迟到 GotRewardResponse 匹配下一码。
+          if (!error?.prompt) {
+            const remaining = codes.length - index - 1;
+            if (remaining > 0) emitGiftRedeemLog('warn', account, batch, 'result', `兑换结果未确认，已停止该账号剩余 ${remaining} 个兑换码`, {
+              status: 'stopped', remaining,
+            });
+            break;
+          }
+        }
+      }
+    } finally {
+      if (session.busy === GIFT_CODE_BATCH_ROUTE) session.busy = null;
+    }
+  }
+
+  /**
+   * 按已保存账号和输入兑换码顺序运行单个批次。
+   * Prompt 是服务端明确拒绝的单码结果，可以继续；超时、断线等结果未确认时必须停止当前账号，
+   * 避免迟到的同名奖励回包被错误归属给下一兑换码。
+   *
+   * @param {{id: string}} batch 当前唯一批次。
+   * @param {string[]} codes 已规范化的兑换码。
+   * @param {object[]} accounts 启动时按保存顺序冻结的账号快照。
+   * @returns {Promise<void>} 全部在线账号处理结束后完成。
+   */
+  async function runGiftCodeBatch(batch, codes, accounts) {
+    const summary = { online: 0, offline: 0, succeeded: 0, failed: 0 };
+    emitGiftRedeemLog('info', null, batch, 'start', `开始处理 ${codes.length} 个兑换码；仅调用当前在线账号`, { codes: codes.length, accounts: accounts.length });
+
+    for (const account of accounts) {
+      const session = sessionFor(account.id);
+      if (!session.client?.connected) {
+        summary.offline += 1;
+        emitGiftRedeemLog('warn', account, batch, 'offline', '账号未在线，未调用兑换接口');
+        continue;
+      }
+      try {
+        // 占用已有的 per-account 队列直到该账号所有兑换码处理完，其他排队写操作只能在本账号结束后继续。
+        await enqueue(session, () => redeemGiftCodesForAccount(session, account, batch, codes, summary), '批量兑换');
+      } catch (error) {
+        summary.offline += 1;
+        const reason = error instanceof Error ? error.message : String(error);
+        emitGiftRedeemLog('warn', account, batch, 'offline', `账号任务已取消，未调用剩余兑换码：${reason}`, {
+          reason, status: 'stopped',
+        });
+      }
+    }
+
+    emitGiftRedeemLog(summary.failed || summary.offline ? 'warn' : 'info', null, batch, 'summary',
+      `本批结束：在线 ${summary.online} 个，离线 ${summary.offline} 个，成功 ${summary.succeeded} 次，失败 ${summary.failed} 次`, summary);
   }
 
   // Share identical clicks until this account's queued operation has finished.
@@ -355,7 +778,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         // 循环持有登录对象引用，原地更新等级才能即时解锁上游功能。
         if (name === 'SCPlayerExpUpdate' && body.level > 0) {
           if (session.player.level !== body.level) {
-            for (const key of ['adShop', 'weekPass', 'trialSweep', 'dailyRewards', 'chests']) rewardSchedule(instance).clearTask(key);
+            for (const key of ['adShop', 'trialSweep', 'dailyRewards', 'chests']) rewardSchedule(instance).clearTask(key);
           }
           session.player.level = body.level;
           session.player.exp = body.exp;
@@ -392,6 +815,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     const handleUnexpectedDisconnect = (reason, allowReconnect) => {
       if (session.client !== instance) return;
       if (!connectionEstablished || disconnectNotified || session.manualDisconnect) return;
+      stopOverviewCacheTimer(session);
       // 旧循环可能正处在日常/海面阶段，没有 runAutomation 状态也必须立即停下。
       if (session.loop.running) {
         session.loop.stop.aborted = true;
@@ -445,10 +869,13 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     if (session.paused) throw new Error('账号已暂停，请先恢复托管');
     const loop = session.loop;
     if (loop.running) throw new Error('这个账号的循环已经在跑了');
+    stopOverviewCacheTimer(session);
     const normalized = { automationOnly: false, rounds: 0, everyMs: loop.everyMs, modules: 'all', ...options };
     if (!Number.isSafeInteger(normalized.rounds) || normalized.rounds < 0
       || !Number.isSafeInteger(normalized.everyMs) || normalized.everyMs < 1000 || normalized.everyMs > 86400000) throw new Error('轮数或循环间隔无效');
     const instance = await ensureConnected(session, account);
+    // 挂机开始前等待登录核心快照完成，避免首轮规划与初始化查询并发占用同一连接。
+    if (session.cache.syncPromise) await session.cache.syncPromise;
     if (loop.running) throw new Error('这个账号的循环已经在跑了');
     const config = loadConfigSafe();
     const runId = loop.runId + 1;
@@ -487,6 +914,9 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       schedule: work => enqueue(session, work),
       isEnabled: key => loop.tasks[key] === true,
       getFishingGoldReserve: () => loop.fishingGoldReserve,
+      onQuery: (name, value) => { if (session.client === instance) stageCachedQuery(session, name, value); },
+      onModuleComplete: async moduleId => refreshOverviewCategories(session, account, MODULE_CACHE_CATEGORIES[moduleId] ?? []),
+      onBatchComplete: async categories => refreshOverviewCategories(session, account, categories),
       adChannel: { clientInfo: account.login?.eworldClientInfo, language: account.login?.language },
       onRound: (summary) => {
         // 旧连接的循环可能在重连后才结束，不能覆盖新一轮的进度或错误状态。
@@ -508,8 +938,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       onStep: (entry) => {
         if (loop.runId !== runId || entry.status === 'disabled') return;
         if (entry.phase === 'automation') {
-          const failed = ['error', 'uncertain', 'failed', 'rejected'].includes(entry.status);
-          emit(session, failed ? 'error' : 'info', `[${LABELS[entry.module]}] ${entry.label ?? entry.request ?? ''} ${entry.status}${entry.reason ? '：' + entry.reason : ''}`);
+          emit(session, automationEntryLogLevel(entry), `[${LABELS[entry.module]}] ${entry.label ?? entry.request ?? ''} ${entry.status}${entry.reason ? '：' + entry.reason : ''}`);
           return;
         }
         // 上游工厂合并日志和拒绝诊断继续保留，不用模块日志覆盖其结构化信息。
@@ -538,6 +967,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
           loop.promise = null;
           loop.job = null;
           loop.controller = null;
+          if (session.client?.connected && !session.paused) startOverviewCacheTimer(session, account);
         }
       });
     loop.job = loop.promise;
@@ -640,6 +1070,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     for (const message of initial.messages) {
       if (appendMessage(session.messages, message)) emitGameMessage(session, message);
     }
+    // 登录后先提供农田、库存、舰队等核心缓存；其余总览查询在后台补齐，避免连接按钮长时间等待。
+    await startOverviewCacheLifecycle(session, account);
     return { url: account.url, result: response.result, initSeqNo: response.initSeqNo, playerInfo: session.player };
   }
 
@@ -719,16 +1151,24 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     }
   }
 
+  /**
+   * 从当前本地游戏配置读取单次付费点金钻石价格，配置缺失时不向设置页面伪造固定金额。
+   *
+   * @param {object|null} config 当前已加载的游戏配置。
+   * @returns {number|null} 可安全展示的正整数价格；无法确认时返回 null。
+   */
+  function clickGoldUnitPrice(config) {
+    const value = config?.tables?.OfflineParamCfg?.data?.find(row => row.paramName === '点金价格')?.paramValue;
+    const price = Number(value);
+    return Number.isSafeInteger(price) && price > 0 ? price : null;
+  }
+
   // ---- 只读汇总 -------------------------------------------------------------
 
-  /** 后台总览只读取现有连接；状态刷新不能使用保存的凭证重新登录游戏。 */
-  async function overview(session, account) {
-    const instance = session.client;
-    if (!instance?.connected) {
-      // 返回本机会话状态供页面清空旧数据，避免轮询因断线不断报错或触发登录。
-      return { account: describeAccount(account), status: accountStatus(session), player: null };
-    }
-    const { ok, failed } = await collectState(instance, protocol, { timeout: 15000, includeChat: false });
+  /** 从账号内存缓存构造总览；前端请求本身绝不触发游戏查询或隐式登录。 */
+  function buildOverviewFromCache(session, account) {
+    const ok = Object.fromEntries(session.cache.queries);
+    const failed = Object.fromEntries([...session.cache.categories].flatMap(([category, state]) => state.error ? [[category, state.error]] : []));
     const config = loadConfigSafe();
     // VIP 推送会在角色升档后覆盖登录快照，确保下一次总览立即使用新农作物容量。
     const cropVipLevel = session.pushes.get('SCVipUpdate')?.vipLevel ?? session.player?.vip?.vipLevel ?? 0;
@@ -737,7 +1177,20 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       scenarioId: Number(session.player?.scenarioId ?? 0),
       rawMaterialUpperBoundId: protocol.GameEffectId.RAW_MATERIAL_UPPER_BOUND,
       cropVipLevel,
+      pirateVipLevel: cropVipLevel,
     });
+    const merchantRankItems = ok.TreasureLootRankRequest?.items ?? [];
+    const playerId = describeRole(session.player)?.id;
+    // 当前角色可能未进入榜单；null 由页面转成“暂未上榜”，不猜测名次。
+    const merchantRank = merchantRankItems.find((item) => String(item.playerId) === String(playerId))?.rank ?? null;
+    const merchantShip = {
+      ...view.merchantShip,
+      rank: merchantRank,
+      reward: view.merchantShip.reward.map((asset) => ({
+        ...asset,
+        name: displayMaterial(config, asset.id),
+      })),
+    };
     const daily = view.daily;
     // 总览需要复用人工设置的种植水位，让页面能区分“低于目标”与“达到目标”。
     const cropKeepStock = loadSettings(account.id).modules?.farm?.cropKeepStock ?? {};
@@ -802,6 +1255,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       resFields: view.resFields,
       fleets: { count: view.fleets, list: view.fleetList },
       cargo: { count: view.cargo, list: view.cargoList },
+      merchantShip,
       trade: view.trade,
       tradeRadar: view.tradeRadar,
       pirates: view.pirates,
@@ -824,9 +1278,10 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       guide: view.guide,
       guideDone: view.guideDone,
       fish: view.fish,
-      updatedAt: new Date().toISOString(),
+      updatedAt: session.cache.updatedAt,
       unreadable: Object.keys(failed),
       text: formatState(view),
+      cache: cacheStatus(session),
     };
   }
 
@@ -983,7 +1438,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     const localRoute = /\/api\/(automation\/(settings|status|stop)|loop(?:\/stop)?$)/.test(parsed.pathname);
     // 手动交单有自己的账号队列和重复点击合并，不能在只读查询尚未返回时提前拒绝。
     const longRunning = !localRoute && route !== 'POST /api/world/order/submit'
-      && /\/api\/(connect|heroes|dailies|tasks|world|worlds|overview|automation|loop\/start|action)(\/|$)/.test(parsed.pathname);
+      && /\/api\/(connect|heroes|dailies|tasks|world|worlds|automation|loop\/start|action)(\/|$)/.test(parsed.pathname);
     let scoped = null;
     let releaseWrite;
     let ownsBusy = false;
@@ -992,13 +1447,11 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       const found = resolve(url);
       scoped = found.session;
       if (longRunning) {
-        // 总览是只读采集；页面刷新时允许新请求加入同一条在途采集，避免旧请求取消后留下忙碌错误。
-        const joiningOverview = route === 'GET /api/overview'
-          && found.session.busy === route
-          && found.session.overviewPromise;
         const overviewDuringLoop = route === 'GET /api/overview' && found.session.loop.running;
-        if ((found.session.busy && !joiningOverview) || (found.session.loop.running && !overviewDuringLoop) || automationStatus(found.account.id).running) throw new Error('这个账号正在执行操作，请等待或先停止');
-        if (!joiningOverview) {
+        const overviewRead = route === 'GET /api/overview';
+        if (!overviewRead && ((found.session.busy) || (found.session.loop.running && !overviewDuringLoop) || automationStatus(found.account.id).running)) throw new Error('这个账号正在执行操作，请等待或先停止');
+        // 总览允许在已有业务锁期间读取，但不能覆盖或提前释放正在执行的写操作锁。
+        if (!(overviewRead && found.session.busy)) {
           found.session.busy = route;
           ownsBusy = true;
         }
@@ -1067,6 +1520,29 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       if (route === 'GET /api/messages') {
         const { account, session } = scoped_(parsed);
         json({ account: account.id, connected: Boolean(session.client?.connected), errors: session.messageErrors, messages: snapshotMessages(session.messages) });
+        return;
+      }
+
+      // ---- 批量兑换码 --------------------------------------------------------
+      if (route === GIFT_CODE_BATCH_ROUTE) {
+        const payload = jsonBody();
+        needConfirm(payload);
+        if (giftCodeBatch) throw new Error('批量兑换码任务正在执行，请等待当前批次结束');
+        const codes = parseGiftCodes(payload.codes);
+        if (!codes.length) throw new Error('请至少输入一个兑换码（使用逗号或换行分隔）');
+        // 启动时冻结保存顺序；等待忙碌账号期间新增、删除或切换账号都不改变当前批次范围。
+        const accounts = [...loadStore().accounts];
+
+        const batch = { id: `gift-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` };
+        giftCodeBatch = batch;
+        // HTTP 只负责启动任务；等待忙碌账号可能持续很久，不能占住浏览器请求或触发超时。
+        batch.promise = Promise.resolve().then(() => runGiftCodeBatch(batch, codes, accounts))
+          .catch((error) => {
+            const reason = error instanceof Error ? error.message : String(error);
+            emitGiftRedeemLog('error', null, batch, 'summary', `本批异常中止：${reason}`, { reason });
+          })
+          .finally(() => { if (giftCodeBatch === batch) giftCodeBatch = null; });
+        json({ started: true, batchId: batch.id, codes });
         return;
       }
 
@@ -1152,6 +1628,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
           session.manualDisconnect = true;
           session.generation++;
           stopAutomation(account.id, { manual: true });
+          stopOverviewCacheTimer(session);
           session.client?.stop();
           session.client = null;
           session.player = null;
@@ -1181,6 +1658,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
           if (paused) {
             stopLoop(session, '账号暂停，结束挂机');
             session.stages.stop('账号已暂停');
+            stopOverviewCacheTimer(session);
+            session.cache = createOverviewCache();
             session.client?.stop();
             session.worldClient?.stop();
             session.connecting = session.client = session.player = null;
@@ -1211,6 +1690,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         stopAutomation(session.id, { manual: true });
         stopLoop(session, '账号已断开');
         session.stages.stop('账号已断开');
+        stopOverviewCacheTimer(session);
+        session.cache = createOverviewCache();
         session.client?.stop();
         session.connecting = null;
         session.client = null;
@@ -1261,13 +1742,33 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       if (route === 'GET /api/automation/settings') {
         const { account, session } = scoped_(parsed);
         // 选项只读取本地缓存，不为渲染设置页面建立游戏连接或查询角色状态。
-        json({ settings: loadSettings(account.id), labels: LABELS, modules: MODULES, options: automationFormOptions(loadConfigSafe()), vipAd: vipFreeAdEligibility(session) });
+        const config = loadConfigSafe();
+        json({ settings: loadSettings(account.id), labels: LABELS, modules: MODULES, options: automationFormOptions(config), clickGoldUnitPrice: clickGoldUnitPrice(config), vipAd: vipFreeAdEligibility(session) });
+        return;
+      }
+      if (route === 'GET /api/automation/pirate-sweep-status') {
+        const { session } = scoped_(parsed);
+        // 设置页只能复用当前游戏连接读取角色次数，不能因查看配置而使用存储的凭证自动登录。
+        if (!session.client?.connected) {
+          json({ connected: false });
+          return;
+        }
+        const state = await session.client.request('AllPirateRequest', {}, 'AllPirateResponse');
+        // 登录快照与最新 VIP 推送共同确定本角色的“基础 10 次 + 野怪扫荡次数额外配置”。
+        const vipLevel = session.pushes.get('SCVipUpdate')?.vipLevel ?? session.player?.vip?.vipLevel;
+        json({ connected: true, ...pirateSweepProgress(state.sweepTimes, pirateDailySweepLimit(loadConfigSafe()?.tables, vipLevel)) });
         return;
       }
       if (route === 'POST /api/automation/settings') {
         const payload = jsonBody(); needConfirm(payload);
-        const { account } = scoped_(parsed);
-        json({ settings: saveSettings(account.id, payload.settings) });
+        const { account, session } = scoped_(parsed);
+        let pirateDailyLimit = null;
+        if (session.client?.connected) {
+          // 在线保存时重新读取当前角色 VIP，避免页面打开后升档或切换角色导致旧上限被绕过。
+          const vipLevel = session.pushes.get('SCVipUpdate')?.vipLevel ?? session.player?.vip?.vipLevel;
+          pirateDailyLimit = pirateDailySweepLimit(loadConfigSafe()?.tables, vipLevel);
+        }
+        json({ settings: saveSettings(account.id, payload.settings, { pirateDailyLimit }) });
         return;
       }
       if (route === 'GET /api/automation/status') {
@@ -1293,7 +1794,10 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         const client = await ensureConnected(session, account);
         // 单次执行也持有独立停止来源，确保用户主动取消不会被当作异常停止通知。
         const stop = { aborted: false, manuallyStopped: false };
-        const promise = runAutomation({ client, protocol, config: getConfig(), player: session.player, accountId: account.id, selector, dryRun, initialPushes: session.pushes, stop, onStep: row => emit(session, row.status === 'error' || row.status === 'uncertain' ? 'error' : 'info', `[${LABELS[row.module]}] ${row.label ?? row.request ?? ''} ${row.status}${row.reason ? '：' + row.reason : ''}`) });
+        const promise = runAutomation({ client, protocol, config: getConfig(), player: session.player, accountId: account.id, selector, dryRun, initialPushes: session.pushes, stop,
+          onQuery: (name, value) => { if (session.client === client) stageCachedQuery(session, name, value); },
+          onModuleComplete: async moduleId => refreshOverviewCategories(session, account, MODULE_CACHE_CATEGORIES[moduleId] ?? []),
+          onStep: row => emit(session, row.status === 'error' || row.status === 'uncertain' ? 'error' : 'info', `[${LABELS[row.module]}] ${row.label ?? row.request ?? ''} ${row.status}${row.reason ? '：' + row.reason : ''}`) });
         if (dryRun) json(await promise);
         else {
           void promise
@@ -1310,12 +1814,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       }
       if (route === 'GET /api/overview') {
         const { account, session } = scoped_(parsed);
-        // 共享同一账号的在途总览，避免刷新页面时重复向游戏发送整组只读请求。
-        if (!session.overviewPromise) {
-          const promise = overview(session, account);
-          session.overviewPromise = promise;
-        }
-        json(await session.overviewPromise);
+        // 总览接口只返回账号内存快照；游戏查询由登录、定时器和挂机批次刷新负责。
+        json(buildOverviewFromCache(session, account));
         return;
       }
       if (route === 'GET /api/heroes') {
@@ -1528,7 +2028,6 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         needConfirm(jsonBody());
         const { account, session } = scoped_(parsed);
         session.claiming ??= enqueue(session, async () => {
-          if (session.overviewRead) await session.overviewRead;
           const instance = await ensureConnected(session, account);
           emit(session, 'info', '开始一键领取');
           const results = await claimRewards(instance, protocol, loadConfigSafe(), ({ label, ok, error }) =>
@@ -1724,7 +2223,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         session.loop.tasks = tasks;
         if (session.client && payload.enabled) rewardSchedule(session.client).clearTask(task.key);
         // 上游开关全部关闭时，已启用的新版模块仍应继续运行。
-        if (!Object.values(tasks).some(Boolean) && !Object.values(loadSettings(session.id).modules).some(options => options.enabled)) stopLoop(session, '全部自动项目已暂停');
+        if (!Object.values(tasks).some(Boolean) && !hasConfiguredAutomation(loadSettings(session.id))) stopLoop(session, '全部自动项目已暂停');
         emit(session, 'info', task.label + (payload.enabled ? '已启用' : '已暂停'));
         json(loopView(session));
         return;
@@ -1738,8 +2237,6 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       releaseWrite?.();
       if (ownsBusy && scoped?.busy === route) {
         scoped.busy = null;
-        // 只由创建采集的请求释放共享标记；加入者不能清掉仍在返回中的结果。
-        if (route === 'GET /api/overview') scoped.overviewPromise = null;
       }
     }
   }
