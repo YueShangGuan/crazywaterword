@@ -32,7 +32,11 @@ function fixture(id) {
       return surveyDailies(this, protocol, { config, player, probeGift: false, idle });
     },
     run(survey) {
-      return runDailies(this, protocol, survey, { allowMutate: true, config, claimRewards: false });
+      // 本夹具只验证日常计划和协议动作，显式执行器避免创建账号级业务锁。
+      return runDailies(this, protocol, survey, { allowMutate: true, config, claimRewards: false,
+        actionExecutor: step => step.response
+          ? this.request(step.request, step.body, step.response)
+          : this.sendWatch(step.request, step.body) });
     },
     async challenge(body) {
       const target = this.arena.challenges.find(row => row.rankNo === body.rank && exactId(row.id) === exactId(body.challengeId));
@@ -71,13 +75,20 @@ function fixture(id) {
   return f;
 }
 
+/** 单元夹具只模拟协议收发，不创建生产环境的账号级写入会话。 */
+function executeFixtureAction(client, action) {
+  return action.response
+    ? client.request(action.request, action.body, action.response)
+    : client.sendWatch(action.request, action.body);
+}
+
 for (const idle of [false, true]) {
   const f = fixture(1005);
   const survey = await f.preview(idle);
   assert.equal(survey.tasks[0].actions?.length, 1, '每轮只列一个可挑战对手，后续需重新读榜');
   assert.equal(survey.tasks[0].actions[0].body.challengeId, '9007199254740993');
   const results = await f.run(survey);
-  assert.ok(results.some(row => row.ok));
+  assert.ok(results.some(row => row.ok), JSON.stringify(results));
   assert.equal(f.writes.length, 1);
   assert.deepEqual(f.writes[0][1], { rank: 80, challengeId: bigId });
 }
@@ -191,7 +202,7 @@ for (const [taskId, key] of [[1005, 'arena'], [1010, 'pirate']]) {
   f.challenge = () => { throw new Error('server prompt: not in challenge list'); };
   f.sweep = () => { throw new Error('server prompt: cannot sweep'); };
   await runLoop(f, protocol, { config, player, rounds: 2, everyMs: 0, sleep: async () => {},
-    allowMutate: true, isEnabled: name => name === key });
+    allowMutate: true, isEnabled: name => name === key, actionExecutor: action => executeFixtureAction(f, action) });
   assert.equal(f.writes.length, 1, '挂机下一轮不能向同一无效目标重发');
 
   const blocked = fixture(taskId);
@@ -199,7 +210,7 @@ for (const [taskId, key] of [[1005, 'arena'], [1010, 'pirate']]) {
   blocked.records = [];
   const logs = [];
   await runLoop(blocked, protocol, { config, player, rounds: 2, everyMs: 0, sleep: async () => {},
-    allowMutate: true, isEnabled: name => name === key, onStep: entry => logs.push(entry) });
+    allowMutate: true, isEnabled: name => name === key, actionExecutor: action => executeFixtureAction(blocked, action), onStep: entry => logs.push(entry) });
   assert.deepEqual(blocked.writes, []);
   assert.equal(logs.filter(entry => entry.phase === 'dailies' && entry.skipped && entry.reason).length, 1,
     '连续两轮的同一阻塞原因只记录一次');

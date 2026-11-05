@@ -42,14 +42,14 @@ function eventList(info) {
   return result;
 }
 
-function freeFleet(fleet) {
+export function freeFleet(fleet) {
   return /^\d+远征船$/.test(fleet?.buildingId ?? '') && fleet.state === 1 && !fleet.repairing
     && !fleet.autoFight?.isOn && safe(fleet.treasureLootUid) === 0 && !fleet.chipWar
     && !(fleet.curGridIdx > 0) && !(fleet.targetGridIdx > 0) && !(fleet.targetCityId > 0)
     && safe(fleet.durability) !== null && safe(fleet.maxDura) > 0 && fleet.durability <= fleet.maxDura;
 }
 
-function normalizeFleet(fleet) {
+export function normalizeFleet(fleet) {
   return { ...fleet, durability: safe(fleet.durability), maxDura: safe(fleet.maxDura),
     treasureLootUid: safe(fleet.treasureLootUid ?? 0) };
 }

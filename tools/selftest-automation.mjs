@@ -98,6 +98,10 @@ try {
   }
   await api('a', '/fishing-reserve', { fishingGoldReserve: 12500 });
   assert.equal((await request('loop/fishing-reserve', { fishingGoldReserve: -1 })).status, 400);
+  await api('a', '/compass-spin-count', { compassSpinCount: 25 });
+  for (const compassSpinCount of [0, 1.5, 1000, '3']) assert.equal((await request('loop/compass-spin-count', { compassSpinCount })).status, 400);
+  assert.equal(app.sessions.get('a').loop.compassSpinCount, 25);
+  assert.equal(app.sessions.get('b')?.loop.compassSpinCount ?? 10, 10, '抽奖券张数按账号保存');
   assert.equal((await api('b', '')).fishingGoldReserve, defaultFishingGoldReserve);
   assert.equal((await (await request('accounts/pause', { paused: true })).json()).paused, true);
   const before = logins;
@@ -105,8 +109,8 @@ try {
   await open();
   assert.equal((await api('a', '')).running, false);
   assert.equal((await api('a', '')).fishingGoldReserve, 12500);
-  // 总览断线时返回离线状态，不会像写入口一样尝试重连或抛暂停错误。
-  assert.equal((await (await request('overview')).json()).status.connected, false);
+  // 上游将总览与其他连接操作统一纳入暂停保护，避免暂停账号被读取时意外重连。
+  assert.match((await (await request('overview')).json()).error, /账号已暂停/);
   // 新增玩法开关仍需随账号设置持久化，恢复托管后才能安全继续执行。
   for (const key of progressionKeys) assert.equal((await api('b', '')).tasks.find(task => task.key === key).enabled, true);
   for (const [route, payload] of [['connect', {}], ['worlds/enter', { confirm: true, worldId: 1 }], ['loop/start', { confirm: true }]]) {

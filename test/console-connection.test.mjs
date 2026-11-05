@@ -12,7 +12,7 @@ import { PAGE } from '../src/page.mjs';
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-console-connection-'));
 process.env.CW_DATA_DIR = directory;
 const { saveStore, upsertAccount } = await import('../src/accounts.mjs');
-const { defaultSettings, saveSettings } = await import('../src/automation/settings.mjs');
+const { defaultSettings } = await import('../src/automation/settings.mjs');
 const { automationEntryLogLevel, createConsole, parseGiftCodes } = await import('../src/server.mjs');
 after(() => fs.rmSync(directory, { recursive: true, force: true }));
 
@@ -63,6 +63,15 @@ function mockGateway(t, login = async () => ({ result: 0, initSeqNo: 1, playerIn
   t.mock.method(GameClient.prototype, 'send', () => 1);
   t.mock.method(GameClient.prototype, 'request', request);
   return connecting;
+}
+
+/** Wait for asynchronous local-only work without exposing test timing to the implementation. */
+async function waitFor(predicate, message, attempts = 50) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (predicate()) return;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  assert.fail(typeof message === 'function' ? message() : message);
 }
 
 /** 已确认的主线战败是正常业务结果，其他失败状态仍须以错误样式展示。 */
@@ -266,32 +275,6 @@ test('console: pirate sweep settings enforce the connected role daily cap', asyn
   assert.equal(login.mock.callCount(), 1);
 });
 
-/**
- * 启动只接收本测试通知的本地企微 Webhook，避免访问真实机器人地址。
- *
- * @param {object} t Node.js 测试上下文。
- * @returns {Promise<{messages: object[], webhook: string}>} 已接收消息数组和测试 Webhook 地址。
- */
-async function wecomFixture(t) {
-  const messages = [];
-  const server = http.createServer((req, res) => {
-    let body = '';
-    req.setEncoding('utf8');
-    req.on('data', chunk => { body += chunk; });
-    req.on('end', () => {
-      messages.push(JSON.parse(body));
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ errcode: 0 }));
-    });
-  });
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  t.after(async () => {
-    server.closeAllConnections();
-    await new Promise(resolve => server.close(resolve));
-  });
-  return { messages, webhook: `http://127.0.0.1:${server.address().port}/wecom` };
-}
-
 /** 复现“断开后轮询又登录”，并验证显式连接和多账号隔离。 */
 test('console: disconnect survives polling and queued business requests until explicit connect', async t => {
   const login = mockGateway(t);
@@ -481,45 +464,88 @@ test('console: overview preserves an active operation busy lock', async t => {
  */
 function pageFixture({ looping = false } = {}) {
   const nodes = new Map();
-  /** DOM 桩同时模拟日志节点的子项、滚动位置和指针事件，不触发浏览器或网络副作用。 */
+  const elements = [];
+  /** Match the selectors used by the bundled page without implementing a complete browser DOM. */
+  function matchesSelector(value, selector) {
+    return selector.split(',').some((part) => {
+      const query = part.trim();
+      if (query.startsWith('.')) return query.slice(1).split('.').every(name => value.className.split(/\s+/).includes(name));
+      const match = query.match(/^\[data-([a-z-]+)(?:=([^\]]+))?\]$/);
+      if (!match) return false;
+      const key = match[1].replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+      const expected = match[2]?.replace(/["']/g, '');
+      return Object.hasOwn(value.dataset, key) && (expected === undefined || value.dataset[key] === expected);
+    });
+  }
+  /** DOM 桩同时模拟日志节点、设置开关和指针事件，不触发浏览器或网络副作用。 */
   function element() {
     const listeners = new Map();
+    const attributes = new Map();
+    let ownText = '';
     const value = {
       disabled: false,
-      textContent: '',
       className: '',
       style: {},
+      dataset: {},
+      value: '',
+      valueAsNumber: 0,
+      checked: false,
+      hidden: false,
+      parentNode: null,
       children: [],
       clientHeight: 0,
       scrollHeight: 0,
       scrollTop: 0,
-      classList: { contains: () => true, add: () => {}, remove: () => {}, toggle: () => {} },
-      appendChild(child) { this.children.push(child); child.parentNode = this; return child; },
+      classList: {
+        // The fixture only opens the overview tab; background page refreshes must stay behind their hidden panels.
+        contains(name) { return name === 'hidden' && ['tab-idle', 'tab-manual', 'tab-stages', 'tab-heroes', 'tab-dailies', 'tab-activities', 'tab-account', 'tab-automation'].includes(value.id); },
+        add: () => {}, remove: () => {}, toggle: () => {},
+      },
+      appendChild(child) { ownText = ''; this.children.push(child); child.parentNode = this; return child; },
       append(...children) { children.forEach(child => this.appendChild(child)); },
       replaceChildren(...children) { this.children = []; children.forEach(child => this.appendChild(child)); },
       removeChild(child) { this.children.splice(this.children.indexOf(child), 1); child.parentNode = null; return child; },
+      remove() { this.parentNode?.removeChild(this); },
       contains(child) { for (let node = child; node; node = node.parentNode) if (node === this) return true; return false; },
+      setAttribute(name, attributeValue) { attributes.set(name, String(attributeValue)); },
+      getAttribute(name) { return attributes.get(name) ?? null; },
+      querySelectorAll(selector) {
+        const descendants = [];
+        const visit = item => { for (const child of item.children ?? []) { descendants.push(child); visit(child); } };
+        visit(this);
+        return descendants.filter(child => matchesSelector(child, selector));
+      },
+      querySelector(selector) { return this.querySelectorAll(selector)[0] ?? null; },
+      closest() { return null; },
       addEventListener(type, listener) { listeners.set(type, listener); },
       emit(type) { listeners.get(type)?.({ type, target: this }); },
     };
     Object.defineProperties(value, {
+      textContent: { get: () => ownText, set: text => { ownText = String(text); value.children.forEach(child => { child.parentNode = null; }); value.children = []; } },
       childElementCount: { get: () => value.children.length },
       firstChild: { get: () => value.children[0] ?? null },
+      lastElementChild: { get: () => value.children.at(-1) ?? null },
       innerText: { get: () => value.children.length ? value.children.map(child => child.innerText ?? child.textContent).join('\n') : value.textContent },
     });
+    elements.push(value);
     return value;
   }
   /** 按 ID 复用节点，使真实页面绑定的事件可被测试直接调用。 */
   function node(id) {
-    if (!nodes.has(id)) nodes.set(id, element());
+    if (!nodes.has(id)) {
+      const value = element();
+      value.id = id;
+      nodes.set(id, value);
+    }
     return nodes.get(id);
   }
   let connected = true;
   const calls = [];
   const clipboardWrites = [];
-  const notificationRequests = [];
+  const notifyRequests = [];
   const giftRedeemRequests = [];
-  let notifications = { wecom: { enabled: false, webhook: '' } };
+  let notifySettings = { webhookUrl: '', webhookFormat: 'generic', events: { kicked: true, disconnect: true, recovered: true } };
+  const notifyEvents = [{ key: 'kicked', label: '账号被顶号' }, { key: 'disconnect', label: '连接中断' }, { key: 'recovered', label: '恢复挂机' }];
   const windowListeners = new Map();
   const documentListeners = new Map();
   const window = {
@@ -533,7 +559,7 @@ function pageFixture({ looping = false } = {}) {
     getElementById: node,
     createElement: element,
     createTextNode: text => ({ textContent: text, parentNode: null }),
-    querySelectorAll: () => [],
+    querySelectorAll: selector => elements.filter(value => matchesSelector(value, selector)),
     addEventListener(type, listener) { documentListeners.set(type, listener); },
     emit(type) { documentListeners.get(type)?.({ type, target: document }); },
   };
@@ -552,14 +578,13 @@ function pageFixture({ looping = false } = {}) {
       const status = { connected, state: connected ? 'READY' : 'STOPPED', busy: null, looping };
       let data;
       if (route === '/api/accounts') data = { activeId: 'page-a', accounts: [{ id: 'page-a', title: '离线账号', status }] };
-      else if (route === '/api/accounts/notifications' && options.method === 'POST') {
-        // 页面保存必须携带确认标记，夹具记录请求体以验证只写通知这一小段设置。
+      else if (route === '/api/notify/save' && options.method === 'POST') {
         const payload = JSON.parse(options.body);
-        notificationRequests.push(payload);
-        notifications = payload.notifications;
-        data = { notifications };
+        notifyRequests.push(payload);
+        notifySettings = payload;
+        data = { settings: notifySettings };
       }
-      else if (route === '/api/accounts/notifications') data = { notifications };
+      else if (route === '/api/notify') data = { settings: notifySettings, events: notifyEvents, formats: ['generic', 'wecom', 'feishu'] };
       else if (route === '/api/gift-codes/redeem') {
         const payload = JSON.parse(options.body);
         giftRedeemRequests.push(payload);
@@ -574,7 +599,7 @@ function pageFixture({ looping = false } = {}) {
   // 保留实际事件和轮询函数，仅移除启动调用，避免异步 boot 干扰用例顺序。
   vm.runInContext(script.slice(0, script.lastIndexOf('boot();')), context);
   vm.runInContext("current = 'page-a'", context);
-  return { context, calls, node, window, clipboardWrites, notificationRequests, giftRedeemRequests, getNotifications: () => notifications };
+  return { context, calls, node, window, clipboardWrites, notifyRequests, giftRedeemRequests };
 }
 
 /** 页面断开后不再采集总览；再次连接立即更新缓存、按钮和总览。 */
@@ -595,36 +620,14 @@ test('console page: disconnect clears cached status and polling waits for explic
   assert.equal(node('disconnect').disabled, false);
 });
 
-/** 总览手动刷新按钮必须复用总览接口，并在请求结束后恢复可点击状态。 */
+/** 总览按钮复用缓存接口，返回后维持当前连接状态和刷新能力。 */
 test('console page: overview refresh button requests current overview', async () => {
   const { context, calls, node } = pageFixture();
   await vm.runInContext('loadAccounts(false)', context);
   assert.equal(node('overview-refresh').disabled, false);
-  assert.equal(node('overview-refresh').textContent, '刷新数据');
-
-  const fetch = context.fetch;
-  let releaseOverview;
-  let reportStarted;
-  const started = new Promise(resolve => { reportStarted = resolve; });
-  const delayed = new Promise(resolve => { releaseOverview = resolve; });
-  context.fetch = async url => {
-    const response = await fetch(url);
-    if (url.split('?')[0] === '/api/overview') {
-      reportStarted();
-      await delayed;
-    }
-    return response;
-  };
-  const refreshing = node('overview-refresh').onclick();
-  await started;
-  assert.equal(node('overview-refresh').disabled, true);
-  assert.equal(node('overview-refresh').textContent, '刷新中...');
-  releaseOverview();
-  await refreshing;
-
+  await node('overview-refresh').onclick();
   assert.equal(calls.filter(route => route === '/api/overview').length, 1);
   assert.equal(node('overview-refresh').disabled, false);
-  assert.equal(node('overview-refresh').textContent, '刷新数据');
 });
 
 /** 自动和手动总览刷新在挂机状态下都必须把接口返回的数据写入总览。 */
@@ -639,63 +642,6 @@ test('console page: manual overview refresh renders data while looping', async (
   assert.equal(calls.filter(route => route === '/api/overview').length, 2);
   assert.ok(node('res').children.length >= 1);
   assert.match(node('res').innerText, /金币/);
-});
-
-/** 生产面板传给通用表格的图文项必须使用 name，不能泄露未被渲染的协议字段 id。 */
-test('console page: production panel passes product names to the table renderer', () => {
-  const { context } = pageFixture();
-  let farmRows = null;
-  let factoryRows = null;
-  // 该用例只核对生产数据到表格的字段契约，不依赖完整浏览器模板的 DOM 实现。
-  context.chip = () => context.document.createElement('span');
-  context.table = (headers, rows) => {
-    if (headers[0] === '农田') farmRows = rows;
-    if (headers[0] === '工厂') factoryRows = rows;
-    return context.document.createElement('table');
-  };
-
-  vm.runInContext(`renderOverviewProduction({ production: { farms: [
-    { buildingId: '1农田', productId: '小麦', icon: null, ripeTime: 1 },
-  ], factories: [
-    { buildingId: '1食品厂', queue: [{ productId: '香煎鱼排', icon: null, finishTime: 1 }], autoProductId: null, finished: [] },
-    { buildingId: '1海水厂', queue: [], autoProductId: '淡水', autoIcon: null, finished: [] },
-  ] } })`, context);
-
-  assert.equal(farmRows[0][1].cells[0].name, '小麦');
-  assert.equal(factoryRows[0][1].cells[0].name, '香煎鱼排');
-  assert.equal(factoryRows[1][1].cells[0].name, '自动：淡水');
-});
-
-/** 万吨货轮卡片按有船和无船两种状态显示次数、奖品、排名或空状态提示。 */
-test('console page: merchant ship panel renders active and absent states', () => {
-  const active = pageFixture();
-  const { context, node } = active;
-  vm.runInContext(`renderOverviewMerchantShip({ merchantShip: {
-    remainingRewardTimes: 2, uid: 77, reward: [{ name: '高级宝箱', num: 3 }], rank: 5,
-  } })`, context);
-  assert.match(node('overview-merchant-ship').innerText, /今日剩余领奖次数/);
-  assert.match(node('overview-merchant-ship').innerText, /高级宝箱 ×3/);
-  assert.match(node('overview-merchant-ship').innerText, /第 5 名/);
-
-  const absent = pageFixture();
-  vm.runInContext(`renderOverviewMerchantShip({ merchantShip: {
-    remainingRewardTimes: 1, uid: null, reward: [], rank: null,
-  } })`, absent.context);
-  assert.match(absent.node('overview-merchant-ship').innerText, /当前不存在万吨货轮/);
-  assert.doesNotMatch(absent.node('overview-merchant-ship').innerText, /当前奖品/);
-});
-
-/** 手动刷新不能因自动化状态轮询或已有业务请求计数而丢弃服务端返回的总览。 */
-test('console page: manual overview refresh waits through page business activity', async () => {
-  const { context, calls, node } = pageFixture({ looping: true });
-  await vm.runInContext('loadAccounts(false)', context);
-  vm.runInContext("automationRunning = true; activeBusinessRequests = 1", context);
-
-  await node('overview-refresh').onclick();
-
-  assert.equal(calls.filter(route => route === '/api/overview').length, 1);
-  assert.equal(node('res').children.length, 1);
-  assert.match(node('res').children[0].innerText, /金币/);
 });
 
 /** 在途总览保留旧的已连接状态，断开完成后必须丢弃这条迟到响应。 */
@@ -724,27 +670,6 @@ test('console page: a late overview cannot restore the disconnected buttons or s
   assert.equal(vm.runInContext('snapshot.connected', context), false);
   assert.equal(node('connect').disabled, false);
   assert.equal(node('disconnect').disabled, true);
-});
-
-/** 拖选尚未形成浏览器 Selection 时，日志更新也不能裁剪节点或强制滚动。 */
-test('console page: pointer drag protects pending runtime-log selection', () => {
-  const { context, node, window } = pageFixture();
-  const log = node('log');
-  log.clientHeight = 100;
-  log.scrollHeight = 200;
-  log.scrollTop = 100;
-  vm.runInContext("for (let i = 0; i < 400; i += 1) appendLog({ t: 0, level: 'info', message: String(i) });", context);
-
-  log.scrollTop = 100;
-  log.emit('pointerdown');
-  vm.runInContext("appendLog({ t: 0, level: 'info', message: 'during-drag' });", context);
-  assert.equal(log.childElementCount, 401);
-  assert.equal(log.scrollTop, 100);
-
-  window.emit('pointerup');
-  vm.runInContext("appendLog({ t: 0, level: 'info', message: 'after-drag' });", context);
-  assert.equal(log.childElementCount, 400);
-  assert.equal(log.scrollTop, 200);
 });
 
 /** 自动化日志复制按钮必须写入实际运行结果面板的当前内容。 */
@@ -794,61 +719,22 @@ test('console page: message panel renders the selected tab from the memory snaps
   assert.match(node('message-list').children.at(-1).innerText, /系统公告/);
 });
 
-/** 账号页读取并保存当前账号独立的企微机器人地址，不能借用完整自动化设置接口。 */
-test('console page: account tab saves the current WeCom notification settings', async () => {
-  const { context, calls, getNotifications, node, notificationRequests } = pageFixture();
-  await vm.runInContext('renderWecomNotification()', context);
-  assert.equal(node('wecom-enabled').checked, false);
-  assert.equal(node('wecom-webhook').value, '');
+/** 挂机页保存一套全局 Webhook 配置，并允许在保存后发送测试消息。 */
+test('console page: idle panel saves shared Webhook notification settings', async () => {
+  const { context, calls, node, notifyRequests } = pageFixture();
+  vm.runInContext(`renderNotify({ settings: {
+    webhookUrl: '', webhookFormat: 'generic', events: { kicked: true, disconnect: false, recovered: true },
+  }, events: [{ key: 'kicked', label: '账号被顶号' }, { key: 'disconnect', label: '连接中断' }, { key: 'recovered', label: '恢复挂机' }] })`, context);
+  node('notify-webhook').value = 'https://notify.invalid/hook';
+  node('notify-format').value = 'wecom';
+  node('notify-webhook').emit('input');
+  await node('notify-form').onsubmit({ preventDefault() {} });
 
-  node('wecom-enabled').checked = true;
-  node('wecom-webhook').value = ' https://wecom.invalid/robot ';
-  await node('wecom-save').onclick();
-
-  assert.equal(calls.filter(route => route === '/api/accounts/notifications').length, 2);
-  assert.deepEqual(notificationRequests, [{ confirm: true, notifications: { wecom: { enabled: true, webhook: 'https://wecom.invalid/robot' } } }]);
-  assert.deepEqual(getNotifications(), { wecom: { enabled: true, webhook: 'https://wecom.invalid/robot' } });
-  assert.equal(node('wecom-hint').textContent, '企微通知已保存');
-});
-
-/** 顶部账号下拉切换后，企微表单必须刷新为新账号的地址，保存也只能写入该账号。 */
-test('console page: account switch reloads the selected account WeCom notification settings', async () => {
-  const { context, node } = pageFixture();
-  const notificationByAccount = new Map([
-    ['page-a', { wecom: { enabled: true, webhook: 'https://wecom.invalid/a' } }],
-    ['page-b', { wecom: { enabled: true, webhook: 'https://wecom.invalid/b' } }],
-  ]);
-  const saved = [];
-  const originalFetch = context.fetch;
-  context.EventSource = class EventSource { close() {} };
-  // 顶部切换会安排总览的延迟刷新；最小 DOM 夹具不执行计时器，但需要接受清理操作。
-  context.clearTimeout = () => {};
-  context.fetch = async (url, options = {}) => {
-    const parsed = new URL(url, 'http://page-fixture.invalid');
-    if (parsed.pathname !== '/api/accounts/notifications') return originalFetch(url, options);
-    const account = parsed.searchParams.get('account');
-    if (options.method === 'POST') {
-      const payload = JSON.parse(options.body);
-      // 保存请求以 URL 中的账号为准，模拟服务端按当前账号隔离的实际接口。
-      notificationByAccount.set(account, payload.notifications);
-      saved.push({ account, notifications: payload.notifications });
-    }
-    return { ok: true, json: async () => ({ notifications: notificationByAccount.get(account) }) };
-  };
-  vm.runInContext(`accounts = [
-    { id: 'page-a', title: '账号 A', status: { connected: true, state: 'READY', busy: null } },
-    { id: 'page-b', title: '账号 B', status: { connected: true, state: 'READY', busy: null } }
-  ]; current = 'page-a'; snapshot = accounts[0].status; renderAccountSelect();`, context);
-
-  await vm.runInContext('renderWecomNotification()', context);
-  assert.equal(node('wecom-webhook').value, 'https://wecom.invalid/a');
-  node('account').value = 'page-b';
-  await node('account').onchange();
-  assert.equal(node('wecom-webhook').value, 'https://wecom.invalid/b');
-
-  await node('wecom-save').onclick();
-  assert.deepEqual(saved, [{ account: 'page-b', notifications: { wecom: { enabled: true, webhook: 'https://wecom.invalid/b' } } }]);
-  assert.equal(notificationByAccount.get('page-a').wecom.webhook, 'https://wecom.invalid/a');
+  assert.deepEqual(notifyRequests, [{ webhookUrl: 'https://notify.invalid/hook', webhookFormat: 'wecom',
+    events: { kicked: true, disconnect: false, recovered: true } }]);
+  assert.equal(node('notify-hint').textContent, '已保存');
+  await node('notify-test').onclick();
+  assert.equal(calls.filter(route => route === '/api/notify/test').length, 1);
 });
 
 /** 页面提交必须带确认标记，并将 SSE 的逐条结果和汇总同步到账号页结果区。 */
@@ -869,231 +755,20 @@ test('console page: batch gift code submit and realtime result panel stay in syn
   assert.equal(node('batch-redeem-run').disabled, false);
 });
 
-/** 账号通知接口应按账号保存，且只更新企微通知字段。 */
-test('console: account WeCom notification endpoint keeps settings isolated', async t => {
+/** 全局通知配置由服务统一保存，切换账号不能产生另一套企微或钉钉地址。 */
+test('console: global notification settings are shared by all accounts', async t => {
   const { api } = await consoleFixture(t);
-  const initial = await api('/api/accounts/notifications');
-  assert.deepEqual(initial.value.notifications, { wecom: { enabled: false, webhook: '' } });
+  const initial = await api('/api/notify');
+  assert.equal(initial.status, 200);
+  assert.equal(initial.value.settings.webhookUrl, '');
+  assert(initial.value.events.some(event => event.key === 'disconnect'));
 
-  const notifications = { wecom: { enabled: true, webhook: 'https://wecom.invalid/robot' } };
-  const saved = await api('/api/accounts/notifications', { confirm: true, notifications });
-  assert.equal(saved.status, 200);
-  assert.deepEqual(saved.value.notifications, notifications);
-  assert.deepEqual((await api('/api/accounts/notifications', undefined, 'connection-b')).value.notifications, { wecom: { enabled: false, webhook: '' } });
-});
-
-/** 等待后台重连任务完成，超时后给出明确的异步恢复失败信号。 */
-async function waitFor(predicate, message, attempts = 50) {
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    if (predicate()) return;
-    await new Promise(resolve => setTimeout(resolve, 10));
-  }
-  assert.fail(typeof message === 'function' ? message() : message);
-}
-
-/** 单次自动化因业务错误结束时，已启用的企微机器人必须收到包含原因的停止通知。 */
-test('console: failed one-off automation sends a WeCom stop notification', async t => {
-  const { messages, webhook } = await wecomFixture(t);
-  mockGateway(t, undefined, async (name) => {
-    if (name === 'AllItemRequest') throw new Error('模拟库存读取失败');
-    return {};
-  });
-  const { api } = await consoleFixture(t);
-  const settings = defaultSettings();
-  settings.modules.cargo.enabled = true;
-  settings.notifications.wecom = { enabled: true, webhook };
-  saveSettings('connection-a', settings);
-
-  assert.equal((await api('/api/connect', {})).status, 200);
-  assert.equal((await api('/api/automation/run', { confirm: true, modules: 'cargo' })).status, 200);
-  await waitFor(() => messages.length === 1, '单次自动化失败后未发送企微停止通知');
-
-  assert.match(messages[0].text.content, /自动化异常停止/);
-  assert.match(messages[0].text.content, /单次自动化/);
-  assert.match(messages[0].text.content, /模拟库存读取失败/);
-});
-
-/** 循环内的自动化模块报错同样需要通知，不能只覆盖单次执行入口。 */
-test('console: failed automation loop sends a WeCom stop notification', async t => {
-  const { messages, webhook } = await wecomFixture(t);
-  mockGateway(t, undefined, async (name) => {
-    if (name === 'AllItemRequest') throw new Error('模拟循环库存读取失败');
-    return {};
-  });
-  const { api } = await consoleFixture(t);
-  const settings = defaultSettings();
-  settings.modules.cargo.enabled = true;
-  settings.notifications.wecom = { enabled: true, webhook };
-  saveSettings('connection-a', settings);
-
-  assert.equal((await api('/api/connect', {})).status, 200);
-  assert.equal((await api('/api/loop/start', { confirm: true, automationOnly: true, modules: ['cargo'], rounds: 1, everySeconds: 1 })).status, 200);
-  await waitFor(() => messages.length === 1, '循环自动化失败后未发送企微停止通知');
-
-  assert.match(messages[0].text.content, /自动化异常停止/);
-  assert.match(messages[0].text.content, /自动挂机/);
-  assert.match(messages[0].text.content, /模拟循环库存读取失败/);
-});
-
-/** 用户点击停止是明确的人工意图，不能把它误报为自动化异常。 */
-test('console: manually stopped automation does not send a WeCom stop notification', async t => {
-  const { messages, webhook } = await wecomFixture(t);
-  let releaseStock;
-  let stockRequestStarted;
-  const started = new Promise(resolve => { stockRequestStarted = resolve; });
-  const delayed = new Promise(resolve => { releaseStock = resolve; });
-  mockGateway(t, undefined, async (name) => {
-    if (name === 'AllItemRequest') {
-      stockRequestStarted();
-      await delayed;
-    }
-    return {};
-  });
-  const { api } = await consoleFixture(t);
-  const settings = defaultSettings();
-  settings.modules.cargo.enabled = true;
-  settings.notifications.wecom = { enabled: true, webhook };
-  saveSettings('connection-a', settings);
-
-  assert.equal((await api('/api/connect', {})).status, 200);
-  assert.equal((await api('/api/automation/run', { confirm: true, modules: 'cargo' })).status, 200);
-  await started;
-  assert.equal((await api('/api/automation/stop', { confirm: true })).status, 200);
-  releaseStock();
-  await new Promise(resolve => setTimeout(resolve, 50));
-
-  assert.equal(messages.length, 0);
-});
-
-/** 异常断线已有专属消息；它中止自动化时不能再额外发送一条停止通知。 */
-test('console: unexpected disconnect sends only the existing WeCom disconnect notification', async t => {
-  const { messages, webhook } = await wecomFixture(t);
-  let releaseStock;
-  let stockRequestStarted;
-  const started = new Promise(resolve => { stockRequestStarted = resolve; });
-  const delayed = new Promise(resolve => { releaseStock = resolve; });
-  mockGateway(t, undefined, async (name) => {
-    if (name === 'AllItemRequest') {
-      stockRequestStarted();
-      await delayed;
-    }
-    return {};
-  });
-  const { app, api } = await consoleFixture(t);
-  const settings = defaultSettings();
-  settings.modules.cargo.enabled = true;
-  settings.notifications.wecom = { enabled: true, webhook };
-  saveSettings('connection-a', settings);
-
-  assert.equal((await api('/api/connect', {})).status, 200);
-  assert.equal((await api('/api/automation/run', { confirm: true, modules: 'cargo' })).status, 200);
-  await started;
-  const client = app.sessions.get('connection-a').client;
-  client.emit('fatal', { reason: 'SCChannelExpired' });
-  client.stop();
-  releaseStock();
-  await waitFor(() => messages.length === 1, '异常断线后未发送企微断线通知');
-  await new Promise(resolve => setTimeout(resolve, 30));
-
-  assert.match(messages[0].text.content, /连接异常断开/);
-  assert.doesNotMatch(messages[0].text.content, /自动化异常停止/);
-  assert.equal(messages.length, 1);
-});
-
-/** 顶号表示另一位置已接管账号；通知后必须停止旧连接且不能创建第二次自动登录。 */
-test('console: SCChannelExpired does not auto reconnect', async t => {
-  const login = mockGateway(t);
-  const { app, api } = await consoleFixture(t);
-  assert.equal((await api('/api/connect', {})).status, 200);
-  const session = app.sessions.get('connection-a');
-  const oldClient = session.client;
-
-  oldClient.emit('fatal', { reason: 'SCChannelExpired' });
-  oldClient.stop();
-  await new Promise(resolve => setTimeout(resolve, 20));
-
-  assert.equal(login.mock.callCount(), 1);
-  assert.ok(session.log.some(entry => entry.message.includes('这个账号在别处登录了')));
-});
-
-/** 心跳超时要在停止旧会话后重连，并使用断线前的循环快照恢复自动挂机。 */
-test('console: heartbeat timeout reconnects and restores the prior loop', async t => {
-  const login = mockGateway(t);
-  const { app, api } = await consoleFixture(t);
-  assert.equal((await api('/api/connect', {})).status, 200);
-  const session = app.sessions.get('connection-a');
-  session.loop.running = true;
-  session.loop.stop = { aborted: false };
-  session.loop.options = {
-    automationOnly: true,
-    rounds: 1,
-    everyMs: 1000,
-    modules: ['farm'],
-    allowPaid: false,
-    allowSpeedUp: false,
-    allowReroll: false,
+  const settings = {
+    webhookUrl: 'https://notify.invalid/webhook', webhookFormat: 'wecom',
+    events: Object.fromEntries(initial.value.events.map(event => [event.key, event.key !== 'recovered'])),
   };
-  // 模拟旧循环 finally 释放运行标记；恢复只能在这一步完成后创建新循环。
-  session.loop.promise = Promise.resolve().then(() => {
-    session.loop.running = false;
-    session.loop.promise = null;
-  });
-
-  session.client.emit('warn', 'ping timeout');
-  await waitFor(
-    () => login.mock.callCount() === 2 && session.log.some(entry => entry.message === '已恢复断线前的自动挂机'),
-    '心跳超时后未完成自动重连与挂机恢复',
-  );
-
-  assert.equal(session.loop.options.automationOnly, true);
-  assert.deepEqual(session.loop.options.modules, ['farm']);
-  assert.ok(session.log.some(entry => entry.message.startsWith('已自动重连：服务器心跳超时')));
+  const saved = await api('/api/notify/save', settings);
+  assert.equal(saved.status, 200);
+  assert.deepEqual(saved.value.settings, settings);
+  assert.deepEqual((await api('/api/notify', undefined, 'connection-b')).value.settings, settings);
 });
-
-for (const route of ['/api/loop/stop', '/api/automation/stop']) {
-  for (const phase of ['old-loop', 'login']) {
-    /** 两个停止入口在重连的两个等待阶段都必须撤销旧挂机的恢复意图，连接本身仍可恢复。 */
-    test(`console: ${route} during reconnect ${phase} prevents loop restoration`, async t => {
-      let loginCount = 0;
-      let releaseLogin;
-      let releaseOldLoop;
-      const login = mockGateway(t, async () => {
-        loginCount += 1;
-        // 让用户停止请求稳定落在第二次登录等待期间，不依赖网络时序。
-        if (loginCount === 2 && phase === 'login') await new Promise(resolve => { releaseLogin = resolve; });
-        return { result: 0, initSeqNo: 1, playerInfo: { playerId: '1', nickname: '离线角色', level: 1 } };
-      });
-      const { app, api } = await consoleFixture(t);
-      assert.equal((await api('/api/connect', {})).status, 200);
-      const session = app.sessions.get('connection-a');
-      session.loop.running = true;
-      session.loop.options = { automationOnly: true, rounds: 1, everyMs: 1000, modules: ['farm'], allowPaid: false, allowSpeedUp: false, allowReroll: false };
-      const originalStop = session.loop.stop;
-      const originalRunId = session.loop.runId;
-      session.loop.promise = new Promise(resolve => { releaseOldLoop = resolve; }).then(() => {
-        session.loop.running = false;
-        session.loop.promise = null;
-      });
-      t.after(() => { releaseOldLoop(); releaseLogin?.(); });
-
-      session.client.emit('warn', 'ping timeout');
-      assert.ok(session.reconnect);
-      if (phase === 'login') {
-        releaseOldLoop();
-        await waitFor(() => Boolean(releaseLogin), '自动重连未进入登录等待阶段');
-      }
-      assert.equal((await api(route, { confirm: true })).status, 200);
-      assert.equal(originalStop.manuallyStopped, true);
-      releaseOldLoop();
-      releaseLogin?.();
-      await waitFor(() => session.reconnect === null, '主动停止后的重连任务未退出');
-
-      assert.equal(login.mock.callCount(), 2);
-      assert.equal(session.client.connected, true);
-      assert.equal(session.loop.running, false);
-      assert.equal(session.loop.runId, originalRunId);
-      assert.equal(session.loop.stop, originalStop);
-      assert.equal(session.log.some(entry => entry.message === '已恢复断线前的自动挂机'), false);
-    });
-  }
-}

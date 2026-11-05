@@ -315,7 +315,7 @@ export class GameClient extends EventEmitter {
       this.attributePrompt(body);
       return;
     }
-    const index = this.pending.findIndex((item) => item.responseName === name);
+    const index = this.pending.findIndex((item) => (Array.isArray(item.responseName) ? item.responseName.includes(name) : item.responseName === name));
     if (index >= 0) {
       const [entry] = this.pending.splice(index, 1);
       clearTimeout(entry.timer);

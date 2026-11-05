@@ -292,7 +292,7 @@ export const DAILY_DRIVERS = {
 
   1011: { id: 1011, title: '累计联盟情报', probes: [], evaluate: automationReason('联盟情报领奖与派舰') },
   1012: { id: 1012, title: '累计联盟订单', probes: [], evaluate: automationReason('提交联盟订单') },
-  1013: { id: 1013, title: '累计联盟互助', probes: [['GuildAidListRequest', { type: 0 }]], evaluate: lockedReason('联盟互助') },
+  1013: { id: 1013, title: '累计联盟互助', probes: [], evaluate: automationReason('响应联盟求助') },
   1014: { id: 1014, title: '累计请求帮助', probes: [], evaluate: lockedReason('联盟求助') },
   1015: { id: 1015, title: '城战获得功勋', probes: [], evaluate: lockedReason('城战（20:00-21:00 限时）') },
   1016: { id: 1016, title: '博物馆探险', probes: [], evaluate: automationReason('派遣博物馆探险队', '博物馆') },
@@ -474,9 +474,9 @@ export async function runDailies(client, protocol, survey, { allowMutate = false
       if (!allowAction(entry.task.id, action)) continue;
       try {
         const run = DAILY_DRIVERS[entry.task.id]?.run;
-        // 海盗扫荡等高风险动作会在发送前重读状态；普通日常仍通过统一执行器走账号锁和账本。
+        // 高风险驱动会在发送前重读状态，并依赖协议定义确认写入回包；普通日常仍通过统一执行器走账号锁和账本。
         const result = run
-          ? await run({ client, survey, action, timeout, allowAction, config: config ?? survey.config, actionExecutor })
+          ? await run({ client, protocol, survey, entry, action, timeout, allowAction, config: config ?? survey.config, actionExecutor })
           : { body: await actionExecutor(action) };
         const outcome = { id: entry.task.id, title: entry.task.title, request: action.request, note: action.note, ...result };
         if (!outcome.skipped) outcome.ok = true;

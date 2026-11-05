@@ -656,11 +656,32 @@ node tools/selftest-describe.mjs    # 字段布局还原自检
 - 账号页支持从电脑微信或抖音添加账号，以及导出、暂停和恢复托管。开始采集前有勾选和倒计时确认。
 - 手动交居民订单、装备强化、试炼挑战和海盗出征等操作按账号排队，点击后可在主日志查看结果。
 
-### 13.5 16 级玩法如何确认结果
+### 13.5 v75 客户端核对的挂机规则
+
+以下规则读自 v75 客户端和配置表，均由离线测试覆盖，尚未在真实账号上验证。
+
+- **世界在线奖励：** `CounterInfoRequest` 的 `DAILY_WORLD_ONLINE_RWD` 给出已领档位和上次领取时间。当天 20:00 后开放，上次领取已在 21:00 后则当天结束，每档按上次领取时间计时。领取请求没有声明回包类型，所以用重新读取的计数确认结果。
+- **海商王联盟任务：** `TradeGotTaskRequest` 的字段是 `day`，按天领取，只领活动已进行到的天数。活动时间取自 `SCAllActivity.trade`。
+- **赛季任务：** `GotSeasonTaskRequest` 没有字段，一次领取所有已达标档位。
+- **红点：** `SCRedPoint` 带 `num` 表示有待处理事项，不带表示已清除。33 跨服排行、41 世界宝藏、42 收到互助、43 新求助、53 海商王任务、64 联盟职级、65 博物馆。
+- **联盟互助：** 每轮只响应一次，下一轮读到库存已扣减后才继续。
+- **世界宝藏：** 需要 `GuildTitleCfg.treasureLoot` 为 1，每日奖励次数读 `TreasureLootParamCfg`，每队消耗 `进攻宝藏消耗汽油`。工具避开 20:00 到 21:00，不去其他联盟占领的宝藏，舰队返回前不再派下一队。
+
+### 13.6 16 级玩法如何确认结果
 
 | 操作 | 确认依据 |
 | --- | --- |
 | 保存远征舰队首次编队 | 发送 `FleetSaveFormationRequest` 后，从海面建筑重读每个站位的英雄，再用 `MyFleetsRequest` 单独检查世界地图是否列出该队。 |
+| 应用推荐阵容 | 主线、远征和积分赛分别走 `SaveFormationRequest{module:1}`、`ExpeditionSaveFormationRequest`、`LeagueSaveFormationRequest`，用回包核对站位。舰队走 `FleetSaveFormationRequest`，从海面建筑重读确认。海兽保持原值，舰队与客户端一样不发 `petUid`。这些写操作只有离线测试，尚未在真实账号验证。 |
+| 联动活动签到 | `ClaimActivityDailyCheckInRewardRequest{activityId, checkId}`。客户端按开放日算当天，`signDay` 早于当天的是补签，服务端扣钻石（`dailyActive.checkRuby`）。工具只发当天的 `rewardId`，两个开放时间不在同一天时跳过，用回包 `checkId` 核对。 |
+| 联动活动活跃 | `ClaimActivityDailyActiveRewardRequest`，每次领下一档，回包 `claimedId` 递增。分数来自 `SCAllActivity` 和 `SCActivityActiveScoreUpdate`。 |
+| 联动每日免费礼包 | `ClaimDailyCombGiftRequest`、`ClaimFreeSelectGiftRequest` 只发 `price` 为 0 的礼包。没有响应类型，靠 `sendWatch` 和道具推送确认。服务端只在登录时下发状态，跨天按客户端 `dailyReset` 在本地清空。 |
+| 走江踏浪 | `SnowballDetailRequest` 读积分和档位，`SnowballClaimGiftRequest` 领免费礼包，`SnowballClaimRewardRequest` 领达标档位。不开局，不买体力。 |
+| 抽奖 | `SpinCompassWheelRequest{num:1}` 只在 `CompassWheelInfoResponse.cost` 是抽奖券时发送，`WeekLotteryPrizeRequest{times:1}` 只在持有周转盘币时发送。各开关默认关闭。罗盘张数按账号设置，默认 10 张，周抽奖每轮最多 10 次。 |
+| 周活动奖励 | 累充 `WeekChargeGotRewardRequest`、升星 `WeekHeroStarGotRewardRequest`、芯片 `WeekChipGotFreeRequest`、翻牌 `GotUniqueLotteryFreeRequest`、周订单 `WeekOrderGotFinalRequest`。提交周订单 `FinishWeekOrderRequest` 接入材料预留，默认关闭。 |
+| VIP 每日奖励 | `GotVipDailyRewardRequest{vipLevel}`，只领不高于当前等级且未领的档位。 |
+| 战报奖励 | 奖励留在 `CampaignReport`（`rewards`、`received`）里，不会自动到账。`CampaignReportsRequest{pageNo:0}` 读列表，`QuickGotCampaignReportRequest{all:true}` 一键领取，没有响应类型，靠重读列表确认。`SCNewCampaignReport` 推送新战报。 |
+| 开服冲榜 | `OpenRankType`：1 订单、2 闯关、3 剿匪、4 战力。`OpenRankInfoRequest{type}` 返回 `progress`、`gotRewardId`、`leaderBoard`，`GotOpenRankRewardRequest{type, id: 配置 score}` 领积分奖励。排名奖励含联盟礼包，由服务端结算。协议里没有海盗组队或集结，"多人"体现在共享地图目标和全服排名。 |
 | 海盗首杀 | 派遣前重新核对目标、舰队、耐久和汽油。出征走 `ChallengePirateRequest`，战斗推送只说明目标战况，个人首杀以角色自己的击杀记录为准。 |
 | 装备穿戴和强化 | 穿戴后核对装备归属。强化前核对画面中显示的等级和材料费，发包后从 `EquipsResponse` 核对新等级。 |
 | 联盟福利 | `GuildAidListRequest` 读取成员求助。免费福利走 `GotGuildWelfarePackRequest`，回包中的领取时间和奖励共同确认到账。 |
