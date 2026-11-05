@@ -11,6 +11,7 @@ export const operationLabels = {
   '/api/activities': '读取活动', '/api/material-sources': '查询材料来源', '/api/pirates': '查看海盗首杀',
   '/api/pirates/hunt': '海盗首杀出征', '/api/trials': '查看试炼进度',
   '/api/equipment': '查看英雄装备', '/api/equipment/wear': '为英雄补齐装备', '/api/equipment/enhance': '强化英雄装备',
+  '/api/equipment/crafting': '查看装备厂', '/api/equipment/crafting/start': '制造装备', '/api/equipment/crafting/collect': '收取完工装备',
   '/api/guild': '查看联盟', '/api/guild/welfare': '领取联盟福利礼包',
   '/api/fleets/formation': '远征舰队编队',
   '/api/world': '查看海面', '/api/world/run': '执行海面经营', '/api/worlds': '查看海域',

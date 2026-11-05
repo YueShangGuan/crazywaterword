@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { GameClient, toNumber } from './client.mjs';
 import { challengeTrial, trialProgress } from './trials.mjs';
 import { readHeroEquipment, equipHeroEmptySlots, enhanceHeroEquipment } from './hero-equipment.mjs';
+import { readEquipmentCrafting, startEquipmentCraft, collectEquipmentCraft } from './equipment-crafting.mjs';
 import { readGuild, claimGuildWelfare } from './guild.mjs';
 import { readFleetFormations, initializeFleetFormation } from './fleet-formation.mjs';
 import { loadProtocol } from './proto.mjs';
@@ -778,7 +779,9 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         // 循环持有登录对象引用，原地更新等级才能即时解锁上游功能。
         if (name === 'SCPlayerExpUpdate' && body.level > 0) {
           if (session.player.level !== body.level) {
-            for (const key of ['adShop', 'trialSweep', 'dailyRewards', 'chests']) rewardSchedule(instance).clearTask(key);
+            // 解锁等级变化会影响各玩法的冷却与资格，清除依赖等级的调度缓存以便立即重算。
+            for (const key of ['adShop', 'weekPass', 'trialSweep', 'dailyRewards', 'chests',
+              'museumCollect', 'museumExplore', 'petCollect', 'petBreed']) rewardSchedule(instance).clearTask(key);
           }
           session.player.level = body.level;
           session.player.exp = body.exp;
@@ -1837,6 +1840,24 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         json(result);
         return;
       }
+      if (route === 'GET /api/equipment/crafting') {
+        const { account, session } = scoped_(parsed);
+        json(await progressionJob(session, account, route, null, client => readEquipmentCrafting(client, loadConfigSafe(), session.player)));
+        return;
+      }
+      if (route === 'POST /api/equipment/crafting/start' || route === 'POST /api/equipment/crafting/collect') {
+        const { account, session } = scoped_(parsed);
+        const payload = jsonBody();
+        needConfirm(payload);
+        const craft = parsed.pathname.endsWith('/start') ? startEquipmentCraft : collectEquipmentCraft;
+        const key = JSON.stringify([route, payload.buildingId, payload.makeId, payload.previewKey]);
+        json(await progressionJob(session, account, key, operationLabels[parsed.pathname], async (client, enabled) => {
+          const result = await craft(client, loadConfigSafe(), session.player, { ...payload, enabled });
+          emit(session, 'info', result.label);
+          return result;
+        }));
+        return;
+      }
       if (route === 'GET /api/trials' || route === 'GET /api/equipment' || route === 'GET /api/guild' || route === 'GET /api/pirates/hunt' || route === 'GET /api/fleets/formation') {
         const { account, session } = scoped_(parsed);
         json(await progressionJob(session, account, route, null, async client => {
@@ -1925,7 +1946,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       }
       if (route === 'GET /api/dailies') {
         const { account, session } = scoped_(parsed);
-        json(await dailies(session, account));
+        json(await enqueue(session, () => dailies(session, account)));
         return;
       }
       if (route === 'GET /api/tasks') {

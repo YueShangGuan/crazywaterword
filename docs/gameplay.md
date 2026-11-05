@@ -353,7 +353,6 @@ node src/app.mjs state --account 示例玩家1001   # 按昵称/序号/id 前缀
 node tools/sync-config.mjs          # 把配置表缓存快照到 work/cdn
 node tools/sync-art.mjs             # 把界面要用的图集从微信缓存镜像到 work/cdn/art
 node src/art.mjs                    # 打印素材覆盖率；带个名字就查它对应哪个图标
-node work/tmp/crop-icon.mjs 图标名   # 只读探针：把某个图标裁成 PNG，用来核对旋转贴图
 node src/app.mjs selftest           # 离线自检
 node tools/selftest-describe.mjs    # 字段布局还原自检
 ```

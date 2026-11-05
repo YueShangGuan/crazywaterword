@@ -9,6 +9,11 @@ import { serviceCargo } from './cargo.mjs';
 import { serviceBoats } from './boats.mjs';
 import { sweepTrials } from './trials.mjs';
 import { claimGuildWelfare } from './guild.mjs';
+import { serviceGuildOrders } from './guild-orders.mjs';
+import { serviceRadar } from './radar.mjs';
+import { serviceEquipmentCrafting } from './equipment-automation.mjs';
+import { serviceMuseum } from './museum.mjs';
+import { servicePetBreeding } from './pet-breeding.mjs';
 import { fishOnce } from './fishing.mjs';
 import { upgradeFishingOnce } from './fishing-upgrade.mjs';
 import { serviceAntiqueRecruit } from './antique-recruit.mjs';
@@ -108,10 +113,11 @@ export async function runLoop(client, protocol, {
   const rejected = { tasks: new Set(), world: new Set() };
   const history = [];
   const rewards = isEnabled ? rewardSchedule(client) : null;
-  let lastRecruitWait;
+  let dailyWait = new Map();
   let lastFishWait;
   let lastFishUpgradeWait;
   let lastGuildWait;
+  const serviceWait = new Map();
   const antiqueWait = new Map();
   let residentWait = new Map();
   // rounds <= 0 表示一直跑，靠 stop.aborted（Ctrl-C 或网页停止按钮）退出。
@@ -140,6 +146,8 @@ export async function runLoop(client, protocol, {
     const enabled = key => !stop.aborted
       && !settings?.modules[ownership[key]]?.enabled
       && (!isEnabled || (isEnabled(key) && rewards.due(key)));
+    // 执行中的服务需要读取用户开关本身，不能被本轮刚写入的到期时间误判为关闭。
+    const active = key => !stop.aborted && Boolean(isEnabled?.(key));
     const groupEnabled = group => automationTasks.some(task => task.group === group && enabled(task.key));
     const stepLog = phase => entry => onStep?.({ round, phase, ...entry });
     let afkDeadline;
@@ -157,6 +165,14 @@ export async function runLoop(client, protocol, {
       summary[phase].results.push(entry);
       stepLog(phase)(entry);
     }
+    const serviceReport = (phase, category) => entry => {
+      summary[phase].results.push(entry);
+      if (!entry.skipped) summary[phase].planned++;
+      const key = entry.key || category;
+      if (!entry.skipped || serviceWait.get(key) !== entry.reason) stepLog(phase)({ ...entry, category });
+      if (entry.skipped) serviceWait.set(key, entry.reason);
+      else serviceWait.delete(key);
+    };
     if (stop.aborted || !client.connected) break;
 
     /** 固定日常只属于主挂机，独立执行和预览不附带培育或领奖。 */
@@ -195,11 +211,14 @@ export async function runLoop(client, protocol, {
         try {
           const includeTask = id => !isEnabled || dailyActionKeys[id]?.some(enabled);
           const survey = await surveyDailies(client, protocol, { config, player, includeTask, probeGift: !isEnabled, idle: !!isEnabled });
-          const recruit = survey.tasks.find(entry => entry.task.id === 1002 && entry.status === 'waiting');
-          if (recruit && recruit.reason !== lastRecruitWait) {
-            stepLog('dailies')({ title: recruit.task.title, skipped: true, reason: recruit.reason });
+          const waiting = survey.tasks.filter(({ task, status, reason }) => reason && (
+            (task.id === 1002 && status === 'waiting') ||
+            ([1005, 1010].includes(task.id) && ['waiting', 'blocked'].includes(status))
+          ));
+          for (const { task, reason } of waiting) {
+            if (dailyWait.get(task.id) !== reason) stepLog('dailies')({ title: task.title, skipped: true, reason });
           }
-          lastRecruitWait = recruit?.reason;
+          dailyWait = new Map(waiting.map(entry => [entry.task.id, entry.reason]));
           summary.dailies.planned = survey.tasks.reduce((n, entry) =>
             n + (entry.actions ?? []).filter(action => allowDaily(entry.task.id, action)).length, 0);
           if (!isEnabled) summary.dailies.planned += (survey.chests?.actions.length ?? 0) + (survey.gift?.actions.length ?? 0);
@@ -210,7 +229,7 @@ export async function runLoop(client, protocol, {
               allowAction: allowDaily, onStep: stepLog('dailies'),
             });
           }
-          if (recruit) summary.dailies.results.push({ id: 1002, skipped: true, reason: recruit.reason });
+          for (const { task, reason } of waiting) summary.dailies.results.push({ id: task.id, skipped: true, reason });
           if (rewards) {
             for (const { task } of survey.tasks) {
               if (!(task.targetProgress > 0 && task.progress >= task.targetProgress)) continue;
@@ -428,6 +447,39 @@ export async function runLoop(client, protocol, {
         }
       }
       await fixedRoutines('after');
+      // Existing sea orders and production get first use of their materials.
+      // Each new service reads fresh state inside the same per-account queue.
+      if (isEnabled && enabled('guildOrders')) {
+        try {
+          await serviceGuildOrders(client, protocol, config, { player, enabled: () => active('guildOrders'),
+            scheduler: rewards, report: serviceReport('dailies', '联盟订单') });
+        } catch (error) { phaseFailure('dailies', '联盟订单检查', error); }
+      }
+      if (isEnabled && ['equipmentCollect', 'equipmentCraft'].some(enabled)) {
+        try {
+          await serviceEquipmentCrafting(client, config, { player, enabled: active,
+            scheduler: rewards, report: serviceReport('world', '装备制造') });
+        } catch (error) { phaseFailure('world', '装备厂检查', error); }
+      }
+      if (isEnabled && ['radarAuto', 'radarRepair'].some(enabled)) {
+        try {
+          await serviceRadar(client, protocol, config, { player, enabled: active,
+            scheduler: rewards, report: serviceReport('dailies', '联盟情报') });
+        } catch (error) { phaseFailure('dailies', '联盟情报检查', error); }
+      }
+      if (isEnabled && ['museumCollect', 'museumExplore'].some(enabled)) {
+        try {
+          await serviceMuseum(client, protocol, config, { player, enabled: active,
+            scheduler: rewards, report: serviceReport('dailies', '博物馆') });
+        } catch (error) { phaseFailure('dailies', '博物馆探险检查', error); }
+      }
+      if (isEnabled && ['petCollect', 'petBreed'].some(enabled)) {
+        try {
+          await servicePetBreeding(client, protocol, config, { player, enabled: active,
+            scheduler: rewards, report: serviceReport('world', '海兽培育') });
+        } catch (error) { phaseFailure('world', '海兽培育检查', error); }
+      }
+      for (const key of serviceWait.keys()) if (!active(key)) serviceWait.delete(key);
     });
     // 旧版任务、日常和海面动作作为一轮批次完成后统一刷新分类和库存，避免总览读取到中间状态。
     await onBatchComplete(['production', 'fleets', 'cargo', 'world', 'tasks', 'inventory']);

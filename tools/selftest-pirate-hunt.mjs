@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { pathToFileURL } from 'node:url';
 import { pirateHuntOptions, startPirateHunt } from '../src/pirates.mjs';
+import { registerFleetReservations, isFleetReserved } from '../src/fleet-reservations.mjs';
 
 const player = { level: 16, worldId: 1000001, scenarioId: 1 };
 const cfg = { tables: {
@@ -59,6 +60,7 @@ export async function testPirateHunt() {
   assert.equal(view.fuelPerFleet, 300);
   const updates = [], choose = { ...(await selection(client)), report: e => updates.push(e) };
   assert.equal((await send(client, choose)).status, 'sent');
+  assert.equal(isFleetReserved(client, fleet.buildingId, 'radar'), true, '海盗未确认的出征必须对情报任务可见');
   await assert.rejects(send(client, choose), /变化|等待|请求/);
   const renewed = await selection(client);
   await assert.rejects(send(client, renewed), /等待|请求|派出/);
@@ -72,6 +74,7 @@ export async function testPirateHunt() {
   data.PirateKillRecordResponse.records = [{ type: 1, maxKilledLevel: 1 }];
   const after = await options(client);
   assert.equal(updates.at(-1).status, 'won');
+  assert.equal(isFleetReserved(client, fleet.buildingId), false, '个人首杀确认后释放本模块预占');
   assert.match(after.targets[0].reason, /赛季阶段/);
 
   for (const [mutate, reason] of [
@@ -116,6 +119,21 @@ export async function testPirateHunt() {
   await assert.rejects(send(rejected.client, await selection(rejected.client)), /insufficient petrol/);
   const retry = await options(rejected.client);
   assert(!retry.targets[0].reason && !retry.fleets[0].reason, '收到明确拒绝后允许用户重新选择');
+
+  const shared = fixture();
+  const choice = await selection(shared.client);
+  let radarPending = true;
+  registerFleetReservations(shared.client, 'radar', id => radarPending && id === '1远征船', () => radarPending);
+  await assert.rejects(send(shared.client, choice), /已派出|尚待确认/);
+  assert.equal(shared.client.writes.length, 0, '服务器仍显示空闲时也不得抢情报或维修预占的舰队');
+  radarPending = false;
+  await send(shared.client, choice);
+  assert.equal(shared.client.writes.length, 1);
+
+  const otherFleet = fixture();
+  registerFleetReservations(otherFleet.client, 'radar', id => id === '2远征船', () => true);
+  await assert.rejects(send(otherFleet.client, await selection(otherFleet.client)), /汽油/);
+  assert.equal(otherFleet.client.writes.length, 0, '另一艘船的耗油未确认时也不能读取旧余额继续出征');
 }
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {

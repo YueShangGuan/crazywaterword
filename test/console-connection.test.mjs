@@ -521,21 +521,28 @@ function pageFixture({ looping = false } = {}) {
   const giftRedeemRequests = [];
   let notifications = { wecom: { enabled: false, webhook: '' } };
   const windowListeners = new Map();
+  const documentListeners = new Map();
   const window = {
     getSelection: () => ({ rangeCount: 0, isCollapsed: true }),
     addEventListener(type, listener) { windowListeners.set(type, listener); },
     emit(type) { windowListeners.get(type)?.({ type, target: window }); },
   };
+  // 页面进度组件会监听可见性变化；夹具提供浏览器同名接口以便脚本加载时完成事件绑定。
+  const document = {
+    hidden: false,
+    getElementById: node,
+    createElement: element,
+    createTextNode: text => ({ textContent: text, parentNode: null }),
+    querySelectorAll: () => [],
+    addEventListener(type, listener) { documentListeners.set(type, listener); },
+    emit(type) { documentListeners.get(type)?.({ type, target: document }); },
+  };
   const context = vm.createContext({
     window,
     navigator: { clipboard: { writeText: async text => { clipboardWrites.push(text); } } },
-    document: {
-      getElementById: node,
-      createElement: element,
-      createTextNode: text => ({ textContent: text, parentNode: null }),
-      querySelectorAll: () => [],
-    },
-    Option: function () {}, setInterval: () => {},
+    document,
+    // 进度组件会管理装备制作的延迟刷新；夹具不调度计时器，只接受清理和创建调用。
+    Option: function () {}, setInterval: () => {}, setTimeout: () => 0, clearTimeout: () => {},
     // 模拟本地 HTTP 响应，不启动真实浏览器，也不使用磁盘账号。
     fetch: async (url, options = {}) => {
       const route = url.split('?')[0];

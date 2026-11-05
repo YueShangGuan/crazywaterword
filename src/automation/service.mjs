@@ -248,6 +248,8 @@ export async function legacyAction(ctx, step) {
     MonthCardDailyRewardRequest: ['MonthCardRequest', s => s.cardItem?.find(card => Number(card.type) === Number(step.body.type))],
     RecruitStartRequest: ['RecruitInfoRequest', s => s.hero],
     ArenaChallengeRequest: ['ArenaInfoRequest', s => s.dailyChallengeTimes],
+    // 海盗扫荡没有业务回包，必须以今日已扫次数递增确认，超时后才会保留未确认记录。
+    PirateSweepRequest: ['AllPirateRequest', s => s.sweepTimes],
     TrialRaidChallengeRequest: ['TrialRaidInfoRequest', s => s.raid?.passedStage, { raidId: step.body.raidId }],
     MuseumStartExploreRequest: ['MuseumInfoRequest', s => s.exploreStages],
     DenyOrderRequest: ['OnWaterRequest', s => s.workerOrder],
