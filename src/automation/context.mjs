@@ -234,9 +234,9 @@ export function createContext({ client, protocol, config, player, accountId, set
    *
    * @param {string} name 协议请求名。
    * @param {object} body 已通过 protobuf 校验的请求体。
-   * @param {{ response?: string|null, confirm?: () => Promise<boolean>, accept?: (value: unknown) => boolean|Promise<boolean>, allowed?: () => boolean, continueAfterUncertain?: boolean, blockModuleOnUncertain?: boolean, confirmAfterResponse?: boolean, bypassSpendingLimits?: boolean }} options 写入选项；allowed 在实际提交前复查日期，空回包不能证明业务状态时强制执行 confirm 读回。
+   * @param {{ response?: string|null, confirm?: () => Promise<boolean>, accept?: (value: unknown) => boolean|Promise<boolean>, onRejected?: (error: Error) => object|null|Promise<object|null>, allowed?: () => boolean, continueAfterUncertain?: boolean, blockModuleOnUncertain?: boolean, confirmAfterResponse?: boolean, bypassSpendingLimits?: boolean }} options 写入选项；allowed 在实际提交前复查日期，空回包不能证明业务状态时强制执行 confirm 读回；onRejected 只用于把已知无副作用的服务端拒绝转成业务跳过。
    */
-  async function action(name, body = {}, { label = name, ruby = 0, expenses = [], response, confirm, accept, allowed = () => true, timeout = 8000, key = `${name}:${JSON.stringify(body)}`, continueAfterUncertain = false, blockModuleOnUncertain = true, confirmAfterResponse = false, bypassSpendingLimits = false } = {}) {
+  async function action(name, body = {}, { label = name, ruby = 0, expenses = [], response, confirm, accept, onRejected, allowed = () => true, timeout = 8000, key = `${name}:${JSON.stringify(body)}`, continueAfterUncertain = false, blockModuleOnUncertain = true, confirmAfterResponse = false, bypassSpendingLimits = false } = {}) {
     assertReady();
     if (!protocol[name]) return record({ request: name, label, status: 'skipped', reason: '当前协议缺少请求' });
     if (!enough(expenses)) return record({ request: name, label, status: 'skipped', reason: '资源不足' });
@@ -305,6 +305,11 @@ export function createContext({ client, protocol, config, player, accountId, set
       }
       if (error.prompt) {
         if (token) { delete ledger.pending[key]; persist(); }
+        // 某些幂等领奖接口会用 PromptResponse 表示“已被其他流程领取”；调用方可将这种确定无副作用的拒绝显示为跳过。
+        if (onRejected) {
+          const handled = await onRejected(error);
+          if (handled) return record({ request: name, label, status: handled.status ?? 'skipped', reason: handled.reason ?? error.message });
+        }
         return record({ request: name, label, status: 'rejected', reason: error.message });
       }
       // 超时后只读核对；没有证据的请求留存为未确认，不能当作成功或再次发送。

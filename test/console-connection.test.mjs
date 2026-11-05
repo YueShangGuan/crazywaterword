@@ -7,13 +7,15 @@ import vm from 'node:vm';
 import { after, test } from 'node:test';
 import { GameClient } from '../src/client.mjs';
 import { PAGE } from '../src/page.mjs';
+import { loadProtocol } from '../src/proto.mjs';
 
 // 临时账号和模拟登录完全隔离真实凭证；测试只访问随机端口的本地 HTTP 服务。
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-console-connection-'));
 process.env.CW_DATA_DIR = directory;
 const { saveStore, upsertAccount } = await import('../src/accounts.mjs');
 const { defaultSettings } = await import('../src/automation/settings.mjs');
-const { automationEntryLogLevel, createConsole, parseGiftCodes } = await import('../src/server.mjs');
+const { automationEntryLogLevel, createConsole, loopEntryLogLevel, parseGiftCodes } = await import('../src/server.mjs');
+const protocol = loadProtocol();
 after(() => fs.rmSync(directory, { recursive: true, force: true }));
 
 /** 创建独立控制台及两个假账号，便于验证断开状态不会串到其他账号。 */
@@ -74,12 +76,16 @@ async function waitFor(predicate, message, attempts = 50) {
   assert.fail(typeof message === 'function' ? message() : message);
 }
 
-/** 已确认的主线战败是正常业务结果，其他失败状态仍须以错误样式展示。 */
-test('console: mainline loss uses the normal log style', () => {
+/** 已确认的主线战败及业务跳过保持普通日志，其他失败状态仍须以错误样式展示。 */
+test('console: loop log level keeps confirmed battle losses normal', () => {
   assert.equal(automationEntryLogLevel({ request: 'ChallengeStageRequest', status: 'failed' }), 'info');
   assert.equal(automationEntryLogLevel({ request: 'TrialRaidChallengeRequest', status: 'failed' }), 'info');
   assert.equal(automationEntryLogLevel({ request: 'TrialRaidChallengeRequest', status: 'failed', reason: '试炼进度读回失败' }), 'error');
   assert.equal(automationEntryLogLevel({ request: 'ChallengeStageRequest', status: 'rejected' }), 'error');
+  assert.equal(loopEntryLogLevel({ phase: 'automation', request: 'ChallengeStageRequest', status: 'failed' }), 'info');
+  assert.equal(loopEntryLogLevel({ phase: 'automation', request: 'TrialRaidChallengeRequest', status: 'failed', reason: '试炼进度读回失败' }), 'error');
+  assert.equal(loopEntryLogLevel({ phase: 'world', skipped: true }), 'info');
+  assert.equal(loopEntryLogLevel({ phase: 'world', ok: false }), 'error');
 });
 
 /** 兑换码文本只能去除分隔空白和重复项，不能更改服务端可能区分的大小写。 */
@@ -259,6 +265,38 @@ test('console: pirate sweep status reports the current role without implicit log
   const connected = await api('/api/automation/pirate-sweep-status');
   assert.equal(connected.status, 200);
   assert.deepEqual(connected.value, { connected: true, dailyLimit: 30, used: 4, remaining: 26 });
+});
+
+/** 联盟商船材料只从已连接角色本轮可补给的船读取，展示页不能为此隐式登录。 */
+test('console: guild ship material choices use only prepared unclaimed ships without implicit login', async t => {
+  const requests = [];
+  const login = mockGateway(t, undefined, async function (name, body, response) {
+    if (name !== 'GuildShipRequest') return {};
+    requests.push({ body, response });
+    const readyAt = Date.now() / 1000 + 60;
+    return {
+      ship: [
+        { shipId:1, state:protocol.GuildShipState.GS_STATE_PREPARED, preparedEndTime:readyAt, reward:{ asset:[{ type:0, id:'精铁' }] }, cabin:[{ order:[{ type:0, id:'木材' }] }] },
+        { shipId:2, state:protocol.GuildShipState.GS_STATE_PREPARED, preparedEndTime:readyAt - 120, reward:{ asset:[{ type:0, id:'玻璃' }] }, cabin:[{ order:[{ type:0, id:'玻璃' }] }] },
+        { shipId:3, state:protocol.GuildShipState.GS_STATE_PREPARED, preparedEndTime:readyAt, reward:{ asset:[{ type:0, id:'水姆币' }] }, cabin:[{ order:[{ type:0, id:'精铁' }] }] },
+      ],
+      ownRun: [{ shipId:3 }],
+    };
+  });
+  const { api } = await consoleFixture(t);
+  const disconnected = await api('/api/automation/guild-ship-options');
+  assert.equal(disconnected.status, 200);
+  assert.deepEqual(disconnected.value, { connected:false, rewards:[], materials:[] });
+  assert.equal(login.mock.callCount(), 0);
+
+  assert.equal((await api('/api/connect', {})).status, 200);
+  requests.length = 0;
+  const connected = await api('/api/automation/guild-ship-options');
+  assert.equal(connected.status, 200);
+  assert.equal(connected.value.connected, true);
+  assert.deepEqual(requests, [{ body:{}, response:'GuildShipResponse' }]);
+  assert.ok(connected.value.rewards.every(item => item.value !== '玻璃' && item.value !== '水姆币'));
+  assert.ok(connected.value.materials.every(item => item.value !== '玻璃' && item.value !== '精铁'));
 });
 
 /** 在线保存海盗目标时必须用当前角色 VIP 上限拒绝超额设置。 */

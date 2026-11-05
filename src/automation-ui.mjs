@@ -4,6 +4,8 @@ let automationSettings = null;
 let automationAccount = null;
 let automationRunning = false;
 let automationOptions = null;
+// 联盟商船候选只来自当前在线回包；状态用于在无候选时说明原因，而不是放宽为全量道具。
+let guildShipOptionsState = { connected:false, loaded:false };
 let automationSettingsDirty = false;
 // 页面内保留当前账号最近一次从在线角色读取的上限，断线后仍可阻止明显超限的保存。
 let pirateDailySweepMax = null;
@@ -579,10 +581,17 @@ function editorChoices(key) {
   const options = automationOptions;
   if (key === 'hours') return Array.from({ length: 24 }, (_, value) => ({ value, label: String(value).padStart(2, '0') + ':00' }));
   if (key === 'proposedPriority') return ['resident', 'cargo', 'guild'].map(value => ({ value, label: { resident:'居民订单', cargo:'货船', guild:'联盟募兵' }[value] }));
-  const source = { disabledBuildings:'buildings', disabledFactories:'factories', products:'factories', cropPriorities:'crops', cropKeepStock:'crops', blockedMaterials:'items', askItems:'items', helpItems:'items', rewardItems:'items', forbiddenMaterials:'items', items:'tech', attackTypes:'pirates', sweepTypes:'pirates' }[key] || key;
+  const source = { disabledBuildings:'buildings', disabledFactories:'factories', products:'factories', cropPriorities:'crops', cropKeepStock:'crops', blockedMaterials:'residentOrderMaterials', askItems:'guildAidMaterials', helpItems:'guildAidMaterials', rewardMaterials:'merchantShipRewards', rewardItems:'guildShipRewards', forbiddenMaterials:'guildShipMaterials', items:'tech', attackTypes:'pirates', sweepTypes:'pirates' }[key] || key;
   const season = Number(document.querySelector('[data-setting="season"]')?.value ?? automationSettings.season);
   const values = key === 'cityIds' ? options.cities[season] || [] : options[source] || [];
-  return [...new Map(values.filter(item => !item.season || item.season <= season).map(item => [item.value, item])).values()];
+  const latestMerchantRewardSeason = Number(options.merchantShipRewardsLatestSeason);
+  // 服务器仍按同一货轮奖励库发放奖励，但本地表可能尚未包含新赛季明细；仅延用最新一季的该库候选。
+  const useLatestMerchantRewardCandidates = key === 'rewardMaterials'
+    && Number.isSafeInteger(latestMerchantRewardSeason) && latestMerchantRewardSeason > 0 && season > latestMerchantRewardSeason;
+  // 专用材料表记录的是“可用赛季集合”，不能沿用配方类候选的“截至当前赛季”规则。
+  return [...new Map(values.filter(item => item.seasons
+    ? item.seasons.includes(season) || (useLatestMerchantRewardCandidates && item.seasons.includes(latestMerchantRewardSeason))
+    : !item.season || item.season <= season).map(item => [item.value, item])).values()];
 }
 
 /** 显示游戏名称但提交原始 ID；已保存的业务值始终作为可选项展示。 */
@@ -662,21 +671,81 @@ function choiceContent(choice, text, iconSize) {
   return content;
 }
 
-/** 大列表可按游戏名称搜索；只隐藏候选按钮，不清空已经选择的值。 */
-function editorPalette(container, choices, onPick) {
-  const list = el('div', 'automation-choice-list');
-  if (choices.length > 12) {
-    const search = el('input', 'automation-choice-search'); search.type = 'search'; search.placeholder = '搜索游戏名称'; search.setAttribute('aria-label', '搜索可选项');
-    search.oninput = () => { for (const button of list.children) button.hidden = !button.textContent.toLowerCase().includes(search.value.trim().toLowerCase()); };
-    container.appendChild(search);
+/**
+ * 返回候选为空时的业务说明；联盟商船不回退到通用物品表，防止将本轮不存在的奖品或消耗材料误配进去。
+ *
+ * @param {string} key 自动化设置字段名。
+ * @returns {string} 候选区空状态说明。
+ */
+function editorChoicesEmptyNote(key) {
+  if (key === 'rewardItems' || key === 'forbiddenMaterials') {
+    return guildShipOptionsState.connected
+      ? '当前没有可补给的联盟商船；刷新设置会读取下一批已准备且未过期的船只。'
+      : '连接游戏后读取当前联盟商船的奖励和舱位材料；为避免误选，本处不会显示全量道具。';
   }
-  for (const item of choices) {
+  return '暂无可选项；请检查本地游戏配置和赛季设置。';
+}
+
+/**
+ * 渲染可搜索的候选面板。材料带有分组时使用紧凑组标题，搜索会同时隐藏没有命中项的分组。
+ *
+ * @param {HTMLElement} container 候选区域容器。
+ * @param {Array<{value: string|number, label: string, group?: string, icon?: object}>} choices 可选条目。
+ * @param {(value: string|number) => void} onPick 点击某一候选时的回调。
+ * @param {string} [emptyNote] 无候选时显示的业务说明。
+ */
+function editorPalette(container, choices, onPick, emptyNote) {
+  const list = el('div', 'automation-choice-list');
+  const grouped = choices.some(item => item.group);
+  const groups = [];
+  /**
+   * 添加一枚图文候选按钮，使分组与未分组候选保持相同的无障碍名称和点击行为。
+   *
+   * @param {HTMLElement} target 按钮所属的候选容器。
+   * @param {{value: string|number, label: string, icon?: object}} item 要展示的游戏配置项。
+   * @returns {HTMLButtonElement} 已绑定选择回调的候选按钮。
+   */
+  const addChoice = (target, item) => {
     const button = el('button', 'automation-choice'); button.type = 'button'; button.dataset.editorChoice = String(item.value);
     button.setAttribute('aria-label', item.label); button.appendChild(choiceContent(item, item.label, 26));
-    button.onclick = () => onPick(item.value); list.appendChild(button);
+    button.onclick = () => onPick(item.value); target.appendChild(button); return button;
+  };
+  if (grouped) {
+    const choicesByGroup = new Map();
+    for (const item of choices) {
+      const name = item.group || '其他';
+      const entries = choicesByGroup.get(name) ?? [];
+      entries.push(item); choicesByGroup.set(name, entries);
+    }
+    for (const [name, entries] of choicesByGroup) {
+      const section = el('section', 'automation-choice-group');
+      const title = el('div', 'automation-choice-group-title');
+      title.append(el('span', null, name), el('span', 'automation-choice-group-count', String(entries.length)));
+      const body = el('div', 'automation-choice-group-items');
+      const buttons = entries.map(item => addChoice(body, item));
+      section.append(title, body); list.appendChild(section); groups.push({ section, buttons });
+    }
+  } else {
+    groups.push({ section:list, buttons:choices.map(item => addChoice(list, item)) });
+  }
+  if (choices.length > 12) {
+    const search = el('input', 'automation-choice-search'); search.type = 'search'; search.placeholder = '搜索游戏名称'; search.setAttribute('aria-label', '搜索可选项');
+    search.oninput = () => {
+      const term = search.value.trim().toLowerCase();
+      for (const group of groups) {
+        let visible = 0;
+        for (const button of group.buttons) {
+          button.hidden = !button.textContent.toLowerCase().includes(term);
+          if (!button.hidden) visible += 1;
+        }
+        // 搜索后不显示空分组，避免标题和数量误导操作者认为该组仍有可选材料。
+        if (grouped) group.section.hidden = visible === 0;
+      }
+    };
+    container.appendChild(search);
   }
   container.appendChild(list);
-  if (!choices.length) container.appendChild(el('p', 'automation-editor-note', '暂无可选项；请检查本地游戏配置和赛季设置。'));
+  if (!choices.length) container.appendChild(el('p', 'automation-editor-note', emptyNote || '暂无可选项；请检查本地游戏配置和赛季设置。'));
 }
 
 /** 数组按点击顺序保存，可移除或上移；仅没有本地候选表的字符串项允许手填。 */
@@ -711,7 +780,7 @@ function primitiveArrayEditor(value, key, settingPath) {
     if (index >= 0 && !repeatable) selected.splice(index, 1); else selected.push(item);
     render();
   };
-  if (!manualStringEntry && !repeatable) editorPalette(palette, choices, pick);
+  if (!manualStringEntry && !repeatable) editorPalette(palette, choices, pick, editorChoicesEmptyNote(key));
   palette.appendChild(el('p', 'automation-editor-note', '按选择顺序保存，可在当前设置中上移或移除。'));
   // UID 与昵称没有稳定的本地候选表，保留逐项填写；货轮奖励材料复用游戏物品表，防止名称输入错误。
   if (manualStringEntry || repeatable) {
@@ -997,6 +1066,19 @@ async function loadAutomation() {
   if (automationAccount !== account) pirateDailySweepMax = null;
   automationSettings = data.settings; automationAccount = account;
   automationOptions = data.options;
+  guildShipOptionsState = { connected:false, loaded:false };
+  try {
+    const liveOptions = await call('/api/automation/guild-ship-options');
+    if (account !== current) return;
+    automationOptions.guildShipRewards = liveOptions.rewards;
+    automationOptions.guildShipMaterials = liveOptions.materials;
+    guildShipOptionsState = { connected:liveOptions.connected === true, loaded:true };
+  } catch {
+    // 静态选项仍可编辑；联盟商船候选保持为空，避免失败时扩大成不可靠的全量物品集合。
+    guildShipOptionsState = { connected:false, loaded:true };
+  }
+  // 联盟商船读取失败期间也可能切换账号；不能用旧账号的静态配置重建新账号页面。
+  if (account !== current) return;
   automationClickGoldUnitPrice = data.clickGoldUnitPrice;
   Object.assign(automationLabels, data.labels);
   const form = clear($('automation-settings')), pick = clear($('automation-select'));

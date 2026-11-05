@@ -42,7 +42,7 @@ import { startCapture, stopCapture, captureState, DEFAULT_PROXY_PORT } from './c
 import { iconIndex, atlasFile, itemIcon, resourceIcon, materialIcon, heroIcon, heroCard, buildingIcon, workerIcon } from './art.mjs';
 import { runAutomation, automationStatus, stopAutomation } from './automation/service.mjs';
 import { loadSettings, saveSettings, LABELS, MODULES, selectModules, selectLoopModules } from './automation/settings.mjs';
-import { automationFormOptions } from './automation/form-options.mjs';
+import { automationFormOptions, guildShipMaterialOptions } from './automation/form-options.mjs';
 import { appendMessage, createMessageStore, loadInitialMessages, messagesFromPush, snapshotMessages } from './messages.mjs';
 
 const LOG_LIMIT = 400;
@@ -116,13 +116,33 @@ export function formatGiftCodeRewards(reward, config, protocol) {
   }).join('、');
 }
 
-/** Keep confirmed battle losses visually distinct from malformed or uncertain automation results. */
+/** 已确认的闯关失败保留普通日志样式，协议异常和未确认结果仍按错误显示。 */
 export function automationEntryLogLevel(entry) {
   if (['ChallengeStageRequest', 'TrialRaidChallengeRequest'].includes(entry.request)
     && entry.status === 'failed' && !entry.reason) return 'info';
   return ['error', 'uncertain', 'failed', 'rejected'].includes(entry.status) ? 'error' : 'info';
 }
 
+/**
+ * 将循环的新版自动化结果和旧版挂机结果映射为统一日志级别。
+ *
+ * 新版自动化用 status 表示业务结果，已确认的闯关战败不应与请求异常混为一谈；
+ * 旧版挂机仍以 ok 和 skipped 字段判断，避免改变其原有错误提示。
+ *
+ * @param {object} entry 循环步骤结果。
+ * @returns {'info'|'error'} 右侧运行日志的显示级别。
+ */
+export function loopEntryLogLevel(entry) {
+  if (entry.phase === 'automation') return automationEntryLogLevel(entry);
+  return entry.skipped || entry.ok ? 'info' : 'error';
+}
+
+/**
+ * 创建按账号隔离连接、任务队列、挂机状态和运行日志的本地控制台 HTTP 服务。
+ *
+ * @param {{host?: string, port?: number}} options 监听地址和端口。
+ * @returns {object} 可启动、停止并供测试调用的控制台实例。
+ */
 export function createConsole({ host = '127.0.0.1', port = 17321 }) {
   const protocol = loadProtocol();
   const globalLog = [];
@@ -1396,7 +1416,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       // ---- 高级自动化 -------------------------------------------------------
       if (route === 'GET /api/automation/settings') {
         const { account, session } = scoped_(parsed);
-        // The settings page only uses locally cached configuration and must not log in just to render form choices.
+        // 设置页只使用本地配置缓存生成候选项，渲染页面不能为此隐式登录游戏。
         const config = loadConfigSafe();
         json({
           settings: loadSettings(account.id), labels: LABELS, modules: MODULES,
@@ -1407,7 +1427,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       }
       if (route === 'GET /api/automation/pirate-sweep-status') {
         const { session } = scoped_(parsed);
-        // Saving settings must not create an implicit connection; only reuse an existing role session for its live quota.
+        // 保存设置不能隐式登录；只有已连接角色才读取实时扫荡额度。
         if (!session.client?.connected) {
           json({ connected: false });
           return;
@@ -1415,6 +1435,28 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         const state = await session.client.request('AllPirateRequest', {}, 'AllPirateResponse');
         const vipLevel = session.player?.vip?.vipLevel;
         json({ connected: true, ...pirateSweepProgress(state.sweepTimes, pirateDailySweepLimit(loadConfigSafe()?.tables, vipLevel)) });
+        return;
+      }
+      if (route === 'GET /api/automation/guild-ship-options') {
+        const { session } = scoped_(parsed);
+        // 渲染表单不能唤醒离线账号；商船实时回包只复用已有连接读取。
+        if (!session.client?.connected) {
+          json({ connected: false, rewards: [], materials: [] });
+          return;
+        }
+        const client = session.client;
+        const choices = await enqueue(session, async () => {
+          // 此读取可能排在其他账号操作之后；等待期间重连会替换 client，旧连接结果不能写回。
+          if (session.client !== client || !client.connected) return null;
+          const state = await client.request('GuildShipRequest', {}, 'GuildShipResponse');
+          if (session.client !== client || !client.connected) return null;
+          const owned = new Set((state.ownRun ?? []).map(ship => ship.shipId));
+          // 只有已备货、未过期且未被当前账号领取的船可补给，因此仅用它们生成筛选候选。
+          const ships = (state.ship ?? []).filter(ship => ship.state === protocol.GuildShipState.GS_STATE_PREPARED
+            && Number(ship.preparedEndTime) > Date.now() / 1000 && !owned.has(ship.shipId));
+          return guildShipMaterialOptions(loadConfigSafe(), ships);
+        });
+        json(choices ? { connected: true, ...choices } : { connected: false, rewards: [], materials: [] });
         return;
       }
       if (route === 'POST /api/automation/settings') {
@@ -2105,7 +2147,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
           onStep(entry) {
             const production = entry.ok && !entry.skipped && entry.step?.kind === 'startProduce';
             const batch = production ? JSON.stringify([entry.round, entry.step.body.buildingId, entry.step.body.productId]) : undefined;
-            emit(session, entry.skipped || entry.ok ? 'info' : 'error', formatLoopStep(entry),
+            emit(session, loopEntryLogLevel(entry), formatLoopStep(entry),
               batch ? { batch, factory: entry.step.displayFactory, product: entry.step.displayProduct }
                 : entry.request && entry.ok === false ? { request: entry.request, way: entry.way } : undefined);
           },

@@ -18,6 +18,7 @@ const promptLabels = new Map([
   ['no chance left', '可用次数已用完'],
   ['not in challenge list', '该对手已不在当前竞技场挑战名单中'],
   ['cannot sweep', '该海盗当前不可扫荡，请检查同类海盗的首杀进度和剩余扫荡次数'],
+  ['level locked', '当前赛季阶段尚未开放该海盗等级'],
   ['too early', '尚未到可执行时间'],
 ]);
 

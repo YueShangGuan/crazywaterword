@@ -103,15 +103,11 @@ export async function scheduleProduction(ctx, options, needs, disabledBuildings 
       if (options.gain) {
         const building = plan.factories.find(row => row.factory.finishedProducts?.length);
         if (building) {
-          const before = building.factory.finishedProducts.reduce((sum, item) => sum + amount(item.num), 0);
           const result = await ctx.action('GainFactoryProduceRequest', { buildingId: building.buildingId }, {
-            label: '领取排产成品并刷新材料', confirmAfterResponse: true,
-            // 收成读回滞后时保留幂等锁且跳过本轮排产，不能让单座工厂的未知结果终止整个挂机循环。
+            label: '领取排产成品并刷新材料',
+            // 专用收成回包已由服务端确认；连续生产会在读回前补入新成品，不能再用待领总数下降覆盖该证据。
+            // 未收到该回包时仍保留幂等锁，避免对可能已生效的收成重复提交。
             continueAfterUncertain: true,
-            confirm: async () => {
-            const current = (await ctx.query('OnWaterRequest')).building?.find(row => row.buildingId === building.buildingId)?.factory;
-            return Boolean(current) && (current.finishedProducts ?? []).reduce((sum, item) => sum + amount(item.num), 0) < before;
-            },
           });
           if (result.status !== 'success' || ctx.stop.aborted) return;
           continue;

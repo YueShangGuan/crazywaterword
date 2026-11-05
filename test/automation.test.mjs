@@ -24,7 +24,7 @@ const { expeditionHealth, passReady } = await import('../src/automation/battle.m
 const { GameClient } = await import('../src/client.mjs');
 const { PAGE } = await import('../src/page.mjs');
 const { AUTOMATION_SCRIPT } = await import('../src/automation-ui.mjs');
-const { automationFormOptions } = await import('../src/automation/form-options.mjs');
+const { automationFormOptions, guildShipMaterialOptions } = await import('../src/automation/form-options.mjs');
 const protocol = loadProtocol();
 const fixedNow = Date.parse('2026-10-29T12:45:00+08:00');
 let sequence = 0;
@@ -425,8 +425,9 @@ test('automation UI: pirate sweep count input remains compact', () => {
 
 /** 长设置表单在改动后提供固定保存入口，并允许用户不依赖浏览器工具栏返回顶部。 */
 test('automation UI: dirty settings expose quick save and back-to-top controls', () => {
-  assert.match(PAGE, /id="automation-floating-save"[^>]+hidden>保存设置/);
-  assert.match(PAGE, /id="automation-back-to-top"[^>]+hidden>[\s\S]*回到顶部/);
+  // React 静态渲染会把布尔属性序列化为 hidden=""；两种 HTML 等价写法都应保留初始隐藏状态。
+  assert.match(PAGE, /id="automation-floating-save"[^>]+hidden(?:="")?>保存设置/);
+  assert.match(PAGE, /id="automation-back-to-top"[^>]+hidden(?:="")?>[\s\S]*回到顶部/);
   assert.match(AUTOMATION_SCRIPT, /function updateAutomationBackToTop\(\)[\s\S]*automationSettingsDirty/);
   assert.match(AUTOMATION_SCRIPT, /function scrollAutomationToTop\(\)[\s\S]*prefers-reduced-motion/);
   assert.match(AUTOMATION_SCRIPT, /automation-floating-save'\)\.onclick = saveAutomationSettings/);
@@ -719,12 +720,31 @@ test('automation UI: empty, fractional integer and invalid time inputs cannot si
   assert.equal(readEditorInput({ value:'9007199254740993' }, 'string', 'UID'), '9007199254740993');
 });
 
-test('automation form options: game names map to actual IDs and retain season and factory relationships', () => {
+test('automation form options: material selectors use only their configured sources and keep grouped icons', () => {
   const config = { tables: Object.fromEntries(Object.entries({
     BuildingCfg:[{ buildingType:'服装厂', name:'服装作坊' }],
     BuildingProduceCfg:[{ buildType:'服装厂', itemId:'衣服' }],
-    ItemCfg:[{ id:'衣服', show_name:'休闲衣服' }],
+    ItemCfg:[
+      { id:'衣服', show_name:'休闲衣服', type:'加工品' },
+      { id:'订单木材', show_name:'订单专用木材', type:'原料' },
+      { id:'联盟钢材', show_name:'联盟钢材', type:'原料' },
+      { id:'联盟玻璃', show_name:'联盟玻璃', type:'加工品' },
+      { id:'货轮精铁', show_name:'货轮精铁', type:'原料' },
+      { id:'当前货轮奖品', show_name:'当前货轮奖品', type:'加工品' },
+      { id:'零权重奖品', show_name:'零权重奖品', type:'加工品' },
+      { id:'无关道具', show_name:'无关道具', type:'其他' },
+    ],
     ResourceCfg:[{ id:'GOLD', show_name:'金币' }, { id:'木材', show_name:'木材', pic:'icon_res_wood' }],
+    WorkerOrderCfg:[{ itemId:'订单木材' }],
+    GuildHelpCfg:[{ id:'联盟钢材', season:1 }, { id:'联盟玻璃', season:2 }],
+    TreasureLootCfg:[{ name:'万吨货轮', rewardLib:[11] }, { name:'普通货轮', rewardLib:[12] }],
+    TreasureLootRewardCfg:[
+      { libId:11, season:1, weight:1, reward:['货轮精铁', 10] },
+      { libId:11, season:2, weight:1, reward:['当前货轮奖品', 10] },
+      { libId:11, season:2, weight:0, reward:['零权重奖品', 10] },
+      { libId:11, season:2, weight:1, reward:['GOLD', 10] },
+      { libId:12, season:2, weight:1, reward:['无关道具', 10] },
+    ],
     BuildingUnlockCfg:[{ buildingType:'远征船', buildingId:'2远征船' }],
     GuildTechCfg:[{ techId:10201, name:'生产效率', season:2 }],
     '2_CityCfg':[{ id:3, name:'净水城' }],
@@ -733,7 +753,17 @@ test('automation form options: game names map to actual IDs and retain season an
   assert.deepEqual(options.factories, [{ value:'服装厂', label:'服装作坊' }]);
   assert.deepEqual(options.products, [{ value:'衣服', label:'休闲衣服', factory:'服装厂' }]);
   assert.deepEqual(options.fleets, [{ value:'2远征船', label:'2号远征舰队' }]);
-  assert.deepEqual(options.rewardMaterials, [{ value:'衣服', label:'休闲衣服' }]);
+  assert.deepEqual(options.residentOrderMaterials, [{ value:'订单木材', label:'订单专用木材', group:'基础原料' }]);
+  assert.deepEqual(options.guildAidMaterials, [
+    { value:'联盟钢材', label:'联盟钢材', group:'基础原料', seasons:[1] },
+    { value:'联盟玻璃', label:'联盟玻璃', group:'加工品', seasons:[2] },
+  ]);
+  assert.deepEqual(options.merchantShipRewards, [
+    { value:'货轮精铁', label:'货轮精铁', group:'基础原料', seasons:[1] },
+    { value:'当前货轮奖品', label:'当前货轮奖品', group:'加工品', seasons:[2] },
+  ]);
+  assert.equal(options.merchantShipRewardsLatestSeason, 2);
+  assert.ok(!options.merchantShipRewards.some(item => ['零权重奖品', '无关道具', 'GOLD'].includes(item.value)));
   assert.match(options.items.find(item => item.value === '木材').icon.url, /^\/api\/art\/atlas\//);
   assert.deepEqual(options.cities[2], [{ value:3, label:'净水城' }]);
   assert.deepEqual(options.tech, [{ value:10201, label:'生产效率', season:2 }]);
@@ -742,8 +772,22 @@ test('automation form options: game names map to actual IDs and retain season an
   context.formOptions = options;
   vm.runInContext('automationOptions = formOptions;', context);
   assert.deepEqual(JSON.parse(vm.runInContext('JSON.stringify(editorChoices("items"))', context)), options.tech);
-  assert.deepEqual(JSON.parse(vm.runInContext('JSON.stringify(editorChoices("rewardMaterials"))', context)), options.rewardMaterials);
+  assert.deepEqual(JSON.parse(vm.runInContext('JSON.stringify(editorChoices("blockedMaterials"))', context)), options.residentOrderMaterials);
+  assert.deepEqual(JSON.parse(vm.runInContext('JSON.stringify(editorChoices("askItems"))', context)), [options.guildAidMaterials[1]]);
+  assert.deepEqual(JSON.parse(vm.runInContext('JSON.stringify(editorChoices("rewardMaterials"))', context)), [options.merchantShipRewards[1]]);
   assert.deepEqual(JSON.parse(vm.runInContext('JSON.stringify(editorChoices("cityIds"))', context)), options.cities[2]);
+  vm.runInContext("document.querySelector = () => ({ value:'1' });", context);
+  assert.deepEqual(JSON.parse(vm.runInContext('JSON.stringify(editorChoices("helpItems"))', context)), [options.guildAidMaterials[0]]);
+  assert.deepEqual(JSON.parse(vm.runInContext('JSON.stringify(editorChoices("rewardMaterials"))', context)), [options.merchantShipRewards[0]]);
+  vm.runInContext("document.querySelector = () => ({ value:'3' });", context);
+  assert.deepEqual(JSON.parse(vm.runInContext('JSON.stringify(editorChoices("rewardMaterials"))', context)), [options.merchantShipRewards[1]]);
+
+  const currentShips = guildShipMaterialOptions(config, [{
+    reward: { asset:[{ type:0, id:'当前货轮奖品' }, { type:1, id:'RUBY' }, { type:0, id:'未知道具' }] },
+    cabin: [{ order:[{ type:0, id:'订单木材' }, { type:1, id:'WOOD' }, { type:0, id:'未知道具' }] }],
+  }]);
+  assert.deepEqual(currentShips.rewards, [{ value:'当前货轮奖品', label:'当前货轮奖品', group:'加工品' }]);
+  assert.deepEqual(currentShips.materials, [{ value:'订单木材', label:'订单专用木材', group:'基础原料' }]);
 });
 
 // 下架活动只能改变控制台归类，原模块设置路径必须继续存在，才能读取和保存玩家已有配置。
@@ -1568,6 +1612,31 @@ test('trade: inactive or missing period stops before rewards, upgrades and trans
   }
 });
 
+/** 海盗首杀必须同时满足个人下一等级和赛季阶段上限，不能把未开放等级交给服务器。 */
+test('world: pirate attack respects the current season stage cap', async () => {
+  const f = await moduleRun('world', {
+    pirate: { attack: true, sweep: false, attackTypes: [1], sweepTypes: [], dailySweepLimit: 0, attackTime: { start: '00:00', end: '00:00' } },
+  }, ({ ctx }) => {
+    table(ctx, '1_SeasonTaskCfg', [{ season: 1, stage: 8, maxPirateLevel: 38 }]);
+  }, {
+    player: { worldId: 1000001, scenarioId: 1 },
+    states: {
+      PirateKillRecordRequest: { records: [{ type: 1, maxKilledLevel: 38 }] },
+      SeasonTaskStageRequest: { stage: 8 },
+      AllPirateRequest: { pirates: [{ uid: 390, type: 1, level: 39, cityId: 1 }, { uid: 380, type: 1, level: 38, cityId: 1 }] },
+      MyFleetsRequest: { fleets: [{ buildingId: '1远征船', state: 1, durability: 100, maxDura: 100 }] },
+    },
+    handlers: {
+      ChallengePirateRequest: async ({ uid }, _response, client) => {
+        assert.equal(uid, 380);
+        client.states.MyFleetsRequest.fleets[0].state = 2;
+      },
+    },
+  });
+  assert.equal(f.client.calls.filter(call => call.name === 'ChallengePirateRequest').length, 1);
+  assert.equal(f.client.calls.find(call => call.name === 'ChallengePirateRequest').body.uid, 380);
+});
+
 test('world: pirate sweep treats the server count as used times and honors the configured daily target', async () => {
   const f = await moduleRun('world', {
     pirate: { attack: false, sweep: true, attackTypes: [], sweepTypes: [{ type: 1, times: 1 }, { type: 2, times: 1 }], dailySweepLimit: 2, attackTime: { start: '00:00', end: '00:00' } },
@@ -1665,6 +1734,29 @@ test('guild welfare: unchanged packs do not repeat the prompt=35 request, while 
   } finally {
     f.ctx.dispose();
   }
+});
+
+/** 已被其他领取流程消费的联盟礼包属于幂等结果，应显示为跳过而不是错误。 */
+test('guild welfare: duplicate reward prompt is treated as an already-claimed skip', async () => {
+  const f = fixture({ states: { GuildInfoRequest: { guild: { guildId: '1', welfarePack: [{ id: '101' }] } } }, handlers: {
+    GotGuildWelfarePackRequest: async () => {
+      const error = new Error('server prompt: prompt=35 DUPLICATE_REWARD');
+      error.prompt = { prompt: 35 };
+      throw error;
+    },
+  } });
+  f.settings.modules.guild.enabled = true;
+  f.settings.modules.guild.packs.guild = true;
+  f.ctx.setModule('guild');
+  try {
+    await f.ctx.refreshStock();
+    await HANDLERS.guild(f.ctx, f.settings.modules.guild);
+    const result = f.ctx.results.find(row => row.request === 'GotGuildWelfarePackRequest');
+    assert.equal(result?.status, 'skipped');
+    assert.match(result?.reason ?? '', /已被其他领取流程处理/);
+    await HANDLERS.guild(f.ctx, f.settings.modules.guild);
+    assert.equal(f.client.calls.filter(call => call.name === 'GotGuildWelfarePackRequest').length, 1);
+  } finally { f.ctx.dispose(); }
 });
 
 test('welfare: already claimed daily task sends no duplicate reward request', async () => {
@@ -3050,22 +3142,42 @@ test('factory scheduler: instant output is collected and unlocks its downstream 
   } finally { f.ctx.dispose(); }
 });
 
-/** 工厂收成回包后读回尚未同步时，仅锁住该工厂写入，后续挂机模块仍必须继续执行。 */
-test('factory scheduler: uncertain harvest preserves the global automation run', async () => {
+/** 专用收成回包已确认领取成功时，连续生产导致读回仍有成品不得留下重复提交锁。 */
+test('factory scheduler: harvest response settles despite concurrent replenishment', async () => {
   const f = productionFixture({ queue: [], stock: [['木材', 20]] });
   f.client.states.OnWaterRequest.building[0].factory.finishedProducts = [{ type: 0, id: '快料', num: 1 }];
-  f.client.handlers.GainFactoryProduceRequest = async () => ({ products: { asset: [] } });
+  let responded = false;
+  f.client.handlers.GainFactoryProduceRequest = async () => {
+    responded = true;
+    return { products: { asset: [{ type: 0, id: '快料', num: 1 }] } };
+  };
+  f.client.handlers.AllItemRequest = async () => {
+    // 服务端回包先到、建筑推送稍后才同步时，旧逻辑会在这里之前错误地把动作记为未确认。
+    if (responded) f.client.states.OnWaterRequest.building[0].factory.finishedProducts = [];
+    return { items: [...f.client.items].map(([itemId, num]) => ({ itemId, num })) };
+  };
   try {
     await runProduction(f);
     assert.equal(f.client.calls.filter(call => call.name === 'GainFactoryProduceRequest').length, 1);
     assert.equal(f.ctx.stop.aborted, false);
+    assert.equal(f.ctx.results.find(row => row.request === 'GainFactoryProduceRequest')?.status, 'success');
+    assert.equal(f.ctx.ledger.pending['GainFactoryProduceRequest:{"buildingId":"1食品厂"}'], undefined);
+    assert.equal(f.client.states.OnWaterRequest.building[0].factory.finishedProducts.length, 0, '库存刷新后使用服务端同步的空成品状态');
+  } finally { f.ctx.dispose(); }
+});
+
+/** 未收到专用收成回包时，必须保留幂等锁，下一轮不得对同一工厂重复提交。 */
+test('factory scheduler: timed-out harvest remains protected from resubmission', async () => {
+  const f = productionFixture({ queue: [], stock: [['木材', 20]] });
+  f.client.states.OnWaterRequest.building[0].factory.finishedProducts = [{ type: 0, id: '快料', num: 1 }];
+  f.client.handlers.GainFactoryProduceRequest = async () => { throw new Error('模拟收成响应超时'); };
+  try {
+    await runProduction(f);
+    assert.equal(f.ctx.stop.aborted, false);
     assert.equal(f.ctx.results.find(row => row.request === 'GainFactoryProduceRequest')?.status, 'uncertain');
     assert.ok(f.ctx.ledger.pending['GainFactoryProduceRequest:{"buildingId":"1食品厂"}']);
-    // 工厂为空是只读证据：旧收成已经没有可重复领取的目标，下一轮可安全解除锁。
-    f.client.states.OnWaterRequest.building[0].factory.finishedProducts = [];
     await runProduction(f);
-    assert.equal(f.ctx.ledger.pending['GainFactoryProduceRequest:{"buildingId":"1食品厂"}'], undefined);
-    assert.ok(f.ctx.results.some(row => row.label === '恢复未确认工厂收成 1食品厂' && row.verifiedByRead));
+    assert.equal(f.client.calls.filter(call => call.name === 'GainFactoryProduceRequest').length, 1);
   } finally { f.ctx.dispose(); }
 });
 
@@ -4403,7 +4515,8 @@ test('legacy task entry: guild and ordinary pet/equipment cannot bypass off-day 
 for (const automationOnly of [false, true]) test(`main loop fixed routines: independence from welfare and standalone exclusion=${automationOnly}`, async () => {
   const { runLoop } = await import('../src/loop.mjs');
   const { automationTasks } = await import('../src/automation.mjs');
-  assert.equal(automationTasks.some(row => row.key === 'weekPass'), false);
+  // 主线已将周战令纳入可配置周期活动；本用例仍通过 isEnabled=false 验证固定日常不会被任务开关串入。
+  assert.equal(automationTasks.some(row => row.key === 'weekPass'), true);
   const f = breedFixture();
   f.settings.modules.cargo.enabled = true; f.settings.modules.cargo.fill = false; f.settings.modules.cargo.reward = false;
   saveSettings(f.args.accountId, f.settings);

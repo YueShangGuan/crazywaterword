@@ -62,6 +62,11 @@
   .automation-editor .automation-field-help, .automation-editor-note { color:var(--muted); }
   .automation-editor-note { margin:4px 0 10px; font-size:12px; }
   .automation-choice-list { max-height:210px; overflow:auto; }
+  /* 分组标题仅标识材料类型和数量，保持候选区紧凑，避免抢占选择按钮的可见面积。 */
+  .automation-choice-group { padding:2px 0 6px; border-bottom:1px solid #e5efed; }
+  .automation-choice-group:last-child { border-bottom:0; padding-bottom:0; }
+  .automation-choice-group-title { display:flex; align-items:center; justify-content:space-between; gap:8px; margin:2px 4px 3px; color:#45666b; font-size:11px; font-weight:650; }
+  .automation-choice-group-count { min-width:18px; padding:0 5px; border-radius:999px; background:#edf5f3; color:#538078; font-size:10px; line-height:17px; text-align:center; }
   .automation-choice-search { width:100%; min-width:0; margin-bottom:6px; }
   /* 材料候选保留左侧 26px 游戏图标和右侧完整名称，适合长列表快速扫读并避免缩略图压缩细节。 */
   .automation-choice { display:inline-flex; align-items:center; gap:5px; min-height:32px; margin:3px; padding:3px 8px 3px 4px; border:1px solid #ccd9d9; border-radius:6px; background:#fff; color:#2c5054; font-size:12px; text-align:left; vertical-align:top; transition:background-color .15s,color .15s,border-color .15s; }

@@ -338,6 +338,22 @@ async function pirates(ctx, options) {
   if (!inWindows([options.attackTime], ctx.now())) return skip(ctx, '不在海盗执行时段');
   const records = (await ctx.query('PirateKillRecordRequest')).records ?? [];
   const state = await ctx.query('AllPirateRequest');
+  let attackLevelCap = Infinity;
+  if (options.attack) {
+    const { stage } = await ctx.query('SeasonTaskStageRequest');
+    const stageRows = ctx.rows(`${ctx.player?.scenarioId ?? 1}_SeasonTaskCfg`);
+    const worldId = Number(idString(ctx.player?.worldId));
+    // 赛季编号由角色世界编号决定，不能使用可能未同步的本地设置值。
+    const season = Number.isSafeInteger(worldId) && worldId > 0 ? Math.floor(worldId / 1e6) % 1000 : null;
+    // 首杀资格同时受个人进度和赛季阶段限制；只看个人最高击杀会把未开放等级提交给服务器。
+    attackLevelCap = Number(stage) === 0
+      ? Infinity
+      : stageRows.find(row => season !== null && Number(row.season) === season && Number(row.stage) === Number(stage))?.maxPirateLevel;
+    if (attackLevelCap !== Infinity && !Number.isSafeInteger(attackLevelCap)) {
+      skip(ctx, '无法确认当前赛季阶段的海盗等级上限');
+      attackLevelCap = null;
+    }
+  }
   let sweepProgress;
   // sweepTimes 是今日已扫次数，不是剩余次数；字段异常时停止，不能将不确定状态当成未使用额度。
   if (options.sweep) {
@@ -346,10 +362,10 @@ async function pirates(ctx, options) {
     try { sweepProgress = pirateSweepProgress(state.sweepTimes, pirateDailySweepLimit(ctx.config.tables, vipLevel)); }
     catch (error) { skip(ctx, error.message); return; }
   }
-  for (const type of new Set(options.attackTypes)) {
+  for (const type of attackLevelCap === null ? [] : new Set(options.attackTypes)) {
     const killed = records.find(r => r.type === type)?.maxKilledLevel;
     if (killed === undefined) { skip(ctx, `海盗类型 ${type} 缺少击败记录`); continue; }
-    const targets = (state.pirates ?? []).filter(p => p.type === type);
+    const targets = (state.pirates ?? []).filter(p => p.type === type && p.level <= attackLevelCap);
     if (options.attack) {
       const target = targets.filter(p => p.level <= killed + 1).sort((a, b) => b.level - a.level)[0];
       const fleets = await idleFleets(ctx);

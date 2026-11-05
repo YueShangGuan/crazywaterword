@@ -39,9 +39,16 @@ async function claimWelfare(ctx, packs) {
   if (ctx.memory('guild.welfarePack.snapshot') === snapshot) {
     return skip(ctx, '联盟福利没有新增礼包');
   }
-  const result = await ctx.action('GotGuildWelfarePackRequest');
+  const result = await ctx.action('GotGuildWelfarePackRequest', {}, {
+    // 多个只读/自动化入口可能同时看到同一历史礼包；prompt=35 只说明奖励已被领取，不应继续显示为业务错误。
+    onRejected: error => /(?:DUPLICATE_REWARD|prompt=35\b)/.test(error.message)
+      ? { status: 'skipped', reason: '联盟福利礼包已被其他领取流程处理' }
+      : null,
+  });
   // 成功和服务端明确拒绝都证明当前快照已处理；新礼包到达后快照变化会再次尝试。
-  if (result.status === 'success' || result.status === 'rejected') ctx.memory('guild.welfarePack.snapshot', snapshot);
+  if (result.status === 'success' || result.status === 'rejected' || result.reason === '联盟福利礼包已被其他领取流程处理') {
+    ctx.memory('guild.welfarePack.snapshot', snapshot);
+  }
 }
 
 /** 将 int64 礼包 ID 保留为字符串，生成不受 protobuf Long 表示影响的服务端快照。 */
