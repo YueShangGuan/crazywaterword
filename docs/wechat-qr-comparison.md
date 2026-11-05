@@ -5,7 +5,7 @@
 ## 参考项目确实实现了这条流程
 
 参考仓库：[w1249178256/xyzw_web_helper](https://github.com/w1249178256/xyzw_web_helper)。
-本地只读副本在 `work/reference/xyzw_web_helper`，核对版本为 `b408faa88d425e90f01b14f135678dcff95ff893`。
+核对版本为 `b408faa88d425e90f01b14f135678dcff95ff893`。本地不保留副本，复核时按此提交重新克隆。
 没有安装依赖、启动参考项目或调用其认证接口。
 
 ```text
