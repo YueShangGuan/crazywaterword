@@ -2,10 +2,11 @@ import { readFileSync } from 'node:fs';
 import { automationTasks } from './automation.mjs';
 import { operationLabels } from './operation-labels.mjs';
 import { iconEntry } from './art.mjs';
-import { chrome, journal, dialogs, templates, overviewPage, manualPage, heroesPage, dailiesPage, activitiesPage, accountPage, idlePanel, stagePanel } from './ui/dist/console.mjs';
+import { rail, topbar, journal, dialogs, templates, overviewPage, manualPage, heroesPage, dailiesPage, activitiesPage, accountPage, idlePanel, stagePanel } from './ui/dist/console.mjs';
 const componentCss = readFileSync(new URL('./ui/dist/theme.css', import.meta.url), 'utf8');
 const consoleCss = readFileSync(new URL('./console.css', import.meta.url), 'utf8');
 const progressionScript = readFileSync(new URL('./ui/progression.js', import.meta.url), 'utf8');
+const activitiesScript = readFileSync(new URL('./ui/activities.js', import.meta.url), 'utf8');
 
 export const PAGE = `<!doctype html>
 <html lang="zh-CN">
@@ -17,9 +18,11 @@ export const PAGE = `<!doctype html>
 <style>@layer theme, legacy, utilities; @layer legacy { ${consoleCss} } ${componentCss}</style>
 </head>
 <body>
-${chrome(iconEntry)}
-<div class="deck"><main>
-  <div class="page-heading"><h2 id="page-title">总览</h2><a class="jump-log" href="#journal">查看日志 ↓</a></div>
+<div class="app">
+${rail(iconEntry)}
+<div class="stage">
+${topbar()}
+<div class="deck" id="deck"><main>
   <section id="tab-overview">
     ${overviewPage()}
   </section>
@@ -52,6 +55,8 @@ ${chrome(iconEntry)}
   </section>
 </main>
 ${journal()}</div>
+</div>
+</div>
 ${dialogs()}
 ${templates()}
 
@@ -274,7 +279,10 @@ const logTime = new Intl.DateTimeFormat('zh-CN', {
 let logAccount;
 let onlyIssues = false;
 function updateLogSummary() {
-  const count = onlyIssues ? logEl.querySelectorAll('.error,.warn').length : logEl.childElementCount;
+  const issues = logEl.querySelectorAll('.error,.warn').length;
+  const count = onlyIssues ? issues : logEl.childElementCount;
+  $('log-toggle-count').hidden = !issues;
+  $('log-toggle-count').textContent = String(issues);
   $('log-count').textContent = String(count);
   $('log-empty').hidden = count > 0;
   $('log-empty').textContent = onlyIssues ? '没有警告或错误' : '还没有运行记录';
@@ -320,6 +328,9 @@ function appendLog(entry) {
   updateLogSummary();
   if (atEnd) logEl.scrollTop = logEl.scrollHeight;
 }
+function logReport(message, detail) {
+  appendLog({ t: Date.now(), level: 'info', message, detail });
+}
 function reportError(error, context) {
   if (error?.logged) return;
   const api = context?.startsWith('/api/');
@@ -340,6 +351,31 @@ for (const [id, filtered] of [['log-all', false], ['log-issues', true]]) {
     updateLogSummary();
   };
 }
+// 宽屏日志占一栏并记住开合，窄屏是抽屉，默认收起以免挡住内容。
+const wideLog = matchMedia('(min-width:1180px)');
+function savedLogOpen() {
+  try { return localStorage.getItem('journal:open') !== '0'; } catch { return true; }
+}
+function setLogOpen(open) {
+  $('deck').classList.toggle('log-closed', !open);
+  $('log-toggle').setAttribute('aria-expanded', String(open));
+  if (open) logEl.scrollTop = logEl.scrollHeight;
+}
+function toggleLog(open) {
+  setLogOpen(open);
+  if (wideLog.matches) {
+    try { localStorage.setItem('journal:open', open ? '1' : '0'); } catch {}
+  }
+  (open ? $('log-close') : $('log-toggle')).focus();
+}
+setLogOpen(wideLog.matches && savedLogOpen());
+wideLog.addEventListener('change', event => setLogOpen(event.matches && savedLogOpen()));
+$('log-toggle').onclick = () => toggleLog($('deck').classList.contains('log-closed'));
+$('log-close').onclick = () => toggleLog(false);
+document.addEventListener('keydown', event => {
+  if (event.key !== 'Escape' || wideLog.matches || $('deck').classList.contains('log-closed') || document.querySelector('dialog[open]')) return;
+  toggleLog(false);
+});
 function subscribe() {
   if (stream) stream.close();
   if (logAccount !== current) {
@@ -350,6 +386,7 @@ function subscribe() {
     const entry = JSON.parse(event.data);
     appendLog(entry);
     if (entry.extra?.pauseChanged && entry.account === current) void loadAccounts(false);
+    if (entry.extra?.pirateUpdated && entry.account === current && !$('activity-pirates').closest('.hidden,[hidden]')) refreshActivities();
     if (entry.extra?.worldUpdated && entry.account === current && Date.now() - entry.t < 10_000) refreshManualWorld();
   };
 }
@@ -376,8 +413,10 @@ function renderAccountSelect() {
   $('account-pause').textContent = snapshot.paused ? '恢复托管' : '暂停托管';
   $('account-pause').title = snapshot.paused ? '结束自行上号，允许控制台重新登录游戏' : '断开游戏连接，方便自行上号';
   $('busy').textContent = snapshot.paused ? '已暂停 · 可自行上号' : snapshot.connected ? '已连接' : '未连接';
+  $('busy').dataset.state = snapshot.paused ? 'paused' : snapshot.connected ? 'on' : 'off';
   $('connect').disabled = snapshot.paused || snapshot.connected || !accounts.length;
   $('disconnect').disabled = !snapshot.connected;
+  renderOverviewMeta();
 }
 
 async function loadAccounts(reload) {
@@ -441,6 +480,7 @@ $('connect').onclick = async () => {
     renderAccountSelect();
     refreshProgression();
     refreshOverview();
+    refreshActivities();
     $('hint').textContent = '';
   } catch (error) {
     $('hint').textContent = '';
@@ -452,40 +492,35 @@ $('disconnect').onclick = async () => {
   disconnected.add(account);
   refreshProgression();
   refreshManualWorld();
+  refreshActivities();
   await call('/api/disconnect', { method: 'POST' });
   if (account !== current) return;
   snapshot.connected = false;
-  $('busy').textContent = '未连接';
   renderAccountSelect();
 };
 
 // ---- 总览 ------------------------------------------------------------------
+function statTile(box, label, value, wide) {
+  const tile = el('div', wide ? 'item wide' : 'item');
+  tile.appendChild(el('span', 'k', label));
+  tile.appendChild(el('span', 'v', value));
+  box.appendChild(tile);
+}
+
 function renderWho(view) {
   const box = clear($('who'));
   const role = view.player || {};
-  const account = view.account || {};
-  const status = view.status || {};
   const items = [
-    ['账号', account.title || '-'],
     ['角色', role.nickname || '-'],
     ['等级', role.level == null ? '-' : String(role.level)],
     ['战力', fmt(role.power)],
     ['区服', role.worldId == null ? '-' : String(role.worldId)],
-    ['状态', status.connected ? '已连接' : '未连接'],
   ];
-  for (const [k, v] of items) {
-    const cellBox = el('div', 'item');
-    cellBox.appendChild(el('span', 'k', k));
-    cellBox.appendChild(el('span', 'v', v));
-    box.appendChild(cellBox);
-  }
+  for (const [k, v] of items) statTile(box, k, v);
   if (view.afk) {
-    const afk = el('div', 'item');
-    afk.appendChild(el('span', 'k', '闯关挂机收益'));
     const finish = view.afk.finishTime;
     const status = view.afk.capped ? '收益已满' : finish > 0 ? new Date(finish * 1000).toLocaleTimeString() + ' 满额' : '暂无计时';
-    afk.appendChild(el('span', 'v', '等级 ' + (view.afk.level ?? '-') + ' · ' + status));
-    box.appendChild(afk);
+    statTile(box, '闯关挂机收益', '等级 ' + (view.afk.level ?? '-') + ' · ' + status, true);
   }
 }
 
@@ -508,6 +543,16 @@ function renderOverview(data) {
 
 let overviewPending = false;
 let claiming = false;
+let overviewAt = 0, overviewAccount = null, overviewFailed = false;
+function renderOverviewMeta() {
+  const live = current && !snapshot.paused && !disconnected.has(current);
+  const time = overviewAccount === current && overviewAt ? logTime.format(overviewAt) : '';
+  $('overview-refresh').disabled = !live;
+  $('overview-updated').textContent = !time ? ''
+    : !live ? '未连接，以下是 ' + time + ' 的数据'
+    : overviewFailed ? '刷新失败，以下是 ' + time + ' 的数据'
+    : '更新于 ' + time + '，每 20 秒自动刷新';
+}
 async function refreshOverview() {
   if (overviewPending || claiming || !current || snapshot.paused || disconnected.has(current) || document.hidden || $('tab-overview').classList.contains('hidden')) return;
   const account = current;
@@ -518,12 +563,20 @@ async function refreshOverview() {
     snapshot = data.status;
     renderAccountSelect();
     renderOverview(data);
+    overviewAt = Date.now();
+    overviewAccount = account;
+    overviewFailed = false;
+    renderOverviewMeta();
     $('hint').textContent = '';
-    $('busy').textContent = data.status.connected ? '已连接' : '未连接';
   } catch (error) {
+    overviewFailed = true;
+    if (account === current) renderOverviewMeta();
     reportError(error, '刷新总览');
   } finally { overviewPending = false; }
 }
+
+$('overview-refresh').onclick = () => refreshOverview();
+document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshOverview(); });
 
 $('loot-run').onclick = async () => {
   const account = current;
@@ -532,8 +585,7 @@ $('loot-run').onclick = async () => {
   $('loot-run').disabled = true;
   $('loot-hint').textContent = '领取中…';
   try {
-    const data = await call('/api/loot/run', { method: 'POST', body: JSON.stringify({ confirm: true }) });
-    if (account === current) $('loot-view').textContent = data.summary;
+    await call('/api/loot/run', { method: 'POST', body: JSON.stringify({ confirm: true }) });
   } finally {
     claiming = false;
     $('loot-hint').textContent = '';
@@ -640,12 +692,6 @@ function renderLoop(data) {
   $('loop-stop').disabled = !data.running || data.stopping;
   $('loop-hint').textContent = (data.running ? '挂机中，已完成 ' : '未在挂机，累计 ') + data.completed + ' 轮' + (data.error ? '，已中止' : '');
   if (data.stopping) $('loop-hint').textContent = '正在暂停，等待在途请求结束';
-  if (!data.history.length) {
-    $('loop-view').textContent = data.running ? '第一轮进行中 ...' : '还没跑过。点「开始挂机」按上面的设置跑起来。';
-    return;
-  }
-  const lines = data.history.map((entry) => entry.text);
-  $('loop-view').textContent = lines.join(String.fromCharCode(10, 10));
 }
 
 async function refreshLoop() {
@@ -653,7 +699,6 @@ async function refreshLoop() {
   if ($('tab-idle').classList.contains('hidden')) return;
   if (loopAccount !== account || !account) {
     $('loop-hint').textContent = account ? '正在读取设置' : '请选择账号';
-    $('loop-view').textContent = '';
     for (const input of taskInputs) {
       input.disabled = true;
       setTaskSwitch(input, false);
@@ -675,16 +720,26 @@ async function refreshLoop() {
 
 async function toggleAutoTask(input) {
   const account = current, key = input.dataset.autoTask, saving = account + ':' + key;
+  if (!account || input.disabled || savingTasks.has(saving)) return;
   const enabled = input.getAttribute('aria-checked') !== 'true';
   setTaskSwitch(input, enabled);
   savingTasks.add(saving);
+  activityTaskEdits.set(saving, { enabled, pending: true, version: activitiesVersion });
+  syncActivityTask(key, enabled, account);
   input.disabled = true;
   ++loopVersion;
   try {
     await call('/api/loop/task', { method: 'POST', body: JSON.stringify({ confirm: true, key, enabled }) });
-  } catch (error) { setTaskSwitch(input, !enabled); reportError(error); }
+  } catch (error) {
+    setTaskSwitch(input, !enabled);
+    syncActivityTask(key, !enabled, account);
+    reportError(error);
+  }
   finally {
     savingTasks.delete(saving);
+    const saved = input.getAttribute('aria-checked') === 'true';
+    activityTaskEdits.set(saving, { enabled: saved, pending: false, version: activitiesVersion });
+    syncActivityTask(key, saved, account);
     if (account === current) {
       if (input.dataset.eventTask) {
         for (const toggle of document.querySelectorAll('[data-event-task]')) {
@@ -755,8 +810,8 @@ $('tasks-plan').onclick = async () => {
   $('tasks-hint').textContent = '检查中 ...';
   try {
     const data = await call('/api/tasks');
-    $('tasks-hint').textContent = '可领 ' + data.plan.length + ' 条';
-    $('tasks-view').textContent = data.text;
+    $('tasks-hint').textContent = '';
+    logReport('任务奖励：可领 ' + data.plan.length + ' 条', data.text);
   } catch (error) {
     $('tasks-hint').textContent = '';
     reportError(error);
@@ -765,10 +820,7 @@ $('tasks-plan').onclick = async () => {
 bindGameAction('tasks-run', async () => {
   const account = current;
   const data = await call('/api/tasks/run', { method: 'POST', body: JSON.stringify({ confirm: true }) });
-  if (current === account) {
-    $('tasks-view').textContent = data.text;
-    $('tasks-hint').textContent = '本轮成功领取 ' + data.results.filter((r) => r.ok).length + ' 项';
-  }
+  if (current === account) logReport('任务奖励：本轮成功领取 ' + data.results.filter((r) => r.ok).length + ' 项', data.text);
 });
 
 function orderState(order, data) {
@@ -818,12 +870,32 @@ function residentOrderButton(order) {
   return button;
 }
 
+function renderWorldPlan(actions) {
+  const box = clear($('world-view'));
+  if (!actions?.length) {
+    box.appendChild(el('span', 'dim', '现在没有可执行的动作'));
+    return;
+  }
+  box.appendChild(el('strong', null, '点「执行一轮」会做这些'));
+  const list = el('ul');
+  for (const action of actions) list.appendChild(el('li', null, action.label));
+  box.appendChild(list);
+}
+
 function renderWorld(data) {
-  $('world-view').textContent = data.text;
+  const summary = clear($('world-summary'));
+  statTile(summary, '人口', data.population + (data.futurePopulation ? ' → ' + data.futurePopulation : ''));
+  statTile(summary, '库存', data.stock.length + ' 种');
+  statTile(summary, '工厂', data.factories.length + ' 栋');
+  statTile(summary, '居民订单', data.orders.length + ' 条');
+  statTile(summary, '资源田', (data.resFields.fields?.length ?? 0) + '/' + (data.resFields.maxNum ?? '?'));
+  renderWorldPlan(data.plan);
   const fbox = clear($('world-factories'));
   if (data.farms?.length) {
     fbox.appendChild(el('h2', null, '农田'));
-    fbox.appendChild(table(['地块', '状态'], data.farms.map(f => [f.plot, f.status])));
+    const plots = el('div', 'icons');
+    for (const farm of data.farms) plots.appendChild(cell(null, 0, farm.plot.replace(/^([0-9]+)农田$/, '$1 号农田'), farm.status, false));
+    fbox.appendChild(plots);
   }
   // 空位：没盖的（待建）与正在盖的（施工中）。计划器只会建「待建」那些，
   // 施工中的只能等它盖完由竣工步骤收尾，所以两种状态要分开说，不然看不出差在哪。
@@ -874,7 +946,7 @@ function refreshManualWorld(force = false) {
     displayedWorldAccount = account;
     worldVersion++;
     worldRead = null;
-    for (const id of ['world-factories', 'world-orders', 'world-stock', 'world-fields', 'world-hint']) clear($(id));
+    for (const id of ['world-summary', 'world-factories', 'world-orders', 'world-stock', 'world-fields', 'world-hint']) clear($(id));
     $('world-view').textContent = !account ? '请先选择账号' : !available ? '账号已断开连接' : '正在读取海面数据…';
   }
   if (!available || worldRead?.account === account) return;
@@ -902,7 +974,8 @@ bindGameAction('world-run', async () => {
     const data = await call('/api/world/run', { method: 'POST', body: JSON.stringify(body) });
     if (account !== current || disconnected.has(account)) return;
     worldVersion++;
-    $('world-hint').textContent = '执行 ' + data.results.length + ' 个动作，失败 ' + data.results.filter((r) => r.ok === false).length;
+    $('world-hint').textContent = '';
+    logReport('海面：执行 ' + data.results.length + ' 个动作，失败 ' + data.results.filter((r) => r.ok === false).length + ' 个');
     if (!data.refreshError) renderWorld(data);
   } catch (error) {
     $('world-hint').textContent = '';
@@ -935,7 +1008,6 @@ function skillText(levels) {
 }
 
 function renderHeroes(data) {
-  $('hero-view').textContent = data.text;
   const box = clear($('hero-table'));
   const planned = new Set(data.steps.map(step => step.heroId));
   if (!planned.size) return;
@@ -951,8 +1023,10 @@ function renderHeroes(data) {
 $('hero-plan').onclick = async () => {
   $('hero-hint').textContent = '计算中 ...';
   try {
-    renderHeroes(await call('/api/heroes'));
+    const data = await call('/api/heroes');
+    renderHeroes(data);
     $('hero-hint').textContent = '';
+    logReport('英雄养成计划：' + data.steps.length + ' 步', data.text);
   } catch (error) {
     $('hero-hint').textContent = '';
     reportError(error);
@@ -962,8 +1036,9 @@ bindGameAction('hero-run', async () => {
   $('hero-hint').textContent = '执行中 ...';
   try {
     const data = await call('/api/heroes/run', { method: 'POST', body: JSON.stringify({ confirm: true }) });
-    $('hero-hint').textContent = '发出 ' + data.sent + ' 个请求，失败 ' + data.failed + '，跳过 ' + data.skipped + '，耗时 ' + Math.round(data.ms / 1000) + 's';
-    $('hero-plan').onclick();
+    $('hero-hint').textContent = '';
+    logReport('英雄养成：发出 ' + data.sent + ' 个请求，失败 ' + data.failed + '，跳过 ' + data.skipped + '，耗时 ' + Math.round(data.ms / 1000) + ' 秒');
+    renderHeroes(await call('/api/heroes'));
   } catch (error) {
     $('hero-hint').textContent = '';
     reportError(error);
@@ -1003,14 +1078,15 @@ function renderDailies(data) {
         free ? '免费，一键领取会顺手领掉' : '今天那份已经领过了，明天 0 点重置'],
     ]));
   }
-  $('dailies-view').textContent = data.text + String.fromCharCode(10) + '钻石 ' + fmt(data.ruby) + '（本工具不主动花钻石）';
 }
 
 $('dailies-plan').onclick = async () => {
   $('dailies-hint').textContent = '探测中 ...';
   try {
-    renderDailies(await call('/api/dailies'));
+    const data = await call('/api/dailies');
+    renderDailies(data);
     $('dailies-hint').textContent = '';
+    logReport('每日任务探测：钻石 ' + fmt(data.ruby), data.text);
   } catch (error) {
     $('dailies-hint').textContent = '';
     reportError(error);
@@ -1021,7 +1097,8 @@ bindGameAction('dailies-run', async () => {
   $('dailies-hint').textContent = '执行中 ...';
   try {
     const data = await call('/api/dailies/run', { method: 'POST', body: JSON.stringify({ confirm: true, paid }) });
-    $('dailies-hint').textContent = '完成 ' + data.results.filter((r) => r.ok).length + ' 个动作，失败 ' + data.results.filter((r) => r.ok === false).length + '，领取奖励 ' + data.claimed.length + ' 个，耗时 ' + Math.round(data.ms / 1000) + 's';
+    $('dailies-hint').textContent = '';
+    logReport('每日任务：完成 ' + data.results.filter((r) => r.ok).length + ' 个动作，失败 ' + data.results.filter((r) => r.ok === false).length + ' 个，领取奖励 ' + data.claimed.length + ' 个，耗时 ' + Math.round(data.ms / 1000) + ' 秒');
     renderDailies(data);
   } catch (error) {
     $('dailies-hint').textContent = '';
@@ -1065,105 +1142,6 @@ function putCell(td, spec) {
   }
   td.textContent = spec.text || '';
 }
-
-let sourceIndex;
-function renderSourceSearch() {
-  const box = clear($('source-results')), query = $('source-query').value.trim();
-  if (!query || !sourceIndex) return;
-  const matches = sourceIndex.filter(row => row.name.includes(query));
-  if (!matches.length) box.textContent = '未找到已配置来源的材料';
-  else box.appendChild(table(['材料', '游戏内来源'], matches.map(r => [r.name, r.sources.join('、')])));
-}
-$('source-query').oninput = renderSourceSearch;
-
-async function refreshDiscovery(version, account) {
-  const box = clear($('pirate-tracker'));
-  if (!account) return;
-  box.textContent = '正在核对赛季和首杀记录…';
-  const [sources, pirates] = await Promise.allSettled([sourceIndex ?? call('/api/material-sources'), call('/api/pirates')]);
-  if (version !== activitiesVersion || account !== current) return;
-  if (sources.status === 'fulfilled') {
-    sourceIndex = sources.value;
-    renderSourceSearch();
-  } else $('source-results').textContent = '来源查询失败，详情见日志';
-  clear(box);
-  if (pirates.status !== 'fulfilled') { box.textContent = '读取失败，详情见日志'; return; }
-  const data = pirates.value;
-  box.appendChild(el('p', null, '第 ' + data.season + ' 赛季 · ' + (data.locked ? '世界 ' + data.required + ' 级开放，以下为配置预览' : '各类海盗的下一档首杀目标')));
-  box.appendChild(table(['目标', '参考战力', '首杀进度', '地图目标', '首杀材料'], data.targets.map(r => [
-    r.name + ' ' + r.level + ' 级', fmt(r.power), r.cleared == null ? '未核对' : r.finished ? '全部完成' : '已击败至 ' + r.cleared + ' 级',
-    r.visible == null ? '未查询' : r.visible + ' 个', r.materials || '无材料奖励',
-  ])));
-}
-
-let activitiesVersion = 0;
-let activityExpiryTimer;
-async function refreshActivities() {
-  const version = ++activitiesVersion, account = current;
-  clearTimeout(activityExpiryTimer);
-  if ($('tab-activities').classList.contains('hidden')) return;
-  const list = clear($('activities-list')), materials = clear($('activities-order'));
-  if (snapshot.paused) { list.textContent = '账号已暂停'; clear($('pirate-tracker')); return; }
-  list.textContent = account ? '正在读取活动…' : '请先选择账号';
-  void refreshDiscovery(version, account);
-  if (!account) return;
-  try {
-    const data = await call('/api/activities');
-    if (version !== activitiesVersion || account !== current) return;
-    clear(list);
-    const active = data.activities.filter(row => row.endTime > data.serverNow);
-    if (active.length) {
-      const hasTask = active.some(row => row.taskKey);
-      if (hasTask) list.appendChild(el('p', 'dim', '开启的限时任务随账号挂机执行，到期自动停止。'));
-      const headers = ['活动', '结束时间（北京时间）'];
-      if (hasTask) headers.push('限时自动任务');
-      list.appendChild(table(headers, active.map(row => {
-        const cells = [row.name, new Date(row.endTime * 1000).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })];
-        const task = data.eventTasks.find(t => t.key === row.taskKey);
-        if (task) {
-          const toggle = component('ui-event-switch');
-          toggle.dataset.autoTask = task.key;
-          toggle.dataset.eventTask = 'true';
-          toggle.setAttribute('aria-label', task.label);
-          toggle.title = task.label;
-          setTaskSwitch(toggle, task.enabled);
-          toggle.disabled = savingTasks.has(account + ':' + task.key);
-          toggle.onclick = () => toggleAutoTask(toggle);
-          const control = el('div', 'bar');
-          control.append(toggle, el('span', null, task.label));
-          cells.push(control);
-        } else if (hasTask) cells.push('');
-        return cells;
-      })));
-      const nextEnd = Math.min(...active.map(row => row.endTime));
-      activityExpiryTimer = setTimeout(refreshActivities, Math.min(2147483647, Math.ceil((nextEnd - data.serverNow) * 1000)));
-    }
-    else list.textContent = '当前没有开放的周活动或节日活动';
-    const lottery = data.lottery;
-    if (lottery) list.appendChild(el('p', null, '周抽奖 · 累计 ' + lottery.times + ' 次 · '
-      + (lottery.required == null ? '全部档位已领完' : '下一档 ' + lottery.required + ' 次' + (lottery.ready ? '（可领取）' : ''))));
-    if (data.lotteryError) list.appendChild(el('p', null, '周抽奖进度读取失败，详见日志'));
-    const fish = data.fish;
-    list.appendChild(el('p', null, fish ? '钓鱼图鉴 · 已收集 ' + fish.names.length + '/' + fish.total + ' 种 · '
-      + (fish.next ? '下一档 ' + fish.score + '/' + fish.required + ' 分' : '档位已领完')
-      + (fish.names.length ? '（' + fish.names.join('、') + '）' : '') : '钓鱼图鉴读取失败，详见日志'));
-    const newbie = data.newbie;
-    list.appendChild(el('p', null, newbie ? '新手七日登录 · 已登录 ' + newbie.loginDays + ' 天 · '
-      + (newbie.available.length ? '可领第 ' + newbie.available.join('、') + ' 天奖励' : '当前奖励已领完') : '新手七日登录 · 当前无开放活动'));
-    if (data.order?.materials.length && !data.order.finished) {
-      materials.appendChild(el('p', 'dim', data.order.ready
-        ? '周订单材料已齐，已预留整单用量，可在游戏内手动提交。'
-        : '周订单尚缺材料。已备齐的居民订单可先用所需份额，挂机再按缺口补产。'));
-      materials.appendChild(table(['材料', '需要', '库存', '还缺', '生产地点', '当前状态'], data.order.materials.map(row =>
-      [row.name, String(row.required), String(row.owned), row.missing ? String(row.missing) : '已齐',
-        row.seed ? '农田' : row.factory ? row.factory.name + ' · ' + row.factory.required + ' 级' : '无工厂配方',
-        row.seed ? row.farmStatus : !row.factory ? '—' : row.factory.level === null ? '等级未知' : row.factory.level ? row.factory.level + ' 级' + (row.factory.constructing ? ' · 升级中' : '') : row.factory.constructing ? '建造中' : '未建造'])));
-    } else materials.textContent = data.orderError ? '未能读取材料，详情见运行日志' : !data.order ? '本期未开放周订单' : data.order.finalReady ? '本期周订单已全部交付，可在游戏内领取最终奖励。' : data.order.finished ? '本期周订单已完成' : '当前没有材料需求';
-  } catch {
-    if (version === activitiesVersion && account === current) list.textContent = '读取失败，详情见运行日志';
-  }
-}
-$('activities-refresh').onclick = () => { refreshActivities(); refreshProgression(); };
 
 function table(headers, rows) {
   const box = component('ui-table');
@@ -1392,10 +1370,6 @@ function renderCapture(state) {
     box.appendChild(status);
   }
 
-  if (state.log && state.log.length) {
-    box.appendChild(el('h2', null, '抓包记录'));
-    box.appendChild(el('pre', null, state.log.join(String.fromCharCode(10))));
-  }
 }
 
 async function pollCapture() {
@@ -1455,7 +1429,30 @@ $('cap-stop').onclick = async () => {
 };
 
 // ---- 启动 ------------------------------------------------------------------
+${activitiesScript}
 ${progressionScript}
+document.querySelectorAll('[data-subtabs]').forEach((group) => {
+  const tabs = [...group.querySelectorAll('[role=tab]')];
+  const choose = (tab, focus) => {
+    for (const other of tabs) {
+      const selected = other === tab;
+      other.setAttribute('aria-selected', String(selected));
+      other.tabIndex = selected ? 0 : -1;
+      $(other.getAttribute('aria-controls')).hidden = !selected;
+    }
+    if (focus) tab.focus();
+    refreshProgression();
+  };
+  tabs.forEach((tab, index) => {
+    tab.onclick = () => choose(tab);
+    tab.onkeydown = (event) => {
+      const offsets = { ArrowRight: 1, ArrowLeft: -1, Home: -index, End: tabs.length - index - 1 };
+      if (!(event.key in offsets)) return;
+      event.preventDefault();
+      choose(tabs[(index + offsets[event.key] + tabs.length) % tabs.length], true);
+    };
+  });
+});
 document.querySelectorAll('#tabs button').forEach((button) => {
   button.onclick = () => {
     for (const other of document.querySelectorAll('#tabs button')) other.removeAttribute('aria-current');

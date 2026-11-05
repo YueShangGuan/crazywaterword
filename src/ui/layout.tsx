@@ -1,6 +1,6 @@
 import * as React from "react"
 import { renderToStaticMarkup } from "react-dom/server"
-import { Compass, LayoutDashboard, Timer, Hand, Flag, Swords, CalendarDays, ContactRound, Gift } from "lucide-react"
+import { Compass, LayoutDashboard, Timer, Hand, Flag, Swords, CalendarDays, ContactRound, Gift, ScrollText, X } from "lucide-react"
 import { Button } from "./button"
 import { Badge } from "./badge"
 import { Card, CardContent, CardHeader, CardTitle } from "./card"
@@ -9,11 +9,12 @@ import { Checkbox } from "./checkbox"
 import { Input } from "./input"
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "./table"
 
-const tabs = [
-  ["overview", "总览", "icon_btn_bottom_home", LayoutDashboard], ["idle", "挂机", "icon_btn_offline", Timer],
-  ["manual", "单次操作", "icon_btn_bottom_bag", Hand], ["stages", "挑战", "icon_btn_bottom_battle", Flag],
-  ["heroes", "英雄", "icon_btn_bottom_hero", Swords], ["dailies", "日常", "icon_btn_star", CalendarDays],
-  ["activities", "活动", "icon_activity_week_month", Gift], ["account", "账号", "icon_btn_moreFunc", ContactRound],
+const navGroups = [
+  ["概览", [["overview", "总览", "icon_btn_bottom_home", LayoutDashboard], ["idle", "挂机", "icon_btn_offline", Timer]]],
+  ["操作", [["manual", "单次操作", "icon_btn_bottom_bag", Hand], ["stages", "挑战", "icon_btn_bottom_battle", Flag],
+    ["heroes", "英雄", "icon_btn_bottom_hero", Swords], ["dailies", "日常", "icon_btn_star", CalendarDays],
+    ["activities", "活动", "icon_activity_week_month", Gift]]],
+  ["管理", [["account", "账号", "icon_btn_moreFunc", ContactRound]]],
 ] as const
 
 type Sprite = { url: string; x: number; y: number; w: number; h: number; rotated: boolean }
@@ -29,27 +30,37 @@ function GameIcon({ sprite, size, children }: { sprite: Sprite | null; size: num
   </span>
 }
 
-export function chrome(icon: (name: string) => Sprite | null) {
-  return renderToStaticMarkup(<header>
-    <div className="headline">
-      <div className="mast"><span className="mast-icon"><GameIcon sprite={icon("icon_sail")} size={29}><Compass className="bearing" aria-hidden="true" /></GameIcon></span><h1>疯狂水世界</h1><span className="brand-label">航行控制台</span></div>
-      <div className="connection">
-        <label className="account-label" htmlFor="account">当前账号</label>
-        <NativeSelect id="account" title="选择账号" />
-        <Button id="connect" size="sm">连接</Button><Button id="disconnect" size="sm" variant="outline">断开</Button>
-        <Button id="account-pause" size="sm" variant="outline" title="暂停后断开游戏连接，方便自行上号">暂停托管</Button>
-        <span id="busy" className="dim" /><span id="hint" className="warn" />
-      </div>
+export function rail(icon: (name: string) => Sprite | null) {
+  return renderToStaticMarkup(<aside className="rail">
+    <div className="mast"><span className="mast-icon"><GameIcon sprite={icon("icon_sail")} size={26}><Compass className="bearing" aria-hidden="true" /></GameIcon></span>
+      <div><h1>疯狂水世界</h1><span className="brand-label">航行控制台</span></div></div>
+    <nav id="tabs" aria-label="功能导航">{navGroups.map(([group, items]) => <div className="nav-group" key={group}>
+      <span className="nav-label">{group}</span>
+      {items.map(([key, title, name, Icon]) =>
+        <Button key={key} data-tab={key} aria-current={key === "overview" ? "page" : undefined} variant="ghost"><GameIcon sprite={icon(name)} size={22}><Icon aria-hidden="true" /></GameIcon>{title}</Button>)}
+    </div>)}</nav>
+  </aside>)
+}
+
+export function topbar() {
+  return renderToStaticMarkup(<header className="topbar">
+    <h2 id="page-title">总览</h2>
+    <div className="connection">
+      <span id="hint" className="warn" />
+      <label className="account-label" htmlFor="account">当前账号</label>
+      <NativeSelect id="account" title="选择账号" />
+      <span id="busy" className="status-pill" data-state="off" role="status" />
+      <Button id="connect" size="sm">连接</Button><Button id="disconnect" size="sm" variant="outline">断开</Button>
+      <Button id="account-pause" size="sm" variant="outline" title="暂停后断开游戏连接，方便自行上号">暂停托管</Button>
+      <Button id="log-toggle" size="sm" variant="outline" aria-controls="journal" aria-expanded="false"><ScrollText aria-hidden="true" />日志<span id="log-toggle-count" className="log-toggle-count" hidden /></Button>
     </div>
-    <nav id="tabs" aria-label="功能导航">{tabs.map(([key, title, name, Icon]) =>
-      <Button key={key} data-tab={key} aria-current={key === "overview" ? "page" : undefined} variant="ghost"><GameIcon sprite={icon(name)} size={22}><Icon aria-hidden="true" /></GameIcon>{title}</Button>
-    )}</nav>
   </header>)
 }
 
 export function journal() {
   return renderToStaticMarkup(<aside id="journal" aria-label="运行日志"><Card>
-    <CardHeader><div className="journal-top"><CardTitle>运行日志</CardTitle><Badge id="log-count">0</Badge></div></CardHeader>
+    <CardHeader><div className="journal-top"><CardTitle>运行日志</CardTitle><Badge id="log-count">0</Badge>
+      <Button id="log-close" size="icon-sm" variant="ghost" aria-label="收起日志" title="收起日志"><X aria-hidden="true" /></Button></div></CardHeader>
     <CardContent>
       <div className="log-filter" role="group" aria-label="日志筛选">
         <Button id="log-all" size="sm" variant="outline" aria-pressed="true">全部</Button>
@@ -87,5 +98,6 @@ export function templates() {
     <template id="ui-select"><NativeSelect size="sm" /></template>
     <template id="ui-delete"><Button variant="destructive" size="sm" /></template>
     <template id="ui-badge"><Badge variant="outline" /></template>
+    <template id="ui-number"><Input type="number" className="w-20" /></template>
   </>)
 }

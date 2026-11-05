@@ -1,11 +1,27 @@
 import { displayMaterial } from './config.mjs';
 import { normalize } from './worlds.mjs';
+import { claimCollection, newbieView } from './collections.mjs';
+import { toNumber } from './client.mjs';
+import { campaignReportState, claimCampaignReports, claimOpenRanks, openRankState, openRanks } from './pirate-board.mjs';
+import { claimFestivalRewards, claimWeeklyRewards, claimVipDaily, festivalRewardKeys, weeklyRewardKeys, festivalRewardState, snowballState,
+  compassState, weekChargeState, weekHeroStarState, weekFreePackState, weekOrderState, vipDailyState, syncFestivalDay } from './free-rewards.mjs';
 
 const weekNames = { 1: '周战令', 2: '累计充值', 3: '英雄升星', 4: '周抽奖', 5: '周订单', 6: '芯片活动', 7: '周翻牌' };
 const serverNow = client => (Date.now() + (client.serverClockOffsetMs || 0)) / 1000;
 const open = (activity, now) => activity.startTime <= now && now < activity.endTime;
 const linkageNames = { 28: '风水罗盘', 29: '酆都法旨', 30: '驱邪除祟' };
 const linkageTasks = { 28: 'compassReward', 29: 'edict', 30: 'evilExpel' };
+// Sub-activities that only hold rewards. Packs 6 and 10 share one tab; 10 only shows without 6.
+const festivalEntries = {
+  11: { name: '每日签到与活跃', taskKeys: ['festivalSign', 'festivalActive'] },
+  6: { name: '每日免费礼包', taskKeys: ['festivalGifts'] },
+  10: { name: '每日免费礼包', taskKeys: ['festivalGifts'], unless: 6 },
+  27: { name: '走江踏浪', taskKeys: ['snowballFree'] },
+};
+const weekTasks = { 1: ['weekPass'], 2: ['weekCharge'], 3: ['weekHeroStar'], 4: ['weekGift', 'weekTimes', 'weekLotterySpin'],
+  5: ['weekOrderFinal', 'weekOrderSubmit'], 6: ['weekChipFree'], 7: ['weekUniqueFree'] };
+const weeklyId = row => `weekly:${row.type}:${row.period ?? 0}:${row.startTime}`;
+const linkageId = (row, sub) => `linkage:${toNumber(row.activityId)}:${sub.subActivityType}`;
 
 function playable(row, sub, now) {
   return open(row, now) && (!sub.openTime || sub.openTime <= now) && (!sub.closeTime || now < sub.closeTime);
@@ -46,9 +62,10 @@ async function solveEdict(client, config, request, allowed, report) {
   report({ label: label + ' · 解符成功，剩余耐心 ' + reply.patience + '，积分 ' + reply.score + (reward ? '，获得' + reward : ''), ok: true });
 }
 
-export async function runLinkage(client, config, enabled, report) {
+export async function runLinkage(client, config, enabled, report, selectedId = null) {
   for (const row of client.festivals ?? []) {
     for (const sub of row.subActivity ?? []) {
+      if (selectedId && linkageId(row, sub) !== selectedId) continue;
       const expel = sub.subActivityType === 30;
       const key = linkageTasks[sub.subActivityType];
       if (!key) continue;
@@ -91,7 +108,7 @@ export async function runLinkage(client, config, enabled, report) {
   }
 }
 
-async function weekSchedule(client) {
+export async function weekSchedule(client) {
   const reply = await client.request('WeekInfoRequest', {}, 'WeekInfoResponse');
   return normalize(reply).activityTime ?? [];
 }
@@ -128,22 +145,174 @@ function lotteryProgress(config, period, info) {
   return { times, claimed, required: next?.reqTimes, ready: Boolean(next && times >= next.reqTimes) };
 }
 
-export async function activityView(client, festivals = [], config = null) {
-  const week = await weekly(client);
-  const activities = week.map(row => ({ name: weekNames[row.type] ?? '周活动 ' + row.type, endTime: row.endTime }));
+export function activityEntries(client, week = [], festivals = client.festivals ?? []) {
+  const time = serverNow(client);
+  const activities = week.filter(row => open(row, time)).map(row => ({
+    id: weeklyId(row), kind: 'weekly', weekType: row.type, taskKeys: weekTasks[row.type] ?? [],
+    name: weekNames[row.type] ?? '周活动 ' + row.type, endTime: row.endTime,
+  }));
   for (const row of festivals) {
     const linkage = (row.subActivity ?? []).filter(sub => linkageNames[sub.subActivityType]);
     if (linkage.length) {
       for (const sub of linkage) {
-        if (playable(row, sub, serverNow(client))) activities.push({ name: '捞尸人联动 · ' + linkageNames[sub.subActivityType], taskKey: linkageTasks[sub.subActivityType], endTime: Math.min(sub.closeTime || row.endTime, row.endTime) });
+        if (playable(row, sub, time)) activities.push({
+          id: linkageId(row, sub), kind: 'limited', group: '捞尸人联动',
+          taskKeys: sub.subActivityType === 28 ? ['compassReward', 'compassSpin'] : [linkageTasks[sub.subActivityType]],
+          name: linkageNames[sub.subActivityType], taskKey: linkageTasks[sub.subActivityType],
+          endTime: Math.min(sub.closeTime || row.endTime, row.endTime),
+        });
+      }
+      const subs = row.subActivity ?? [];
+      for (const sub of subs) {
+        const entry = festivalEntries[sub.subActivityType];
+        if (!entry || !playable(row, sub, time)) continue;
+        if (entry.unless && subs.some(other => other.subActivityType === entry.unless && playable(row, other, time))) continue;
+        activities.push({ id: linkageId(row, sub), kind: 'limited', group: '捞尸人联动', name: entry.name, taskKeys: entry.taskKeys,
+          endTime: Math.min(sub.closeTime || row.endTime, row.endTime) });
       }
     }
-    if (open(row, serverNow(client))) activities.push({
+    if (open(row, time) && !linkage.some(sub => playable(row, sub, time))) activities.push({
+      id: 'festival:' + row.activityId, kind: 'limited', taskKeys: [],
       name: linkage.length || row.type === '捞尸人联动活动' ? '鄂都诡事（捞尸人联动）'
         : row.type || ({ 1: '五一活动', 2: '端午活动', 3: '人鱼活动' })[row.festival] || '节日活动 ' + row.activityId,
       endTime: row.endTime,
     });
   }
+  const newbie = newbieView(client);
+  if (newbie) activities.push({
+    id: 'newbie:' + client.newbieActivity.startTime, kind: 'limited', name: '新手七日登录',
+    taskKeys: ['newbieLogin'], taskKey: 'newbieLogin', endTime: newbie.end,
+  });
+  return activities;
+}
+
+// A manual run uses the same routines as the idle loop, but never changes its settings.
+// Bind it to the selected occurrence so a repeated event cannot run another activity.
+export async function runActivity(client, config, { activityId, taskKey, enabled = () => true, playerLevel, player = null, spinCount, report = () => {} }) {
+  if (typeof activityId !== 'string' || typeof taskKey !== 'string') throw new Error('请选择活动和操作');
+  if (!enabled()) throw new Error('账号连接已变化，请刷新后再试');
+  const week = activityId.startsWith('weekly:') ? await weekly(client) : [];
+  const activity = activityId === 'fish' ? { id: 'fish', name: '钓鱼图鉴', taskKeys: ['fishBook'] }
+    : activityId === 'vip' ? { id: 'vip', name: 'VIP 每日奖励', taskKeys: ['vipDaily'] }
+    : activityId === 'pirates' ? { id: 'pirates', name: '海盗首杀', taskKeys: ['campaignReports', 'openRankRewards'] }
+    : activityId === 'openrank' ? { id: 'openrank', name: '开服冲榜', taskKeys: ['openRankRewards'] }
+    : activityEntries(client, week).find(row => row.id === activityId);
+  if (!activity) throw new Error('活动已结束或尚未开放，请刷新活动');
+  if (!activity.taskKeys.includes(taskKey)) throw new Error('该活动不支持所选操作');
+  if (activity.kind === 'weekly' && week.filter(row => row.type === activity.weekType).length !== 1) {
+    throw new Error('当前周活动期次不唯一，请刷新后再试');
+  }
+  const allowed = key => key === taskKey && enabled() && (['fish', 'vip', 'pirates', 'openrank'].includes(activityId)
+    || activityEntries(client, week).some(row => row.id === activityId));
+  const results = [];
+  const collect = entry => { results.push(entry); report(entry); };
+  if (taskKey === 'vipDaily') await claimVipDaily(client, config, player, allowed, collect);
+  else if (taskKey === 'campaignReports') await claimCampaignReports(client, config, player, allowed, collect);
+  else if (taskKey === 'openRankRewards') await claimOpenRanks(client, config, player, allowed, collect);
+  else if (festivalRewardKeys.includes(taskKey)) {
+    await claimFestivalRewards(client, config, allowed, collect, null, (row, type) => activityId.startsWith('linkage:' + toNumber(row.activityId) + ':')
+      && (activity.taskKeys.includes(taskKey) && (taskKey === 'festivalGifts' || activityId.endsWith(':' + type))), { spinCount });
+  } else if (weeklyRewardKeys.includes(taskKey)) {
+    await claimWeeklyRewards(client, config, week.filter(row => weeklyId(row) === activityId), allowed, collect, { readOrder: readWeekOrder, player });
+  } else if (activityId.startsWith('linkage:')) await runLinkage(client, config, allowed, collect, activityId);
+  else if (activityId.startsWith('weekly:')) await claimWeekly(client, config, allowed, collect, playerLevel, null, activityId);
+  else await claimCollection(client, config, taskKey, allowed, collect);
+  if (!results.length) collect({ label: activity.name, skipped: true,
+    reason: allowed(taskKey) ? '当前暂无可执行操作或可领取奖励' : '活动已结束或操作已停止' });
+  return { activityId, taskKey, results };
+}
+
+const text = (config, rows = []) => rows.map(([id, num]) => displayMaterial(config, id) + ' ×' + num).join('、');
+
+// One line per reward so each tab says what can be collected before anything is clicked.
+async function rewardStatus(client, config, activities, week, player) {
+  const status = {};
+  const put = (id, lines, ready, badge = '可领') => { status[id] = { lines, ready, badge }; };
+  const safely = async (id, work) => {
+    try { await work(); } catch (error) { put(id, ['状态读取失败：' + error.message], false); }
+  };
+  syncFestivalDay(client);
+  for (const row of client.festivals ?? []) {
+    const state = festivalRewardState(client, row, config);
+    const id = type => 'linkage:' + toNumber(row.activityId) + ':' + type;
+    if (state.sign) {
+      const { sign, active } = state;
+      put(id(11), [
+        !sign.cfg ? '无法确认今天的签到日，自动签到已跳过' : '活动第 ' + sign.day + ' 天 · ' + (sign.done ? '今日已签到' : '今日可签到：' + text(config, sign.cfg.rewards)),
+        '活跃 ' + active.score + ' 分 · 已领至第 ' + active.claimed + ' 档' + (active.next ? ' · 下一档 ' + active.next.score + ' 分' + (active.ready ? '（可领取）' : '') : ' · 全部领完'),
+      ], Boolean((sign.cfg && !sign.done) || active.ready));
+    }
+    if (state.gifts?.length) {
+      const entry = activities.find(item => item.id === id(6) || item.id === id(10));
+      if (entry) put(entry.id, state.gifts.map(gift => gift.cfg.name + '：' + (gift.done ? '今日已领' : '可领 ' + text(config, gift.cfg.rewards ?? gift.cfg.fixedRewards))), state.gifts.some(gift => !gift.done));
+    }
+    if (state.snowball) await safely(id(27), async () => {
+      const view = await snowballState(client, config);
+      put(id(27), [
+        ...view.packs.map(pack => pack.cfg.name + '：' + (pack.done ? '已领' : '可领 ' + text(config, pack.cfg.fixedRewards))),
+        '累计 ' + view.score + ' 分 · 通行证已领至第 ' + view.claimed + ' 档' + (view.next ? ' · 下一档 ' + view.next.reqScore + ' 分' + (view.ready ? '（可领取）' : '') : ' · 全部领完'),
+      ], view.ready || view.packs.some(pack => !pack.done));
+    });
+    if (state.compass) await safely(id(28), async () => {
+      const view = await compassState(client, row);
+      put(id(28), [view.usable ? '抽奖券 ' + view.tickets + ' 张 · 每次消耗 ' + view.cost.num + ' 张 · 当前积分 ' + (view.info.score ?? 0) : '抽奖消耗不是抽奖券，不会自动抽奖'], view.spins > 0, '可抽');
+    });
+  }
+  for (const row of week) {
+    const id = weeklyId(row);
+    if (row.type === 2) await safely(id, async () => {
+      const view = await weekChargeState(client, config, row);
+      put(id, ['本期已累充 ' + view.amount + ' · 已领 ' + view.got.length + '/' + view.stages.length + ' 档' + (view.ready.length ? ' · 可领 ' + view.ready.length + ' 档' : '') + '。本工具不充值，只领取已达标档位。'], view.ready.length > 0);
+    });
+    if (row.type === 3) await safely(id, async () => {
+      const view = await weekHeroStarState(client, config, row);
+      put(id, [view.period ? view.period.showHero1 + ' ' + view.stars[0] + ' 星 · ' + view.period.showHero2 + ' ' + view.stars[1] + ' 星 · 已领至第 ' + view.gotStage + ' 档'
+        + (view.next ? ' · 下一档需 ' + view.next.hero1Star + ' / ' + view.next.hero2Star + ' 星' + (view.ready ? '（可领取）' : '') : ' · 全部领完') : '缺少本期配置'], view.ready);
+    });
+    if (row.type === 4) await safely(id, async () => {
+      const bag = normalize(await client.request('AllItemRequest', {}, 'AllItemResponse'));
+      const coins = (bag.items ?? []).filter(item => item.itemId === '周转盘币').reduce((sum, item) => sum + item.num, 0);
+      put(id, ['周转盘币 ' + coins + ' 个，开启「使用周转盘币」后才会抽奖'], coins > 0, '可抽');
+    });
+    if (row.type === 5) await safely(id, async () => {
+      const view = await weekOrderState(client, config, row, readWeekOrder);
+      put(id, [view.finalDone ? '最终奖励已领取' : view.finalReady ? '最终奖励可领取' : '完成全部档位后可领最终奖励'], view.finalReady);
+    });
+    if (row.type === 6 || row.type === 7) await safely(id, async () => {
+      const view = await weekFreePackState(client, config, row.type);
+      put(id, [(view.name ?? '免费礼包') + '：' + (view.done ? '已领' : '可领 ' + text(config, view.reward))], !view.done);
+    });
+  }
+  const vip = vipDailyState(player, config, Math.floor((serverNow(client) + 8 * 3600) / 86400));
+  await safely('pirates', async () => {
+    const reports = await campaignReportState(client, config, player);
+    const rank = await openRankState(client, config, player, openRanks[2]);
+    put('pirates', [
+      reports.pending ? '战报奖励 ' + reports.pending + ' 份待领：' + reports.rewards : '战报奖励已领完',
+      rank.open ? '剿匪冲榜 ' + rank.progress + ' 分' + (rank.me?.rank ? ' · 排名第 ' + rank.me.rank + ' 名' : ' · 未上榜') + ' · 已领 ' + rank.got + '/' + rank.total + ' 档' + (rank.next ? ' · 下一档 ' + rank.next.score + ' 分' : '') + (rank.ready.length ? '（可领 ' + rank.ready.length + ' 档）' : '') : '剿匪冲榜已结束',
+    ], reports.pending > 0 || (rank.open && rank.ready.length > 0));
+    status.pirates.rankOpen = rank.open;
+  });
+  await safely('openrank', async () => {
+    const ranks = [];
+    for (const rank of openRanks) ranks.push(await openRankState(client, config, player, rank));
+    const open = ranks.filter(rank => rank.open);
+    if (!open.length) return;
+    activities.push({ id: 'openrank', kind: 'limited', name: '开服冲榜', taskKeys: ['openRankRewards'], endTime: Math.max(...open.map(rank => rank.endTime)) });
+    put('openrank', open.map(rank => rank.name + ' ' + rank.progress + ' 分' + (rank.me?.rank ? ' · 第 ' + rank.me.rank + ' 名' : '') + ' · 已领 ' + rank.got + '/' + rank.total + ' 档' + (rank.ready.length ? '（可领 ' + rank.ready.length + ' 档）' : '')), open.some(rank => rank.ready.length > 0));
+  });
+  if (vip.level > 0) put('vip', ['VIP ' + vip.level + ' · ' + (vip.available.length ? '可领 ' + vip.available.map(row => 'VIP ' + row.level + '：' + text(config, row.reward)).join('；') : '今日已领完')], vip.available.length > 0);
+  return status;
+}
+
+export async function activityView(client, festivals = [], config = null, player = null) {
+  const week = await weekly(client);
+  const activities = activityEntries(client, week, festivals);
+  const status = await rewardStatus(client, config, activities, week, player);
+  return { status, ...(await activityDetails(client, config, week, activities)) };
+}
+
+async function activityDetails(client, config, week, activities) {
   const lotteryRow = week.find(r => r.type === 4);
   let lottery, lotteryError;
   if (lotteryRow) {
@@ -175,13 +344,17 @@ export async function activityView(client, festivals = [], config = null) {
 
 const passLocks = new WeakMap();
 
-export async function claimWeekly(client, config, enabled, report, playerLevel, scheduler) {
+export async function claimWeekly(client, config, enabled, report, playerLevel, scheduler, selectedId = null) {
   const due = key => enabled(key) && (!scheduler || scheduler.due(key));
   if (!['weekPass', 'weekTimes', 'weekGift'].some(due)) return;
   const midnight = scheduler?.nextDay();
   const schedule = await weekSchedule(client);
   const time = serverNow(client);
-  const week = schedule.filter(row => open(row, time));
+  const week = schedule.filter(row => open(row, time) && (!selectedId || weeklyId(row) === selectedId));
+  if (selectedId && !week.length) throw new Error('活动已结束或已换期，请刷新活动');
+  if (selectedId && schedule.filter(row => open(row, time) && row.type === week[0].type).length !== 1) {
+    throw new Error('当前周活动期次不唯一，请刷新后再试');
+  }
   if (scheduler) {
     for (const [key, type] of [['weekPass', 1], ['weekGift', 4], ['weekTimes', 4]]) {
       if (!due(key) || week.some(row => row.type === type)) continue;

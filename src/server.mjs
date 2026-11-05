@@ -2,12 +2,13 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { GameClient } from './client.mjs';
+import { GameClient, toNumber } from './client.mjs';
 import { challengeTrial, trialProgress } from './trials.mjs';
-import { readHeroEquipment, equipHeroEmptySlots, enhanceHeroEquipment } from './hero-equipment.mjs';
+import { readHeroEquipment, equipHeroEmptySlots, enhanceHeroEquipment, uidText } from './hero-equipment.mjs';
 import { readEquipmentCrafting, startEquipmentCraft, collectEquipmentCraft } from './equipment-crafting.mjs';
 import { readGuild, claimGuildWelfare } from './guild.mjs';
 import { readFleetFormations, initializeFleetFormation } from './fleet-formation.mjs';
+import { readLineups, applyLineup } from './lineups.mjs';
 import { loadProtocol } from './proto.mjs';
 import { PAGE } from './page.mjs';
 import { listWorlds, enterWorld, describeRole } from './worlds.mjs';
@@ -16,7 +17,9 @@ import { claimRewards } from './claim-rewards.mjs';
 import { fishView, newbieView } from './collections.mjs';
 import { normalize } from './worlds.mjs';
 import { pirateTracker, pirateHuntOptions, startPirateHunt } from './pirates.mjs';
-import { activityView } from './activities.mjs';
+import { activityView, runActivity } from './activities.mjs';
+import { applyActiveScore, syncFestivalDay } from './free-rewards.mjs';
+import { pirateBoard, claimCampaignReports } from './pirate-board.mjs';
 import { displayMaterial, getConfig } from './config.mjs';
 import { planHeroes, runHeroPlan, formatHeroPlan } from './heroes.mjs';
 import { appointments } from './appointments.mjs';
@@ -26,7 +29,7 @@ import { makeTypeResolver, weekFactoryInfo, surveyWorld, planWorld, runWorldRoun
 import { runLoop, formatLoopRound, formatLoopStep } from './loop.mjs';
 import { describeLogError } from './log-errors.mjs';
 import { operationLabels } from './operation-labels.mjs';
-import { automationTasks, defaultFishingGoldReserve, taskSettings, worldTaskKey } from './automation.mjs';
+import { automationTasks, defaultFishingGoldReserve, defaultCompassSpinCount, maxCompassSpinCount, taskSettings, worldTaskKey } from './automation.mjs';
 import { rewardSchedule } from './reward-schedule.mjs';
 import { createStageTask } from './stages.mjs';
 import { runAction } from './actions.mjs';
@@ -35,6 +38,7 @@ import { startCapture, stopCapture, captureState, DEFAULT_PROXY_PORT } from './c
 import { iconIndex, atlasFile, itemIcon, resourceIcon, materialIcon, heroIcon, heroCard, buildingIcon, workerIcon } from './art.mjs';
 
 const LOG_LIMIT = 400;
+const validSpinCount = count => Number.isSafeInteger(count) && count >= 1 && count <= maxCompassSpinCount;
 const overviewQueries = ENTRY_QUERIES.filter(({ name }) => [
   'AllResourceRequest', 'AllItemRequest', 'AllHeroRequest', 'MainTaskInfoRequest', 'DailyTaskInfoRequest',
   'AchievementInfoRequest', 'EmailBoxRequest', 'AfkInfoRequest', 'OnWaterRequest', 'MyResFieldsRequest', 'MonthCardRequest',
@@ -134,6 +138,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         everyMs: (saved?.everySeconds ?? 60) * 1000,
         tasks: taskSettings(saved?.tasks),
         fishingGoldReserve: saved?.fishingGoldReserve ?? defaultFishingGoldReserve,
+        compassSpinCount: saved?.compassSpinCount ?? defaultCompassSpinCount,
         controller: null, job: null,
         history: [],
         error: null,
@@ -188,12 +193,29 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         session.player.level = body.level;
         session.player.exp = body.exp;
       }
+      if (name === 'SCPlayerPower' && session.client === instance && session.player && toNumber(body.power) > 0) {
+        session.player.power = body.power;
+      }
       if (name === 'SCVipUpdate' && session.client === instance && session.player) {
         Object.assign(session.player.vip ??= {}, { vipLevel: body.vipLevel, vipExp: body.vipExp });
       }
       if (name === 'SCAllActivity' || name === 'SCNewbieActivityUpdate') instance.newbieActivity = normalize(body.newbieActivity);
+      if (name === 'SCActivityActiveScoreUpdate') applyActiveScore(instance, body);
+      // A finished battle should pay out even when idle is off, as long as the switch is on.
+      if (name === 'SCNewCampaignReport' && session.client === instance) {
+        emit(session, 'info', '收到新战报', { pirateUpdated: true });
+        if (session.loop.tasks.campaignReports && !session.reportClaim) {
+          session.reportClaim = enqueue(session, () => claimCampaignReports(instance, loadConfigSafe(), session.player,
+            key => key === 'campaignReports' && session.client === instance && session.loop.tasks.campaignReports,
+            entry => emit(session, 'info', entry.label, { pirateUpdated: true })))
+            .catch(error => emit(session, 'warn', '领取战报奖励失败：' + error.message))
+            .finally(() => { session.reportClaim = null; });
+        }
+      }
       if (name === 'SCAllActivity') {
         instance.festivals = body.festivalActivities ?? [];
+        instance.festivalDay = undefined;
+        syncFestivalDay(instance);
         trace(session, '节日活动目录 ' + JSON.stringify(instance.festivals.map(row => ({
           type: row.type, start: row.startTime, end: row.endTime, open: row.openTime, close: row.closeTime,
           subs: row.subActivity.map(sub => sub.subActivityType),
@@ -301,9 +323,24 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
 
   // ---- 只读汇总 -------------------------------------------------------------
 
+  // The login snapshot can lag far behind the server, so read power the way the game's
+  // player info popup does. A failed read keeps the last known value.
+  async function refreshPlayerPower(session, instance) {
+    if (!session.player?.playerId) return;
+    try {
+      const reply = await instance.request('OtherPlayerInfoRequest', { playerId: uidText(session.player.playerId) }, 'OtherPlayerInfoResponse', 8000);
+      if (session.client === instance && session.player && toNumber(reply.power) > 0) session.player.power = reply.power;
+    } catch (error) {
+      emit(session, 'warn', `总览：未能读取最新战力：${error.message}`, { diagnostic: 'OtherPlayerInfoRequest' });
+    }
+  }
+
   async function overview(session, account) {
     const instance = await ensureConnected(session, account);
-    const { ok, failed } = await collectState(instance, protocol, { queries: overviewQueries, signals: [], timeout: 8000 });
+    const [{ ok, failed }] = await Promise.all([
+      collectState(instance, protocol, { queries: overviewQueries, signals: [], timeout: 8000 }),
+      refreshPlayerPower(session, instance),
+    ]);
     const sections = { AllResourceRequest: '资源', AllItemRequest: '仓库', AllHeroRequest: '英雄', MainTaskInfoRequest: '主线任务',
       DailyTaskInfoRequest: '每日任务', AchievementInfoRequest: '成就', EmailBoxRequest: '邮件', AfkInfoRequest: '挂机收益',
       OnWaterRequest: '海面建筑', MyResFieldsRequest: '资源田', MonthCardRequest: '月卡' };
@@ -369,6 +406,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     const now = Date.now() / 1000;
     return {
       population: `${survey.population}/${survey.maxPopulation}`,
+      futurePopulation: survey.futurePopulation > survey.population ? survey.futurePopulation : null,
       farms: survey.buildings.filter(b => b.type === '农田').map(b => ({
         plot: b.buildingId,
         status: !b.level ? (b.buildFinishTime ? '建造中' : '未建成') : !b.farm?.productId ? '空闲'
@@ -710,13 +748,6 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         json(await heroes(session, account));
         return;
       }
-      if (route === 'GET /api/material-sources') {
-        const config = loadConfigSafe();
-        if (!config) throw new Error('缺少游戏材料配置');
-        json(config.tables.ItemJumpCfg.data.map(r => ({ name: displayMaterial(config, r.id), sources: config.materialSources(r.id) }))
-          .filter(r => r.name !== '未知材料' && r.sources.length));
-        return;
-      }
       if (route === 'GET /api/pirates') {
         const { account, session } = scoped_(parsed);
         const result = await progressionJob(session, account, route, null, client => pirateTracker(client, loadConfigSafe(), session.player));
@@ -740,6 +771,11 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
           emit(session, 'info', result.label);
           return result;
         }));
+        return;
+      }
+      if (route === 'GET /api/pirates/board') {
+        const { account, session } = scoped_(parsed);
+        json(await progressionJob(session, account, route, null, client => pirateBoard(client, loadConfigSafe(), session.player)));
         return;
       }
       if (route === 'GET /api/trials' || route === 'GET /api/equipment' || route === 'GET /api/guild' || route === 'GET /api/pirates/hunt' || route === 'GET /api/fleets/formation') {
@@ -788,18 +824,50 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
             emit(session, 'info', result.label);
             return result;
           }
-          const result = await startPirateHunt(client, config, player, { ...payload, enabled, report: entry => emit(session, 'info', typeof entry === 'string' ? entry : entry.label) });
+          const result = await startPirateHunt(client, config, player, { ...payload, enabled, report: entry => emit(session, 'info', typeof entry === 'string' ? entry : entry.label, { pirateUpdated: true }) });
           emit(session, 'info', result.label);
           return result;
         }));
         return;
       }
+      if (route === 'GET /api/lineups') {
+        const { account, session } = scoped_(parsed);
+        json(await progressionJob(session, account, route, null, client => readLineups(client, loadConfigSafe(), session.player)));
+        return;
+      }
+      if (route === 'POST /api/lineups/apply') {
+        const { account, session } = scoped_(parsed);
+        const payload = jsonBody();
+        needConfirm(payload);
+        const key = JSON.stringify([route, payload.targetKey, payload.previewKey]);
+        json(await progressionJob(session, account, key, operationLabels[parsed.pathname], async (client, enabled) => {
+          const result = await applyLineup(client, loadConfigSafe(), session.player, { targetKey: payload.targetKey, previewKey: payload.previewKey, enabled });
+          emit(session, 'info', result.label);
+          return result;
+        }));
+        return;
+      }
+      if (route === 'POST /api/activities/run') {
+        const { account, session } = scoped_(parsed);
+        const payload = jsonBody();
+        needConfirm(payload);
+        if (payload.spinCount !== undefined && !validSpinCount(payload.spinCount)) throw new Error('抽奖券张数必须是 1 到 ' + maxCompassSpinCount + ' 的整数');
+        const key = JSON.stringify([route, payload.activityId, payload.taskKey]);
+        json(await progressionJob(session, account, key, '单次执行活动', (client, enabled) =>
+          runActivity(client, loadConfigSafe(), {
+            activityId: payload.activityId, taskKey: payload.taskKey, enabled, playerLevel: session.player?.level, player: session.player, spinCount: payload.spinCount ?? session.loop.compassSpinCount,
+            report: entry => emit(session, entry.error ? 'error' : 'info',
+              [entry.label, entry.error || entry.reason].filter(Boolean).join(' · ')),
+          })));
+        return;
+      }
       if (route === 'GET /api/activities') {
         const { account, session } = scoped_(parsed);
         const client = await ensureConnected(session, account);
-        const view = await activityView(client, client.festivals, loadConfigSafe());
+        const view = await activityView(client, client.festivals, loadConfigSafe(), session.player);
+        view.vipLevel = session.player?.vip?.vipLevel ?? 0;
+        view.compassSpinCount = session.loop.compassSpinCount;
         view.newbie = newbieView(client);
-        if (view.newbie) view.activities.push({ name: '新手七日登录', taskKey: 'newbieLogin', endTime: view.newbie.end });
         try { view.fish = await fishView(client, loadConfigSafe()); }
         catch (error) { emit(session, 'error', '读取钓鱼图鉴失败：' + error.message); }
         if (view.order?.materials.length && !view.order.finished) {
@@ -823,7 +891,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         }
         if (view.lotteryError) emit(session, 'error', '读取周抽奖进度失败：' + view.lotteryError);
         if (view.orderError) emit(session, 'error', '读取周订单失败：' + view.orderError);
-        view.eventTasks = automationTasks.filter(task => task.group === '限时活动').map(({ key, label }) => ({ key, label, enabled: session.loop.tasks[key] }));
+        const activityTasks = new Set(['fishBook', 'vipDaily', 'campaignReports', 'openRankRewards', ...view.activities.flatMap(row => row.taskKeys)]);
+        view.eventTasks = automationTasks.filter(task => activityTasks.has(task.key)).map(({ key, label }) => ({ key, label, enabled: session.loop.tasks[key] }));
         view.serverNow = (Date.now() + (client.serverClockOffsetMs || 0)) / 1000;
         json(view);
         return;
@@ -1106,6 +1175,16 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         return;
       }
 
+      if (route === 'POST /api/loop/compass-spin-count') {
+        const { session } = scoped_(parsed);
+        const { compassSpinCount } = jsonBody();
+        if (!validSpinCount(compassSpinCount)) throw new Error('抽奖券张数必须是 1 到 ' + maxCompassSpinCount + ' 的整数');
+        saveAutomation(session.id, { compassSpinCount });
+        session.loop.compassSpinCount = compassSpinCount;
+        emit(session, 'info', '风水罗盘每次最多使用 ' + compassSpinCount + ' 张抽奖券');
+        json({ compassSpinCount });
+        return;
+      }
       if (route === 'POST /api/loop/fishing-reserve') {
         const { session } = scoped_(parsed);
         const { fishingGoldReserve } = jsonBody();
@@ -1182,6 +1261,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
           schedule: work => enqueue(session, work),
           isEnabled: key => loop.tasks[key] === true,
           getFishingGoldReserve: () => loop.fishingGoldReserve,
+          getCompassSpinCount: () => loop.compassSpinCount,
           onRound(summary) {
             if (summary.world.factories?.length) {
               try {

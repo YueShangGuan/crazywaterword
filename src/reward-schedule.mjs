@@ -54,7 +54,11 @@ export function rewardSchedule(client) {
         break;
       case 'SCNewGuildWelfarePack': clearTask('guildWelfare'); break;
       case 'SCOrderOfTheDay': clearTask('orderDaily'); break;
+      case 'SCActivityActiveScoreUpdate': clearTask('festivalActive'); break;
+      case 'SCNewCampaignReport': clearTask('campaignReports'); break;
+      case 'SCOpenRankRedDot': clearTask('openRankRewards'); break;
       case 'SCAllActivity':
+        for (const key of ['festivalSign', 'festivalActive', 'festivalGifts', 'snowballFree', 'compassSpin']) clearTask(key);
         clearTask('weekGift');
         clearTask('weekTimes');
         clearTask('weekPass');

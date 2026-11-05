@@ -2,6 +2,8 @@
 // schedule until they start one; new captured accounts use the defaults.
 // 只限制钓具强化的金币支出，其他挂机任务不使用此预算。
 export const defaultFishingGoldReserve = 10_000;
+export const defaultCompassSpinCount = 10;
+export const maxCompassSpinCount = 999;
 
 export const automationTasks = [
   ['diveEnhance', '潜水船坞强化与升级', '船只', false],
@@ -31,6 +33,21 @@ export const automationTasks = [
   ['freeAntiqueRecruit', '藏品免费招募', '藏品', false],
   ['antiqueRecruitRewards', '累计招募档位领奖', '藏品', false],
   ['newbieLogin', '新手七日登录奖励', '限时活动', true],
+  ['festivalSign', '联动活动当日免费签到（不补签）', '限时活动', true],
+  ['festivalActive', '联动活动活跃档位奖励', '限时活动', true],
+  ['festivalGifts', '联动活动每日免费礼包', '限时活动', true],
+  ['snowballFree', '走江踏浪免费礼包与通行证奖励', '限时活动', true],
+  ['compassSpin', '风水罗盘使用抽奖券（每轮张数可设置）', '限时活动', false],
+  ['weekLotterySpin', '周抽奖使用周转盘币（每轮最多 10 次）', '周期活动', false],
+  ['weekCharge', '累计充值已达标奖励', '周期活动', true],
+  ['weekHeroStar', '英雄升星已达标奖励', '周期活动', true],
+  ['weekChipFree', '芯片活动免费礼包', '周期活动', true],
+  ['weekUniqueFree', '周翻牌免费礼包', '周期活动', true],
+  ['weekOrderFinal', '周订单最终奖励', '周期活动', true],
+  ['weekOrderSubmit', '周订单材料齐后提交', '周期活动', false],
+  ['vipDaily', 'VIP 每日免费奖励', '领奖', true],
+  ['campaignReports', '战报奖励（海盗战斗等）', '领奖', true],
+  ['openRankRewards', '开服冲榜积分奖励', '领奖', true],
   ['weekPass', '周战令奖励', '周期活动', false],
   ['weekGift', '周抽奖免费礼包', '周期活动', false],
   ['tasks', '任务与成就奖励', '领奖', true],

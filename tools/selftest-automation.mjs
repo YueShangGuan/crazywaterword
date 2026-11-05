@@ -91,6 +91,10 @@ try {
   }
   await api('a', '/fishing-reserve', { fishingGoldReserve: 12500 });
   assert.equal((await request('loop/fishing-reserve', { fishingGoldReserve: -1 })).status, 400);
+  await api('a', '/compass-spin-count', { compassSpinCount: 25 });
+  for (const compassSpinCount of [0, 1.5, 1000, '3']) assert.equal((await request('loop/compass-spin-count', { compassSpinCount })).status, 400);
+  assert.equal(app.sessions.get('a').loop.compassSpinCount, 25);
+  assert.equal(app.sessions.get('b')?.loop.compassSpinCount ?? 10, 10, '抽奖券张数按账号保存');
   assert.equal((await api('b', '')).fishingGoldReserve, defaultFishingGoldReserve);
   assert.equal((await (await request('accounts/pause', { paused: true })).json()).paused, true);
   const before = logins;

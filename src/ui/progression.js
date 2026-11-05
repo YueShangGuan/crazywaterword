@@ -3,9 +3,9 @@ const progressionViews = [
   { id: 'trial', tab: 'stages', path: '/api/trials', render: renderTrialProgress },
   { id: 'equipment', tab: 'heroes', path: '/api/equipment', render: renderEquipment },
   { id: 'crafting', tab: 'heroes', path: '/api/equipment/crafting', render: renderCrafting },
+  { id: 'lineup', tab: 'heroes', path: '/api/lineups', render: renderLineups },
   { id: 'guild', tab: 'dailies', path: '/api/guild', render: renderGuild },
-  { id: 'hunt', tab: 'activities', path: '/api/pirates/hunt', render: renderHunt },
-  { id: 'formation', tab: 'activities', path: '/api/fleets/formation', render: renderFormations },
+  { id: 'pirate-board', tab: 'activities', path: '/api/pirates/board', render: renderPirateBoard },
 ];
 const pendingProgression = new Set();
 let progressionVersion = 0;
@@ -15,7 +15,7 @@ async function refreshProgression() {
   clearTimeout(craftingTimer);
   const version = ++progressionVersion;
   const account = current;
-  const views = progressionViews.filter(v => !$('tab-' + v.tab).classList.contains('hidden'));
+  const views = progressionViews.filter(v => !$(v.id + '-view').closest('.hidden,[hidden]'));
   await Promise.all(views.map(view => refreshProgressionView(view, version, account)));
 }
 
@@ -53,7 +53,7 @@ document.addEventListener('visibilitychange', () => {
   if (!document.hidden && !$('tab-heroes').classList.contains('hidden')) void refreshProgression();
 });
 
-for (const id of ['trial', 'guild', 'equipment', 'crafting']) $(id + '-refresh').onclick = refreshProgression;
+for (const id of ['trial', 'guild', 'equipment', 'crafting', 'lineup']) $(id + '-refresh').onclick = refreshProgression;
 
 function progressionAction(label, path, payload, account, reason, group) {
   const key = JSON.stringify(group ? [account, group] : [account, path, payload]);
@@ -213,40 +213,190 @@ function renderGuild(box, data, account) {
   else box.appendChild(el('p', 'dim', data.aidError ? '求助列表读取失败，详情见运行日志' : '目前没有成员求助'));
 }
 
-function renderHunt(box, data, account) {
-  if (data.locked) { box.textContent = data.reason || '世界在角色 ' + data.required + ' 级开放'; return; }
-  box.appendChild(el('p', null, '汽油 ' + fmt(data.fuel) + ' · 单队出征消耗 ' + fmt(data.fuelPerFleet)));
-  if (data.reason) box.appendChild(el('p', 'dim', data.reason));
-  if (data.fleets?.length) box.appendChild(table(['舰队', '编队英雄', '战力', '耐久', '状态'], data.fleets.map(f => [
-    f.name, f.heroes.join('、') || '未布阵', fmt(f.power), fmt(f.durability), f.reason || '可出征'])));
-  if (!data.fleets?.length || !data.targets?.length || data.reason) return;
-  const bar = el('div', 'bar');
-  const target = choice(bar, '首杀目标', data.targets.map(t => ({ value: t.targetKey, disabled: t.reason,
-    text: [t.name + ' ' + t.level + ' 级', t.location, t.reason].filter(Boolean).join(' · ') })));
-  const fleet = choice(bar, '出征舰队', data.fleets.map(f => ({ value: f.key, text: [f.name, f.reason].filter(Boolean).join(' · '), disabled: f.reason })));
-  const actions = el('div');
-  const draw = () => {
-    clear(actions);
-    if (target.disabled || fleet.disabled) return;
-    actions.appendChild(progressionAction('派遣所选舰队', '/api/pirates/hunt', { targetKey: target.value, fleetKey: fleet.value }, account));
-  };
-  target.onchange = fleet.onchange = draw;
-  draw();
-  box.append(bar, actions);
+function pirateSection(box, title) {
+  const section = el('section', 'pirate-section');
+  section.appendChild(el('h3', null, title));
+  box.appendChild(section);
+  return section;
 }
 
-function renderFormations(box, data, account) {
-  if (data.locked) return;
-  box.appendChild(el('strong', null, '远征舰队编队'));
-  if (!data.docks.length) { box.appendChild(el('p', 'dim', '尚未建成远征舰队')); return; }
-  for (const dock of data.docks) {
-    const row = el('div', 'progression-row'), detail = el('div');
-    detail.appendChild(el('strong', null, dock.name));
-    if (dock.heroes.length) detail.appendChild(el('p', null, (dock.saved ? '已编队' : '首次编队预览') + ' · ' + dock.heroes.map(h => h.name).join('、')));
-    detail.appendChild(el('p', 'dim', dock.reason || (dock.visible ? '已在世界舰队列表' : '世界地图尚未列出这支舰队')));
-    row.appendChild(detail);
-    if (!dock.saved && !dock.reason && dock.previewKey) row.appendChild(progressionAction('保存这套首次编队',
-      '/api/fleets/formation', { buildingId: dock.buildingId, previewKey: dock.previewKey }, account));
-    box.appendChild(row);
+function formationGrid(heroes) {
+  const cols = Math.max(4, ...heroes.map(h => h.x ?? 0)), rows = Math.max(5, ...heroes.map(h => h.y ?? 0));
+  const grid = el('div', 'formation-grid');
+  grid.style.setProperty('--cols', cols);
+  for (let y = 1; y <= rows; y++) {
+    for (let x = 1; x <= cols; x++) {
+      const hero = heroes.find(h => h.x === x && h.y === y);
+      grid.appendChild(el('div', hero ? 'formation-cell filled' : 'formation-cell', hero?.name ?? ''));
+    }
   }
+  return grid;
+}
+
+function renderPirateFleets(box, data, account) {
+  const section = pirateSection(box, '1. 舰队布局');
+  const { formation, hunt } = data;
+  if (formation.error) { section.appendChild(el('p', 'dim', '舰队读取失败，详情见运行日志')); return; }
+  if (formation.locked) { section.appendChild(el('p', 'dim', '世界在角色 ' + formation.requiredLevel + ' 级开放')); return; }
+  if (!formation.docks.length) { section.appendChild(el('p', 'dim', '尚未建成远征舰队')); return; }
+  for (const dock of formation.docks) {
+    const fleet = hunt.fleets?.find(row => row.name === dock.name);
+    section.appendChild(el('strong', null, dock.name));
+    const meta = el('div', 'pirate-meta');
+    if (fleet) meta.append(el('span', null, '战力 ' + fmt(fleet.power)), el('span', null, '耐久 ' + fmt(fleet.durability)), el('span', fleet.reason ? 'warn' : 'ok', fleet.reason || '可出征'));
+    else meta.appendChild(el('span', 'dim', dock.reason || '世界地图尚未列出这支舰队'));
+    section.appendChild(meta);
+    if (dock.heroes.length) section.appendChild(formationGrid(dock.heroes));
+    if (!dock.saved && !dock.reason && dock.previewKey) section.appendChild(progressionAction('保存这套首次编队',
+      '/api/fleets/formation', { buildingId: dock.buildingId, previewKey: dock.previewKey }, account));
+  }
+}
+
+function renderPirateTargets(box, data, account) {
+  const section = pirateSection(box, '2. 下一档目标');
+  const { tracker, hunt } = data;
+  if (tracker.error) { section.appendChild(el('p', 'dim', '目标读取失败，详情见运行日志')); return; }
+  const meta = el('div', 'pirate-meta');
+  meta.appendChild(el('span', null, '第 ' + tracker.season + ' 赛季'));
+  if (hunt.fuel != null) meta.appendChild(el('span', null, '汽油 ' + fmt(hunt.fuel) + ' · 单队出征 ' + fmt(hunt.fuelPerFleet)));
+  section.appendChild(meta);
+  if (hunt.reason) section.appendChild(el('p', 'warn', hunt.reason));
+  const fleets = (hunt.fleets ?? []).filter(row => !row.reason);
+  let fleetSelect;
+  if (fleets.length > 1) {
+    const bar = el('div', 'bar');
+    fleetSelect = choice(bar, '出征舰队', fleets.map(row => ({ value: row.key, text: row.name + ' · 战力 ' + fmt(row.power) })));
+    section.appendChild(bar);
+  }
+  const cards = el('div', 'pirate-targets');
+  const cardsDraw = [];
+  for (const row of tracker.targets) {
+    const card = el('article', 'pirate-target');
+    card.appendChild(el('h4', null, row.name + ' ' + row.level + ' 级'));
+    card.appendChild(el('span', 'dim', row.finished ? '全部首杀已完成' : '已击败至 ' + (row.cleared ?? '?') + ' 级 · 地图上 ' + (row.visible ?? '?') + ' 个'));
+    card.appendChild(el('span', null, '建议战力 ' + fmt(row.power)));
+    card.appendChild(el('span', 'dim', '首杀奖励 · ' + (row.materials || '无')));
+    const matches = (hunt.targets ?? []).filter(target => target.name === row.name && target.level === row.level);
+    const available = matches.filter(target => !target.reason);
+    const holder = el('div', 'pirate-section');
+    card.appendChild(holder);
+    let location;
+    if (available.length > 1) {
+      const bar = el('div');
+      location = choice(bar, '选择地点', available.map(target => ({ value: target.targetKey, text: target.location })));
+      card.insertBefore(bar, holder);
+    }
+    const draw = () => {
+      clear(holder);
+      if (!available.length) {
+        holder.appendChild(el('span', 'dim', matches[0]?.reason || hunt.reason || '地图上暂无可派遣的目标'));
+        return;
+      }
+      const fleet = fleets.find(item => item.key === fleetSelect?.value) ?? fleets[0];
+      if (!fleet) { holder.appendChild(el('span', 'dim', '没有可出征的舰队')); return; }
+      const ratio = row.power > 0 ? Math.round(num(fleet.power) / row.power * 100) : 100;
+      if (ratio < 100) holder.appendChild(el('span', 'warn', '舰队战力只有建议战力的 ' + ratio + '%，很可能失败，仍会消耗汽油和耐久'));
+      holder.appendChild(progressionAction(ratio < 100 ? '仍然派遣' : '派遣', '/api/pirates/hunt',
+        { targetKey: location?.value ?? available[0].targetKey, fleetKey: fleet.key }, account));
+    };
+    if (location) location.onchange = draw;
+    cardsDraw.push(draw);
+    draw();
+    cards.appendChild(card);
+  }
+  if (fleetSelect) fleetSelect.onchange = () => cardsDraw.forEach(draw => draw());
+  section.appendChild(cards);
+}
+
+function renderPirateProgress(box, data) {
+  const section = pirateSection(box, '3. 战况与排行');
+  const list = el('ul', 'pirate-list');
+  for (const flight of data.flights ?? []) list.appendChild(el('li', null, flight.label));
+  for (const row of data.reports.pirates ?? []) {
+    list.appendChild(el('li', row.win ? 'ok' : 'bad', when(row.time * 1000) + ' · ' + row.name + ' · ' + (row.win ? '胜利' : '失败')
+      + (row.rewards ? ' · ' + (row.received ? '已领 ' : '待领 ') + row.rewards : '')));
+  }
+  if (list.childElementCount) section.appendChild(list);
+  else section.appendChild(el('p', 'dim', data.reports.error ? '战报读取失败，详情见运行日志' : '还没有海盗战报'));
+  section.appendChild(el('p', 'dim', '地图上的海盗和其他玩家共享，可能先被别人打掉，刷新后再选其他地点。'));
+  const rank = data.rank;
+  if (rank.error) section.appendChild(el('p', 'dim', '排行读取失败，详情见运行日志'));
+  else if (rank.open && rank.top.length) {
+    section.appendChild(el('p', 'dim', '剿匪冲榜是全服排名，排名奖励在活动结束后结算，前排含联盟福利礼包。'));
+    const board = el('ul', 'pirate-list');
+    for (const row of rank.top) board.appendChild(el('li', null, '第 ' + row.rank + ' 名 · ' + row.nickname + ' · ' + fmt(row.value) + ' 分'));
+    if (rank.me) board.appendChild(el('li', 'ok', '我 · ' + (rank.me.rank ? '第 ' + rank.me.rank + ' 名' : '未上榜') + ' · ' + fmt(rank.me.value ?? rank.progress) + ' 分'));
+    section.appendChild(board);
+  }
+}
+
+function renderPirateBoard(box, data, account) {
+  renderPirateFleets(box, data, account);
+  renderPirateTargets(box, data, account);
+  renderPirateProgress(box, data);
+}
+
+const lineupSelection = new Map();
+
+function lineupHeroes(rec) {
+  return rec.heroes.map(h => h.role ? h.name + '（' + h.role + '）' : h.name).join('、');
+}
+
+function lineupPower(rec) {
+  const box = el('div');
+  box.appendChild(el('div', null, fmt(rec.power)));
+  if (rec.isCurrent) return box;
+  box.appendChild(el('small', rec.delta < 0 ? 'warn' : 'ok', (rec.delta < 0 ? '比当前低 ' : '比当前高 ') + fmt(Math.abs(rec.delta))));
+  return box;
+}
+
+function lineupName(rec) {
+  const box = el('div');
+  box.appendChild(el('strong', null, rec.label));
+  box.appendChild(el('div', 'dim', rec.presetName));
+  if (rec.note) box.appendChild(el('div', 'warn', rec.note));
+  if (rec.pet) box.appendChild(el('div', 'dim', rec.pet));
+  return box;
+}
+
+function renderLineupTarget(box, target, account) {
+  if (target.reason) box.appendChild(el('p', 'dim', target.reason));
+  if (target.hint) box.appendChild(el('p', 'dim', target.hint));
+  if (target.current) {
+    const names = target.current.heroes.map(h => h.name).join('、');
+    box.appendChild(el('p', null, names
+      ? '当前阵容 · ' + target.current.presetName + ' · 总战力 ' + fmt(target.current.power) + ' · ' + names
+      : '当前阵容为空'));
+  }
+  if (!target.current) return;
+  if (target.recommended.length) {
+    box.appendChild(table(['推荐阵容', '英雄与分工', '总战力', '操作'], target.recommended.map(rec => [
+      lineupName(rec), lineupHeroes(rec), lineupPower(rec),
+      rec.isCurrent ? el('span', 'ok', '正在使用') : progressionAction('换成这套', '/api/lineups/apply',
+        { targetKey: target.key, previewKey: rec.previewKey }, account, target.reason, 'lineup'),
+    ])));
+  } else {
+    box.appendChild(el('p', 'dim', '现有英雄凑不齐完整的攻略阵容。'));
+  }
+  if (target.near.length) {
+    box.appendChild(table(['差一点能凑齐', '还差', '被占用'], target.near.map(rec => [
+      rec.label, rec.missing.join('、') || '—', rec.blocked.join('、') || '—',
+    ])));
+  }
+}
+
+function renderLineups(box, data, account) {
+  box.appendChild(el('p', 'dim', '阵容来自游戏内的英雄攻略，只选你能凑齐的，同类阵容按总战力排序。攻略没有按玩法分类，玩法适配是本工具的判断，也没有针对具体关卡，换阵不保证过关。'));
+  const bar = el('div', 'bar');
+  const select = choice(bar, '玩法和队伍', data.targets.map(t => ({ value: t.key, text: t.title })));
+  const saved = lineupSelection.get(account);
+  if (data.targets.some(t => t.key === saved)) select.value = saved;
+  const detail = el('div', 'progression-view');
+  const draw = () => {
+    lineupSelection.set(account, select.value);
+    renderLineupTarget(clear(detail), data.targets.find(t => t.key === select.value), account);
+  };
+  select.onchange = draw;
+  draw();
+  box.append(bar, detail);
 }

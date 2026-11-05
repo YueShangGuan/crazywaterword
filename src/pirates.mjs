@@ -284,6 +284,10 @@ async function inspectHunt(client, config, player, enterMap = false) {
   return snapshot;
 }
 
+export function pirateHuntFlights(client) {
+  return [...huntSession(client).pending.values()].map(flight => ({ label: flight.result?.label ?? flight.label + ' · 等待服务器确认', status: flight.result?.status ?? 'sent' }));
+}
+
 export async function pirateHuntOptions(client, config, player) {
   return (await inspectHunt(client, config, player)).view;
 }

@@ -26,7 +26,7 @@ export function idlePanel(tasks: AutoTask[]) {
         <div className="dim" id="loop-hint" role="status" />
       </CardContent>
     </Card>
-    {Array.from(new Set(tasks.map(t => t.group))).map(group => <Card key={group}>
+    <div className="idle-groups">{Array.from(new Set(tasks.map(t => t.group))).map(group => <Card key={group}>
       <CardHeader><CardTitle>{group}</CardTitle></CardHeader>
       <CardContent className="task-grid">
         {tasks.filter(t => t.group === group).map(t => <div className="task-setting" key={t.key}>
@@ -41,8 +41,7 @@ export function idlePanel(tasks: AutoTask[]) {
           <Button id="fishing-reserve-save" type="submit" variant="outline" disabled>保存</Button>
         </form>
       </CardContent>}
-    </Card>)}
-    <details><summary>挂机记录</summary><pre id="loop-view">尚无记录</pre></details>
+    </Card>)}</div>
   </div>)
 }
 
@@ -65,7 +64,7 @@ export function stagePanel() {
           <Button id="stage-start" disabled>开启推关</Button>
           <Button id="stage-stop" variant="outline" disabled>停止推关</Button>
         </div>
-        <pre id="stage-view" aria-live="polite">尚未开启</pre>
+        <p id="stage-view" className="dim" aria-live="polite">尚未开启</p>
       </CardContent>
     </Card>
     <Card>

@@ -26,7 +26,9 @@ import { surveyWorld, planWorld, runWorldRound, displayBuilding } from './world.
 
 import { setTimeout as pause } from 'node:timers/promises';
 import { claimRewards } from './claim-rewards.mjs';
-import { claimWeekly, runLinkage } from './activities.mjs';
+import { claimWeekly, runLinkage, readWeekOrder, weekSchedule } from './activities.mjs';
+import { claimFestivalRewards, claimWeeklyRewards, claimVipDaily, festivalRewardKeys, weeklyRewardKeys } from './free-rewards.mjs';
+import { claimCampaignReports, claimOpenRanks } from './pirate-board.mjs';
 import { automationTasks, dailyTaskKey, defaultFishingGoldReserve, worldTaskKey } from './automation.mjs';
 
 const defaultSleep = (ms, signal) => pause(ms, undefined, { signal });
@@ -62,6 +64,7 @@ export async function runLoop(client, protocol, {
   stop = { aborted: false },
   isEnabled,
   getFishingGoldReserve = () => defaultFishingGoldReserve,
+  getCompassSpinCount = () => undefined,
   schedule = work => work(),
   onRound,
   onStep,
@@ -240,6 +243,25 @@ export async function runLoop(client, protocol, {
           summary.tasks.results.push(entry);
           logReward(entry, '活动');
         });
+      }
+      if (isEnabled) {
+        const rewardReport = group => entry => {
+          if (!entry.skipped) summary.tasks.planned++;
+          summary.tasks.results.push(entry);
+          logReward(entry, group);
+        };
+        if (festivalRewardKeys.some(enabled)) await claimFestivalRewards(client, config, enabled, rewardReport('活动'), rewards, undefined, { spinCount: getCompassSpinCount() });
+        if (weeklyRewardKeys.some(enabled)) {
+          try {
+            await claimWeeklyRewards(client, config, await weekSchedule(client), enabled, rewardReport('周期活动'), { scheduler: rewards, readOrder: readWeekOrder, player });
+          } catch (error) { phaseFailure('tasks', '周活动奖励', error); }
+        }
+        if (enabled('vipDaily')) await claimVipDaily(client, config, player, enabled, rewardReport('领奖'), rewards);
+        for (const [key, label, claim] of [['campaignReports', '战报奖励', claimCampaignReports], ['openRankRewards', '开服冲榜', claimOpenRanks]]) {
+          if (!enabled(key)) continue;
+          try { await claim(client, config, player, enabled, rewardReport('领奖'), rewards); }
+          catch (error) { phaseFailure('tasks', label, error); }
+        }
       }
       if (isEnabled && groupEnabled('船只')) {
         try {
