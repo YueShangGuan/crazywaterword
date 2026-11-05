@@ -1,6 +1,108 @@
 import { displayMaterial } from './config.mjs';
 import { normalize } from './worlds.mjs';
 import { createHmac, randomBytes } from 'node:crypto';
+import { registerFleetReservations, isFleetReserved, hasOtherFleetReservations, observeFleetReservations } from './fleet-reservations.mjs';
+
+// A map refresh can still contain a swept target, including after a lost reply.
+const dailySweepAttempts = new WeakMap();
+function sweepAttempts(client, resetTime, now) {
+  if (!client) return new Map();
+  const day = resetTime || Math.floor((now + 8 * 3600) / 86400);
+  if (dailySweepAttempts.get(client)?.day !== day) dailySweepAttempts.set(client, { day, ids: new Map() });
+  return dailySweepAttempts.get(client).ids;
+}
+
+function canSweepAgain(last, used, progress) {
+  return !last || (last.confirmed && used > last.used && progress > last.progress);
+}
+
+const sweepBonus = effects => effects?.find(([name]) => name === '野怪扫荡次数')?.[1] ?? 0;
+const sweepOpenLevel = config => config?.tables?.ModuleOpenCfg?.data?.find(row => row.moduleId === '世界')?.playerLevel;
+const hasCardBonus = config => config?.tables?.MonthCardCfg?.data?.some(row => sweepBonus(row.effectList) > 0);
+
+export const pirateSweepProbes = [
+  ['PirateKillRecordRequest', {}, (_probe, { config, player }) => player?.level >= sweepOpenLevel(config)],
+  ['AllPirateRequest', {}, probe => probe('PirateKillRecordRequest')?.records?.some(r => r.maxKilledLevel > 0)],
+  ['MonthCardRequest', {}, (probe, { config }) => probe('AllPirateRequest')?.pirates?.length && hasCardBonus(config)],
+];
+
+export function planPirateSweeps({ task, probe, player, config, now, client, dailyResetTime }) {
+  if (task.progress >= task.targetProgress) return { status: 'done' };
+  const blocked = reason => ({ status: 'blocked', reason });
+  const tables = config?.tables;
+  const gate = sweepOpenLevel(config);
+  if (!gate || !player?.level) return blocked('无法确认世界开放等级');
+  if (player.level < gate) return blocked('角色 ' + gate + ' 级开放世界海盗');
+  const records = probe('PirateKillRecordRequest')?.records;
+  if (!Array.isArray(records)) return blocked('未能读取个人海盗首杀记录');
+  if (!records.some(r => r.maxKilledLevel > 0)) return blocked('还没有个人海盗首杀，请在「活动 → 海盗首杀」选择目标和舰队手动出征');
+  const map = probe('AllPirateRequest');
+  if (!Array.isArray(map?.pirates) || !Number.isSafeInteger(map.sweepTimes) || map.sweepTimes < 0) return blocked('未能确认地图目标或今日已用扫荡次数');
+  const base = tables.PirateParamCfg?.data?.find(r => r.paramName === '每日野怪扫荡次数')?.paramValue;
+  if (!Number.isSafeInteger(base) || base < 0) return blocked('缺少每日野怪扫荡次数配置');
+  const vip = tables.VipLevelCfg?.data?.find(r => r.level === player.vip?.vipLevel);
+  const cards = probe('MonthCardRequest')?.cardItem ?? [];
+  // MonthCardModel.effect uses server time and treats -1 as permanent.
+  const cardBonus = cards.reduce((sum, c) => {
+    const id = { 1: '普通月卡', 2: '高级月卡' }[c.type];
+    return sum + (c.endTime === -1 || c.endTime > now ? sweepBonus(tables.MonthCardCfg?.data?.find(r => r.id === id)?.effectList) : 0);
+  }, 0);
+  const available = base + sweepBonus(vip?.effects) + cardBonus - map.sweepTimes;
+  if (!Number.isSafeInteger(available) || available <= 0) return blocked('今日可确认的海盗扫荡次数已用完');
+  const world = normalize(player.worldId);
+  const configs = tables.WorldPirateCfg?.data?.filter(row => Number(row.season) === Math.floor(world / 1e6) % 1000);
+  if (!configs?.length) return blocked('无法确认本赛季海盗配置');
+  const attempts = sweepAttempts(client, dailyResetTime, now);
+  const counts = new Map();
+  for (const p of map.pirates) counts.set(p.uid, (counts.get(p.uid) ?? 0) + 1);
+  const eligible = map.pirates.filter(p => Number.isSafeInteger(p.uid) && p.uid > 0 && counts.get(p.uid) === 1
+    && Number.isSafeInteger(p.cityId) && p.cityId > 0 && Number.isSafeInteger(p.level) && p.level > 0
+    && records.some(r => r.type === p.type && r.maxKilledLevel >= p.level)
+    && configs.some(r => r.type === p.type && r.level === p.level));
+  if (!eligible.length) return blocked('地图暂无已首杀且可明确识别的同类海盗目标');
+  const remaining = task.targetProgress - task.progress;
+  const choices = eligible.filter(p => canSweepAgain(attempts.get(p.uid), map.sweepTimes, task.progress))
+    .sort((a, b) => b.level - a.level || Number(attempts.has(a.uid)) - Number(attempts.has(b.uid)) || a.uid - b.uid)
+    .slice(0, Math.min(remaining, available));
+  if (!choices.length) return blocked('当前目标均已尝试，等待新目标或服务端进度');
+  const actions = choices.map(p => ({
+    request: 'PirateSweepRequest', body: { uid: p.uid, cityId: p.cityId }, type: p.type, level: p.level,
+    observedUsed: map.sweepTimes, observedProgress: task.progress, response: null,
+    cost: '扫荡次数 ×1', note: '扫荡' + (configs.find(r => r.type === p.type && r.level === p.level).showName || '海盗') + ' ' + p.level + ' 级',
+  }));
+  return actions.length < remaining ? { status: 'partial', reason: '本轮可扫荡 ' + actions.length + '/' + remaining + ' 次', actions }
+    : { status: 'ready', actions };
+}
+
+export async function runPirateSweep({ client, survey, action, timeout, allowAction, config }) {
+  const read = name => client.request(name + 'Request', {}, name + 'Response', timeout);
+  const daily = await read('DailyTaskInfo');
+  const task = daily?.dailyTask?.find(row => row.id === 1010);
+  if (!task || task.progress >= task.targetProgress || daily.dailyResetTime !== survey.daily.dailyResetTime)
+    return { skipped: true, reason: '每日任务已完成或已刷新' };
+  const records = await read('PirateKillRecord');
+  if (!records?.records?.some(r => r.type === action.type && r.maxKilledLevel >= action.level))
+    return { skipped: true, reason: '该类海盗的个人首杀记录未确认' };
+  const map = await read('AllPirate');
+  // The guaranteed base/VIP quota is usable even if optional card benefits cannot be read.
+  const cards = hasCardBonus(config) ? await read('MonthCard').catch(() => null) : null;
+  const state = { PirateKillRecordRequest: records, AllPirateRequest: map, MonthCardRequest: cards };
+  const now = (Date.now() + (client.serverClockOffsetMs || 0)) / 1000;
+  const fresh = planPirateSweeps({ task, probe: name => state[name], player: survey.player, client, config, now, dailyResetTime: daily.dailyResetTime });
+  if (!fresh.actions?.some(a => a.body.uid === action.body.uid && a.body.cityId === action.body.cityId && a.type === action.type && a.level === action.level))
+    return { skipped: true, reason: fresh.reason || '地图目标已变化，请刷新' };
+  if (!allowAction(1010, action)) return { skipped: true, reason: '海盗扫荡已关闭' };
+  const attempts = sweepAttempts(client, daily.dailyResetTime, now);
+  if (!canSweepAgain(attempts.get(action.body.uid), action.observedUsed, action.observedProgress))
+    return { skipped: true, reason: '该扫荡计划已经执行，请刷新' };
+  const attempt = { used: map.sweepTimes, progress: task.progress, confirmed: false };
+  attempts.set(action.body.uid, attempt);
+  await client.sendWatch('PirateSweepRequest', action.body, { window: 400 });
+  const after = await read('AllPirate');
+  if (!Number.isSafeInteger(after?.sweepTimes) || after.sweepTimes <= map.sweepTimes) throw new Error('服务端未确认扫荡次数增加，已停止重复尝试此目标');
+  attempt.confirmed = true;
+  return { body: { sweepTimes: after.sweepTimes } };
+}
 
 // WorldIdRule.getSeason in the game client.
 export async function pirateTracker(client, config, player) {
@@ -43,6 +145,8 @@ function huntSession(client) {
   if (session) return session;
   session = { secret: randomBytes(32), revision: 0, pending: new Map() };
   huntSessions.set(client, session);
+  registerFleetReservations(client, 'pirate', buildingId => [...session.pending.values()].some(flight => flight.buildingId === buildingId),
+    () => session.pending.size > 0);
   function update(flight, status, text, finished = false) {
     if (flight.result?.status === status) return;
     if (finished) session.pending.delete(flight.uid);
@@ -136,6 +240,7 @@ async function inspectHunt(client, config, player, enterMap = false) {
   if (![records, map, own, buildings].every(Array.isArray)) { view.reason = '未取得完整的海盗、舰队或建筑状态'; return snapshot; }
   records.forEach(session.record);
   own.forEach(session.observeFleet);
+  if (Number.isSafeInteger(view.fuel)) observeFleetReservations(client, { fleets: own, fuel: view.fuel });
   const cities = tables[scenario + '_CityCfg']?.data ?? [];
   const places = new Map();
   const counts = new Map();
@@ -161,8 +266,9 @@ async function inspectHunt(client, config, player, enterMap = false) {
     const ids = positions.map(p => p.heroId).filter(Boolean);
     const formation = building?.fleet?.formation;
     const key = huntKey(session, ['fleet', world, fleet.buildingId, positions.map(p => [p.heroId, normalize(p.pos)]), formation?.presetId, normalize(formation?.petUid)]);
-    const held = [...session.pending.values()].some(f => f.buildingId === fleet.buildingId);
-    const reason = held ? '已派出或尚待确认' : !/^\d+远征船$/.test(fleet.buildingId) ? '无法确认远征舰队建筑' : !(building?.level > 0) ? '舰队建筑尚未建成' :
+    const held = isFleetReserved(client, fleet.buildingId);
+    const reason = held ? '已派出或尚待确认' : hasOtherFleetReservations(client, 'pirate') ? '情报或维修正在确认舰队与汽油，请稍后再出征' :
+      !/^\d+远征船$/.test(fleet.buildingId) ? '无法确认远征舰队建筑' : !(building?.level > 0) ? '舰队建筑尚未建成' :
       !ids.length ? '请先在「远征舰队编队」查看并保存这支舰队的首次编队' : fleet.state !== 1 ? '舰队未闲置' :
       fleet.treasureLootUid || fleet.chipWar?.rewardTs || fleet.curGridIdx > 0 ? '舰队正在驻守地块或执行其他任务' :
       !(fleet.durability > 0) ? '舰队没有耐久，请先修理' : fleet.autoFight?.isOn ? '舰队已开启自动作战' : '';
@@ -192,6 +298,8 @@ export async function startPirateHunt(client, config, player, { targetKey, fleet
   const { pirate, target } = selection;
   if (session.pending.has(pirate.uid) || target.reason) throw new Error(target.reason || '该目标已经派出舰队');
   if (troop.option.reason) throw new Error(troop.option.reason);
+  if (isFleetReserved(client, troop.fleet.buildingId)) throw new Error('舰队已派出或尚待确认，请等待当前操作结束');
+  if (hasOtherFleetReservations(client, 'pirate')) throw new Error('情报或维修正在确认舰队与汽油，请稍后再出征');
   if (!enabled()) throw new Error('账号已暂停，出征已取消');
   const flight = { uid: pirate.uid, type: pirate.type, level: pirate.level, grid: pirate.gridIdx, city: pirate.cityId,
     buildingId: troop.fleet.buildingId, label: troop.option.name + ' 讨伐' + target.name + ' ' + target.level + ' 级' };

@@ -2,6 +2,16 @@
 
 按日期倒序整理已提交的功能与修复。日期对应仓库提交记录。
 
+## 2026-11-05
+
+- 新增装备厂配方预览、手动制造与领取，以及独立的自动收取和续产开关。自动制造按闲置装备部位缺口选择配方，保留 10,000 金币。
+- 接入联盟订单、联盟情报和舰队维修挂机，核对当前赛季、次数、战力、耐久与资源预留。情报与海盗出征共享舰队和汽油占用检查。
+- 新增 23 级海兽培育和 28 级博物馆探险。海兽支持成熟领取与继续培育；博物馆按英雄条件派队，到期后先结算再领取奖励。各项开关均默认关闭。
+- 装备与海兽共享金币扣款检查，联盟订单与博物馆共享加工品扣款检查；库存未同步或操作结果不明时暂缓后续消耗，同一进程内重新连接仍保留防重记录。
+- 完善竞技场挑战与海盗扫荡的阵容、首杀、次数及结果确认，更新日常任务的可执行条件说明。
+- 增加玩法、账号开关、调度和跨功能预算的离线回归测试；普通经验增长不再打断长任务的等待时间。
+- 将仓库与包名称中的拼写修正为 `crazywaterworld`，同步更新安装命令和文档链接。
+
 ## 2026-11-02
 
 ### 控制台与挂机
@@ -39,10 +49,10 @@
 - 补发登录完成通知，使控制台能收到节日活动目录。「鄂都诡事」接入驱邪除祟、罗盘达标领奖和酆都法旨解符。
 - 支持从电脑版微信的本地分包缓存加载协议定义，减少对手动解包文件的依赖。
 
-提交记录：[抖音账号采集](https://github.com/xutongxue233/crazywaterword/commit/727f351) · [控制台与玩法更新](https://github.com/xutongxue233/crazywaterword/commit/a25fbfd) · [微信缓存协议加载](https://github.com/xutongxue233/crazywaterword/commit/4c84841)
+提交记录：[抖音账号采集](https://github.com/xutongxue233/crazywaterworld/commit/727f351) · [控制台与玩法更新](https://github.com/xutongxue233/crazywaterworld/commit/a25fbfd) · [微信缓存协议加载](https://github.com/xutongxue233/crazywaterworld/commit/4c84841)
 
 ## 2026-10-10
 
 - 首次提交协议侧挂机工具和本地网页控制台，提供账号管理、任务领奖、英雄养成、海面经营及命令行入口。
 
-提交记录：[初始实现](https://github.com/xutongxue233/crazywaterword/commit/4094a69)
+提交记录：[初始实现](https://github.com/xutongxue233/crazywaterworld/commit/4094a69)

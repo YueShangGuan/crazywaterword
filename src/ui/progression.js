@@ -2,41 +2,61 @@
 const progressionViews = [
   { id: 'trial', tab: 'stages', path: '/api/trials', render: renderTrialProgress },
   { id: 'equipment', tab: 'heroes', path: '/api/equipment', render: renderEquipment },
+  { id: 'crafting', tab: 'heroes', path: '/api/equipment/crafting', render: renderCrafting },
   { id: 'guild', tab: 'dailies', path: '/api/guild', render: renderGuild },
   { id: 'hunt', tab: 'activities', path: '/api/pirates/hunt', render: renderHunt },
   { id: 'formation', tab: 'activities', path: '/api/fleets/formation', render: renderFormations },
 ];
 const pendingProgression = new Set();
 let progressionVersion = 0;
+let craftingTimer;
 
 async function refreshProgression() {
+  clearTimeout(craftingTimer);
   const version = ++progressionVersion;
   const account = current;
   const views = progressionViews.filter(v => !$('tab-' + v.tab).classList.contains('hidden'));
-  await Promise.all(views.map(async view => {
-    const box = clear($(view.id + '-view'));
-    if (!account || snapshot.paused || disconnected.has(account)) {
-      box.textContent = !account ? '请先选择账号' : snapshot.paused ? '账号已暂停' : '请先连接账号';
-      return;
-    }
-    box.textContent = '正在读取…';
-    try {
-      const data = await call(view.path);
-      if (version !== progressionVersion || account !== current) return;
-      view.render(clear(box), data, account);
-    } catch (error) {
-      if (version === progressionVersion && account === current) {
-        reportError(error);
-        box.textContent = '读取失败，详情见运行日志';
-      }
-    }
-  }));
+  await Promise.all(views.map(view => refreshProgressionView(view, version, account)));
 }
 
-for (const id of ['trial', 'guild', 'equipment']) $(id + '-refresh').onclick = refreshProgression;
+async function refreshProgressionView(view, version, account, retrySeconds = 15) {
+  const box = clear($(view.id + '-view'));
+  if (!account || snapshot.paused || disconnected.has(account)) {
+    box.textContent = !account ? '请先选择账号' : snapshot.paused ? '账号已暂停' : '请先连接账号';
+    return;
+  }
+  box.textContent = '正在读取…';
+  try {
+    const data = await call(view.path);
+    if (version !== progressionVersion || account !== current) return;
+    view.render(clear(box), data, account);
+    if (view.id === 'crafting' && !document.hidden && data.state === 'making' && data.serverNow > 0 && data.job?.finishTime > 0) {
+      const remaining = data.job.finishTime - data.serverNow;
+      const delay = remaining > 0 ? remaining + 1 : retrySeconds;
+      const nextRetry = remaining > 0 ? 15 : Math.min(retrySeconds * 2, 60);
+      craftingTimer = setTimeout(() => {
+        if (version === progressionVersion && account === current && !document.hidden && !$('tab-heroes').classList.contains('hidden')) {
+          void refreshProgressionView(view, version, account, nextRetry);
+        }
+      }, delay * 1000);
+    }
+  } catch (error) {
+    if (version === progressionVersion && account === current) {
+      reportError(error);
+      box.textContent = '读取失败，详情见运行日志';
+    }
+  }
+}
 
-function progressionAction(label, path, payload, account, reason) {
-  const key = JSON.stringify([account, path, payload]);
+document.addEventListener('visibilitychange', () => {
+  clearTimeout(craftingTimer);
+  if (!document.hidden && !$('tab-heroes').classList.contains('hidden')) void refreshProgression();
+});
+
+for (const id of ['trial', 'guild', 'equipment', 'crafting']) $(id + '-refresh').onclick = refreshProgression;
+
+function progressionAction(label, path, payload, account, reason, group) {
+  const key = JSON.stringify(group ? [account, group] : [account, path, payload]);
   const button = smallButton(pendingProgression.has(key) ? '执行中…' : label);
   button.disabled = Boolean(reason) || pendingProgression.has(key);
   if (reason) button.title = reason;
@@ -122,6 +142,66 @@ function renderEquipment(box, data, account) {
         '/api/equipment/enhance', { uid: item.uid, expectedLevel: item.level, maxCost: cost }, account,
         cost > data.iron ? data.ironName + '不足' : '')];
   })));
+}
+
+function craftingCosts(costs) {
+  return table(['材料', { label: '需要', num: true }, { label: '库存', num: true }, '备料', '来源'], costs.map(c => {
+    const missing = c.need - c.have;
+    return [c.name, { text: fmt(c.need), num: true }, { text: fmt(c.have), num: true },
+      el('span', missing > 0 ? 'warn' : 'ok', missing > 0 ? '缺 ' + fmt(missing) : '已备齐'),
+      c.sources.join('、') || '—'];
+  }));
+}
+
+function renderCrafting(box, data, account) {
+  const { state, job, recipes, buildingId } = data;
+  const labels = { locked: '尚未开放', unbuilt: '待建', building: '建造中', idle: '空闲', making: '制作中', ready: '成品待领' };
+  box.appendChild(el('strong', null, '装备厂 · ' + labels[state]));
+  if (data.reason) box.appendChild(el('p', 'dim', data.reason));
+  if (state === 'locked' || state === 'unbuilt' || state === 'building') {
+    if (data.buildFinishTime) box.appendChild(el('p', null, '建造完成时间 · ' + when(data.buildFinishTime * 1000)));
+    if (state !== 'building' && data.buildCosts.length) {
+      box.appendChild(craftingCosts(data.buildCosts));
+      if (state === 'unbuilt') box.appendChild(el('p', 'dim', '材料备齐后，可在「挂机 → 海面」开启空位建造。'));
+    }
+    return;
+  }
+
+  const base = '/api/equipment/crafting';
+  if (job) {
+    const detail = el('div');
+    const product = job.equipId && job.equipName && job.equipName !== job.equipId ? job.equipName : job.name;
+    detail.appendChild(el('strong', null, product));
+    if (job.equipId && job.star != null) detail.appendChild(el('span', 'dim', ' · ' + fmt(job.star) + ' 星'));
+    if (job.finishTime) detail.appendChild(el('p', 'dim', '制作完成时间 · ' + when(job.finishTime * 1000)));
+    box.appendChild(detail);
+    if (state === 'ready') box.appendChild(progressionAction('领取成品', base + '/collect',
+      { buildingId, previewKey: job.previewKey }, account, job.previewKey ? '' : data.reason || '请刷新并确认当前成品', 'crafting'));
+  }
+  if (!recipes.length) {
+    box.appendChild(el('p', 'dim', '当前没有可查看的制作配方。'));
+    return;
+  }
+
+  const bar = el('div', 'bar');
+  const select = choice(bar, '制作配方', recipes.map(r => ({
+    value: String(r.makeId), text: r.name + (r.canStart ? ' · 可制造' : ''),
+  })));
+  const available = recipes.find(r => r.canStart);
+  if (available) select.value = String(available.makeId);
+  const preview = el('div', 'progression-view');
+  const draw = () => {
+    const recipe = recipes.find(r => String(r.makeId) === select.value);
+    clear(preview).appendChild(el('p', null, recipe.type + ' · 基础工时 ' + fmt(recipe.seconds / 60) + ' 分钟'));
+    preview.appendChild(craftingCosts(recipe.costs));
+    if (recipe.reason && recipe.reason !== data.reason) preview.appendChild(el('p', 'dim', recipe.reason));
+    if (state === 'idle') preview.appendChild(progressionAction('制作一件' + recipe.name, base + '/start',
+      { buildingId, makeId: recipe.makeId, previewKey: recipe.previewKey }, account,
+      recipe.canStart && recipe.previewKey ? '' : recipe.reason || '当前无法制造', 'crafting'));
+  };
+  select.onchange = draw;
+  draw();
+  box.append(bar, preview);
 }
 
 function renderGuild(box, data, account) {

@@ -15,7 +15,9 @@
 //   WeeklyActivityRewardCfg 120/240/360/480/600。
 
 import { displayMaterial } from './config.mjs';
+import { arenaDailyDriver } from './arena.mjs';
 import { normalize } from './worlds.mjs';
+import { pirateSweepProbes, planPirateSweeps, runPirateSweep } from './pirates.mjs';
 import { FREE_DAILY_PACK_ID } from './actions.mjs';
 
 export const TASK_TITLES = {
@@ -44,7 +46,8 @@ const RESOURCE_RUBY = '钻石';
 
 export function describeDailyTask(task, config) {
   const row = (config?.tables?.DailyTaskCfg?.data ?? []).find((r) => r.taskId === task.id);
-  return { ...task, title: TASK_TITLES[task.id] ?? row?.type ?? String(task.id), desc: row?.desc ?? '' };
+  return { ...task, progress: task.progress ?? 0, targetProgress: task.targetProgress ?? 0,
+    title: TASK_TITLES[task.id] ?? row?.type ?? String(task.id), desc: row?.desc ?? '' };
 }
 
 // ---- 活跃度宝箱 ---------------------------------------------------------------
@@ -201,27 +204,7 @@ export const DAILY_DRIVERS = {
     },
   },
 
-  1005: {
-    id: 1005,
-    title: '竞技场战斗',
-    probes: [['ArenaInfoRequest', {}]],
-    evaluate({ task, probe }) {
-      if (task.progress >= task.targetProgress) return { status: 'done' };
-      const challenges = probe('ArenaInfoRequest')?.challenges ?? [];
-      const remaining = task.targetProgress - task.progress;
-      if (!challenges.length) return { status: 'blocked', reason: '竞技场没有可挑战对手' };
-      // 从战力最低的开始打，胜率最高。
-      const targets = [...challenges].sort((a, b) => lowPower(a.power) - lowPower(b.power)).slice(0, remaining);
-      const actions = targets.map((target) => ({
-        request: 'ArenaChallengeRequest',
-        body: { rank: target.rankNo, challengeId: target.id },
-        response: 'ArenaChallengeResponse',
-        cost: '竞技场次数',
-        note: `挑战 rank=${target.rankNo} 战力=${lowPower(target.power)}`,
-      }));
-      return { status: 'ready', actions };
-    },
-  },
+  1005: arenaDailyDriver,
 
   1006: {
     id: 1006,
@@ -302,44 +285,31 @@ export const DAILY_DRIVERS = {
   1010: {
     id: 1010,
     title: '累计击败野怪',
-    probes: [['AllPirateRequest', {}]],
-    evaluate({ task, probe }) {
-      if (task.progress >= task.targetProgress) return { status: 'done' };
-      const pirates = probe('AllPirateRequest')?.pirates ?? [];
-      if (!pirates.length) return { status: 'blocked', reason: '世界地图上没有海盗部队可扫荡' };
-      const remaining = task.targetProgress - task.progress;
-      const actions = pirates.slice(0, remaining).map((pirate) => ({
-        request: 'PirateSweepRequest',
-        body: { uid: pirate.uid, cityId: pirate.cityId },
-        response: null,
-        cost: '讨伐次数',
-        note: `扫荡海盗 ${pirate.uid}`,
-      }));
-      return { status: 'ready', actions };
-    },
+    probes: pirateSweepProbes,
+    evaluate: planPirateSweeps,
+    run: runPirateSweep,
   },
 
-  1011: { id: 1011, title: '累计联盟情报', probes: [['TradeGuildRadarRequest', {}]], evaluate: lockedReason('联盟情报（雷达）') },
-  1012: { id: 1012, title: '累计联盟订单', probes: [['GuildCityInfoRequest', {}]], evaluate: lockedReason('联盟城市募兵') },
+  1011: { id: 1011, title: '累计联盟情报', probes: [], evaluate: automationReason('联盟情报领奖与派舰') },
+  1012: { id: 1012, title: '累计联盟订单', probes: [], evaluate: automationReason('提交联盟订单') },
   1013: { id: 1013, title: '累计联盟互助', probes: [['GuildAidListRequest', { type: 0 }]], evaluate: lockedReason('联盟互助') },
   1014: { id: 1014, title: '累计请求帮助', probes: [], evaluate: lockedReason('联盟求助') },
   1015: { id: 1015, title: '城战获得功勋', probes: [], evaluate: lockedReason('城战（20:00-21:00 限时）') },
-  1016: { id: 1016, title: '博物馆探险', probes: [['MuseumInfoRequest', {}]], evaluate: lockedReason('博物馆') },
+  1016: { id: 1016, title: '博物馆探险', probes: [], evaluate: automationReason('派遣博物馆探险队', '博物馆') },
   1017: { id: 1017, title: '参与积分赛', probes: [['LeagueInfoRequest', {}]], evaluate: lockedReason('跨服积分赛') },
 };
 
-// 这类任务的入口请求被服务端直接拒绝（未入盟 / 未开放 / 限时），探测结果只用来确认原因。
+function automationReason(label, group = '联盟') {
+  return ({ task }) => task.progress >= task.targetProgress ? { status: 'done' }
+    : { status: 'waiting', reason: `可在「挂机 → ${group} → ${label}」开启，执行条件与结果见运行日志` };
+}
+
+// These drivers have no execution flow yet. Do not attribute that to the server.
 function lockedReason(feature) {
   return ({ task }) => {
     if (task.progress >= task.targetProgress) return { status: 'done' };
-    return { status: 'blocked', reason: `${feature}当前不可用（服务端拒绝或功能未开放）` };
+    return { status: 'blocked', reason: `控制台尚未接入${feature}的执行流程，可在游戏内完成` };
   };
-}
-
-function lowPower(power) {
-  if (power == null) return 0;
-  if (typeof power === 'number') return power;
-  return power.low ?? 0;
 }
 
 // 只读调研：跑一遍前置请求，给出每个日常任务能不能做、要发什么。
@@ -357,6 +327,7 @@ export async function surveyDailies(client, protocol, { config = null, player = 
   const ruby = Number((resourceList?.list ?? []).find((entry) => entry.res === RUBY)?.amount ?? 0);
 
   const cache = new Map();
+  if (resourceList) cache.set('AllResourceRequest|{}', resourceList);
   const fetchProbe = async (name, body) => {
     const key = `${name}|${JSON.stringify(body)}`;
     if (cache.has(key)) return cache.get(key);
@@ -379,7 +350,7 @@ export async function surveyDailies(client, protocol, { config = null, player = 
   for (const driver of Object.values(DAILY_DRIVERS)) {
     if (!tasks.some(task => task.id === driver.id && task.progress < task.targetProgress)) continue;
     for (const [name, body, shouldProbe] of driver.probes ?? []) {
-      if (shouldProbe && !shouldProbe(probe)) continue;
+      if (shouldProbe && !shouldProbe(probe, { config, player })) continue;
       const key = `${name}|${JSON.stringify(body)}`;
       if (probeCache.has(key)) continue;
       probeCache.set(key, await fetchProbe(name, body));
@@ -399,7 +370,7 @@ export async function surveyDailies(client, protocol, { config = null, player = 
     }
     let verdict;
     try {
-      verdict = normalize(driver.evaluate({ task, probe, items, ruby, now, config, player }));
+      verdict = normalize(driver.evaluate({ task, probe, items, ruby, now, config, player, client, dailyResetTime: daily.dailyResetTime }));
     } catch (error) {
       verdict = { status: 'error', reason: error.message };
     }
@@ -416,7 +387,7 @@ export async function surveyDailies(client, protocol, { config = null, player = 
   }
   const gold = probe('ClickGoldInfoRequest')?.info;
   const freeLimit = config?.tables?.OfflineParamCfg?.data?.find(row => row.paramName === '免费点金次数')?.paramValue;
-  return { daily, tasks: evaluations, chests: planChests(daily, config), gift, ruby, config,
+  return { daily, tasks: evaluations, chests: planChests(daily, config), gift, ruby, config, player,
     freeRecruitAt: probe('RecruitInfoRequest')?.hero?.freeEndTimeSeconds,
     freeGoldAt: freeLimit > 0 && gold?.freeTimes >= freeLimit ? gold.resetTime : undefined,
   };
@@ -449,10 +420,15 @@ export async function runDailies(client, protocol, survey, { allowMutate = false
     for (const action of entry.actions) {
       if (!allowAction(entry.task.id, action)) continue;
       try {
-        const body = await sendAction(client, protocol, action, timeout);
-        const outcome = { id: entry.task.id, title: entry.task.title, request: action.request, note: action.note, ok: true, body };
+        const run = DAILY_DRIVERS[entry.task.id]?.run;
+        const result = run
+          ? await run({ client, protocol, survey, entry, action, timeout, allowAction, config: config ?? survey.config })
+          : { body: await sendAction(client, protocol, action, timeout) };
+        const outcome = { id: entry.task.id, title: entry.task.title, request: action.request, note: action.note, ...result };
+        if (!outcome.skipped) outcome.ok = true;
         results.push(outcome);
         onStep?.(outcome);
+        if (outcome.skipped) break;
       } catch (error) {
         const outcome = { id: entry.task.id, title: entry.task.title, request: action.request, way: action.body?.way, note: action.note, ok: false, error: error.message };
         results.push(outcome);
