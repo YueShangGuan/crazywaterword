@@ -3287,9 +3287,9 @@ test('factory demand: current hero raid order joins scheduling, while an expired
   assert.equal(expired.client.calls.filter(call => call.name === 'HeroRaidFinishOrderRequest').length, 0);
 });
 
-test('hero raid: enough products finish the order and claim only the newly reached order reward', async () => {
+test('hero raid: priority production finishes the order and claims only the newly reached order reward', async () => {
   const f = await moduleRun('island', { collect: false, finish: false }, ({ ctx, client, settings }) => {
-    Object.assign(settings.modules.island.factory, { gain: false, priorityProduce: false });
+    Object.assign(settings.modules.island.factory, { gain: false, priorityProduce: true });
     ctx.pushes.set('SCHeroRaidOpen', { raid: { raidId: 2001, startTime: fixedNow / 1000 - 1, finishTime: fixedNow / 1000 + 60, order: { orderId: 15, gotOrderId: 14, gotTimes: 11 } } });
     table(ctx, 'HeroRaidOrderCfg', [{ raidId: 2001, orderId: 15, orderList: [['食盐', 2]] }]);
     table(ctx, 'HeroRaidOrderRewardCfg', [{ raidId: 2001, orderCount: 12 }]);
@@ -3305,6 +3305,18 @@ test('hero raid: enough products finish the order and claim only the newly reach
   assert.deepEqual(f.client.calls.find(call => call.name === 'HeroRaidFinishOrderRequest').body, { raidId: 2001 });
   assert.deepEqual(f.client.calls.find(call => call.name === 'HeroRaidGotOrderRewardRequest').body, { raidId: 2001 });
   assert.equal(f.ctx.pushes.get('SCHeroRaidOpen').raid.order.orderId, 16);
+});
+
+/** 未启用需求优先排产时，海岛模块不能因英雄突袭订单额外扣除已有库存。 */
+test('hero raid: disabled priority production leaves the order and materials untouched', async () => {
+  const f = await moduleRun('island', { collect: false, finish: false }, ({ ctx, client, settings }) => {
+    Object.assign(settings.modules.island.factory, { gain: false, priorityProduce: false });
+    ctx.pushes.set('SCHeroRaidOpen', { raid: { raidId: 2001, startTime: fixedNow / 1000 - 1, finishTime: fixedNow / 1000 + 60, order: { orderId: 15, gotOrderId: 14, gotTimes: 11 } } });
+    table(ctx, 'HeroRaidOrderCfg', [{ raidId: 2001, orderId: 15, orderList: [['食盐', 2]] }]);
+    client.items.set('食盐', 2);
+  }, { states: { OnWaterRequest: { building: [], workerOrder: [] } } });
+  assert.equal(f.client.calls.filter(call => call.name === 'HeroRaidFinishOrderRequest').length, 0);
+  assert.equal(f.client.items.get('食盐'), 2);
 });
 
 test('account budget: another role shares spent and pending totals while retaining its own records', async () => {
@@ -3555,8 +3567,8 @@ test('world repair: missing, expired or short refreshed repair state prevents ru
   }
 });
 
-/** 停用已多次失败的道具路径后，仍须逐舰队计算并结算钻石费用。 */
-test('world repair: three accelerator failures switch later repairs to priced ruby', async () => {
+/** 同一账号连败会停用道具路径，但不能影响另一个账号的维修消费选择。 */
+test('world repair: three accelerator failures switch later repairs to priced ruby without affecting another account', async () => {
   resetRepairSpeedUpFallbackState();
   const fleets = Array.from({ length: 4 }, (_, index) => ({ buildingId: `${index + 1}舰队`, state: protocol.FleetState.REPAIRING, durability: 40, maxDura: 100, repairing: { endTs: fixedNow / 1000 + 60 } }));
   const f = await moduleRun('world', {
@@ -3575,6 +3587,22 @@ test('world repair: three accelerator failures switch later repairs to priced ru
   assert.equal(f.ctx.ledger.days[businessDate(fixedNow)]?.spent, 40);
   assert.match(f.ctx.results.find(result => result.label === '维修加速路径 4舰队')?.reason ?? '', /累计失败 3\/3/);
   assert.equal(f.ctx.results.find(result => result.label === '维修加速结果 4舰队')?.status, 'success');
+
+  const other = await moduleRun('world', {
+    fleet: { repairSpeedUp: true, repairSpeedUpMinRemainSecs: 20, repairThresholds: [] },
+    cityWar: { enabled: true, fleets: [{ enabled: true, buildingId: '1舰队', roles: ['attack'] }] },
+  }, ({ client }) => client.items.set('加速器', 1), { states: {
+    MyFleetsRequest: { fleets: [{ buildingId: '1舰队', state: protocol.FleetState.REPAIRING, durability: 40, maxDura: 100, repairing: { endTs: fixedNow / 1000 + 60 } }] },
+  }, handlers: {
+    SpeedUpRepairRequest: async ({ speedUp, buildingId }, _response, client) => {
+      // 账号 B 必须优先消耗自己的加速器，不能沿用账号 A 的失败回退状态。
+      assert.equal(speedUp.type, 2);
+      client.states.MyFleetsRequest.fleets.find(fleet => fleet.buildingId === buildingId).repairing.endTs = fixedNow / 1000;
+      client.items.set('加速器', 0);
+    },
+  } });
+  assert.deepEqual(other.client.calls.filter(call => call.name === 'SpeedUpRepairRequest').map(call => call.body.speedUp.type), [2]);
+  assert.equal(other.client.ruby, 1000);
   resetRepairSpeedUpFallbackState();
 });
 

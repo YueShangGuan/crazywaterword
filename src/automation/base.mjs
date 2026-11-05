@@ -139,7 +139,8 @@ export async function island(ctx, options) {
     });
   }
   const f = options.factory;
-  await completeHeroRaidOrder(ctx);
+  // 英雄突袭订单属于需求优先排产的一部分；关闭该排产时不能仅因进入海岛模块就额外消耗库存。
+  if (f.priorityProduce) await completeHeroRaidOrder(ctx);
   // 预读募兵供跨午夜策略切换；排产器只在周一纳入额外来源，其他日期保持保存的来源顺序。
   // 英雄突袭只有当前活动推送有效时才贡献缺口。
   const needs = f.priorityProduce ? await demand(ctx, [...new Set([...f.proposedPriority, ...(f.mondayGuildPriority ? ['guild'] : []), 'heroRaid'])], { includeCovered: true }) : [];

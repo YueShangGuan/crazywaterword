@@ -811,6 +811,46 @@ test('console page: account tab saves the current WeCom notification settings', 
   assert.equal(node('wecom-hint').textContent, '企微通知已保存');
 });
 
+/** 顶部账号下拉切换后，企微表单必须刷新为新账号的地址，保存也只能写入该账号。 */
+test('console page: account switch reloads the selected account WeCom notification settings', async () => {
+  const { context, node } = pageFixture();
+  const notificationByAccount = new Map([
+    ['page-a', { wecom: { enabled: true, webhook: 'https://wecom.invalid/a' } }],
+    ['page-b', { wecom: { enabled: true, webhook: 'https://wecom.invalid/b' } }],
+  ]);
+  const saved = [];
+  const originalFetch = context.fetch;
+  context.EventSource = class EventSource { close() {} };
+  // 顶部切换会安排总览的延迟刷新；最小 DOM 夹具不执行计时器，但需要接受清理操作。
+  context.clearTimeout = () => {};
+  context.fetch = async (url, options = {}) => {
+    const parsed = new URL(url, 'http://page-fixture.invalid');
+    if (parsed.pathname !== '/api/accounts/notifications') return originalFetch(url, options);
+    const account = parsed.searchParams.get('account');
+    if (options.method === 'POST') {
+      const payload = JSON.parse(options.body);
+      // 保存请求以 URL 中的账号为准，模拟服务端按当前账号隔离的实际接口。
+      notificationByAccount.set(account, payload.notifications);
+      saved.push({ account, notifications: payload.notifications });
+    }
+    return { ok: true, json: async () => ({ notifications: notificationByAccount.get(account) }) };
+  };
+  vm.runInContext(`accounts = [
+    { id: 'page-a', title: '账号 A', status: { connected: true, state: 'READY', busy: null } },
+    { id: 'page-b', title: '账号 B', status: { connected: true, state: 'READY', busy: null } }
+  ]; current = 'page-a'; snapshot = accounts[0].status; renderAccountSelect();`, context);
+
+  await vm.runInContext('renderWecomNotification()', context);
+  assert.equal(node('wecom-webhook').value, 'https://wecom.invalid/a');
+  node('account').value = 'page-b';
+  await node('account').onchange();
+  assert.equal(node('wecom-webhook').value, 'https://wecom.invalid/b');
+
+  await node('wecom-save').onclick();
+  assert.deepEqual(saved, [{ account: 'page-b', notifications: { wecom: { enabled: true, webhook: 'https://wecom.invalid/b' } } }]);
+  assert.equal(notificationByAccount.get('page-a').wecom.webhook, 'https://wecom.invalid/a');
+});
+
 /** 页面提交必须带确认标记，并将 SSE 的逐条结果和汇总同步到账号页结果区。 */
 test('console page: batch gift code submit and realtime result panel stay in sync', async () => {
   const { context, giftRedeemRequests, node } = pageFixture();

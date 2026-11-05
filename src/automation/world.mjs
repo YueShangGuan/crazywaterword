@@ -13,28 +13,45 @@ const CITY_WAR_ONLINE_REWARD_LIMIT = 7;
 // 海商王服务端仅在上海时间 10:00 至 21:59 接受交易及相关操作。
 const TRADE_EXECUTION_HOURS = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21];
 
-// 累计失败后不再重复尝试加速器；钻石路径仍须逐舰队计价并通过消费护栏。
-const repairSpeedUpFallback = { itemFailures: 0, skipItem: false };
+// 累计失败后不再重复尝试加速器；状态必须按账号隔离，不能让一个账号的失败改变另一个账号的消费路径。
+const repairSpeedUpFallbackByAccount = new Map();
 
 /**
- * 清空维修加速的进程级回退状态，供测试或明确重置运行环境时使用。
+ * 取得当前账号的维修加速回退状态。
+ *
+ * 加速器是否可用是账号库存和账号服务端状态的一部分；同一进程处理多个账号时，不能共享失败计数。
+ *
+ * @param {import('./context.mjs').AutomationContext} ctx 当前自动化上下文。
+ * @returns {{itemFailures: number, skipItem: boolean}} 当前账号的道具失败保护状态。
+ */
+function repairSpeedUpFallbackFor(ctx) {
+  const existing = repairSpeedUpFallbackByAccount.get(ctx.accountId);
+  if (existing) return existing;
+  const fallback = { itemFailures: 0, skipItem: false };
+  repairSpeedUpFallbackByAccount.set(ctx.accountId, fallback);
+  return fallback;
+}
+
+/**
+ * 清空各账号的维修加速回退状态，供测试或明确重置运行环境时使用。
  *
  * @returns {void}
  */
 export function resetRepairSpeedUpFallbackState() {
-  repairSpeedUpFallback.itemFailures = 0;
-  repairSpeedUpFallback.skipItem = false;
+  repairSpeedUpFallbackByAccount.clear();
 }
 
 /**
  * 记录加速器失败次数；达到阈值后不再尝试加速器，改走受预算保护的钻石路径。
  *
- * @returns {{itemFailures: number, skipItem: boolean}} 当前道具失败保护状态。
+ * @param {import('./context.mjs').AutomationContext} ctx 当前自动化上下文。
+ * @returns {{itemFailures: number, skipItem: boolean}} 当前账号的道具失败保护状态。
  */
-function noteRepairSpeedUpItemFailure() {
-  repairSpeedUpFallback.itemFailures += 1;
-  if (repairSpeedUpFallback.itemFailures >= REPAIR_SPEED_UP_ITEM_FAILURE_LIMIT) repairSpeedUpFallback.skipItem = true;
-  return { ...repairSpeedUpFallback };
+function noteRepairSpeedUpItemFailure(ctx) {
+  const fallback = repairSpeedUpFallbackFor(ctx);
+  fallback.itemFailures += 1;
+  if (fallback.itemFailures >= REPAIR_SPEED_UP_ITEM_FAILURE_LIMIT) fallback.skipItem = true;
+  return { ...fallback };
 }
 
 /**
@@ -102,11 +119,12 @@ async function speedUpRepair(ctx, fleet, minRemainSecs) {
   const item = { buildingId: fleet.buildingId, speedUp: { type: SPEED_UP_ITEM_TYPE, useNum: 1 } };
   // 预览模式只登记计划，真实运行才把路径选择记为已执行。
   const decisionStatus = ctx.dryRun ? 'planned' : 'success';
+  const fallback = repairSpeedUpFallbackFor(ctx);
 
   // 无道具或道具路径已停用时直接进入统一计价入口，不能跳过预算检查。
-  if (repairSpeedUpFallback.skipItem || (ctx.stock.get('加速器') ?? 0) <= 0) {
-    const reason = repairSpeedUpFallback.skipItem
-      ? `加速器累计失败 ${repairSpeedUpFallback.itemFailures}/${REPAIR_SPEED_UP_ITEM_FAILURE_LIMIT}，已停用道具路径，改用钻石`
+  if (fallback.skipItem || (ctx.stock.get('加速器') ?? 0) <= 0) {
+    const reason = fallback.skipItem
+      ? `加速器累计失败 ${fallback.itemFailures}/${REPAIR_SPEED_UP_ITEM_FAILURE_LIMIT}，已停用道具路径，改用钻石`
       : '加速器库存为 0，改用钻石';
     ctx.record({ label: `维修加速路径 ${fleet.buildingId}`, status: decisionStatus, reason });
     return speedUpRepairWithRuby(ctx, fleet, minRemainSecs);
@@ -122,12 +140,12 @@ async function speedUpRepair(ctx, fleet, minRemainSecs) {
     return itemResult;
   }
 
-  const fallback = noteRepairSpeedUpItemFailure();
+  const nextFallback = noteRepairSpeedUpItemFailure(ctx);
   // 只有明确拒绝或业务失败才可更换费用类型；未确认写入仍由上面的分支直接返回。
   ctx.record({
     label: `维修加速回退 ${fleet.buildingId}`,
     status: decisionStatus,
-    reason: `加速器${itemResult.status === 'rejected' ? '被服务器拒绝' : '业务失败'}；累计失败 ${fallback.itemFailures}/${REPAIR_SPEED_UP_ITEM_FAILURE_LIMIT}${fallback.skipItem ? '，后续不再尝试加速器' : ''}`,
+    reason: `加速器${itemResult.status === 'rejected' ? '被服务器拒绝' : '业务失败'}；累计失败 ${nextFallback.itemFailures}/${REPAIR_SPEED_UP_ITEM_FAILURE_LIMIT}${nextFallback.skipItem ? '，后续不再尝试加速器' : ''}`,
   });
   return speedUpRepairWithRuby(ctx, fleet, minRemainSecs);
 }

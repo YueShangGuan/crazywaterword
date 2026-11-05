@@ -659,7 +659,7 @@ async function loadAccounts(reload) {
   }
 }
 
-/** 账号切换清除英雄选择并重新加载当前账号的自动化表单。 */
+/** 账号切换清除英雄选择，并重新加载当前账号的自动化与企微通知表单。 */
 $('account').onchange = async () => {
   current = $('account').value;
   snapshot = accounts.find(a => a.id === current)?.status ?? {};
@@ -673,6 +673,8 @@ $('account').onchange = async () => {
   $('hero-run').disabled = true;
   clear($('hero-selection'));
   await call('/api/accounts/active', { method: 'POST', body: JSON.stringify({ confirm: true, id: current }) });
+  // 通知表单含账号专属 Webhook；切换后先禁用并读取新账号，避免把旧表单保存到新账号。
+  await renderWecomNotification();
   subscribe();
   await loadMessages();
   if (!$('tab-automation').classList.contains('hidden')) await loadAutomation();
