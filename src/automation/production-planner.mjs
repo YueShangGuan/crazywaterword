@@ -46,7 +46,7 @@ export function productionEffects(response, protocol, update) {
  * @param {object} input 当前水面、库存、完整需求、配置、效果和上轮调度状态。
  * @returns {object} 下一步排产/重排/加速候选、材料分配及库存补货状态。
  */
-export function planProduction({ config, water, stock, needs, options, disabledBuildings = [], effects, now, state = {} }) {
+export function planProduction({ config, water, stock, needs, options, disabledBuildings = [], effects, now, state = {}, guildPriority = false }) {
   /** 只读当前配置包；缺表必须由下面的有效性检查显式阻止排产。 */
   function rows(name) { return config?.tables?.[name]?.data ?? []; }
   const resolve = makeTypeResolver(config);
@@ -169,7 +169,10 @@ export function planProduction({ config, water, stock, needs, options, disabledB
   }
 
   // 先保护所有订单已有的成品，再分配任何订单的配方，避免早处理的配方吃掉晚处理订单的现货。
-  const missingNeeds = needs.map(need => ({ ...need, ...takeSupply(need.id, need.need, `demand:${need.source}:${need.id}`) }));
+  // 周一先完整分配募兵及其原料链，再保护其他订单现货；避免同份库存被低优先来源先占用。
+  const priorityNeeds = guildPriority ? needs.filter(need => need.source === 'guild') : [];
+  for (const need of priorityNeeds) allocate(need.id, need.need, `demand:${need.source}:${need.id}`);
+  const missingNeeds = needs.filter(need => !priorityNeeds.includes(need)).map(need => ({ ...need, ...takeSupply(need.id, need.need, `demand:${need.source}:${need.id}`) }));
   for (const need of missingNeeds) planMissing(need.id, need.missing, `demand:${need.source}:${need.id}`);
   const bufferIds = [...recipes.keys()].sort((a, b) => tierOf(a) - tierOf(b));
   /** 后面的补货配方也会消耗前面的短料，迭代到不再触发新水位，防止先开中长品才发现短料断供。 */
@@ -217,12 +220,26 @@ export function planProduction({ config, water, stock, needs, options, disabledB
     const parent = taskByKey.get(owner);
     return parent ? ownerForDemand(parent.owner) : false;
   }
-  for (const task of tasks) task.demand = ownerForDemand(task.owner);
+  /** 配方子任务沿所有权追溯募兵来源；普通补货不继承周一优先级。 */
+  function guildOwner(owner) {
+    if (owner.startsWith('demand:guild:')) return guildPriority;
+    const parent = taskByKey.get(owner);
+    return parent ? guildOwner(parent.owner) : false;
+  }
+  for (const task of tasks) { task.demand = ownerForDemand(task.owner); task.guildPriority = guildOwner(task.owner); }
   for (const job of active) job.demand = job.usedBy.some(ownerForDemand);
   const admission = new Map(stock);
   for (const allocation of allocations) if (allocation.kind === 'stock' && allocation.owner.startsWith('demand:')) {
     admission.set(allocation.id, (admission.get(allocation.id) ?? 0) - allocation.num);
   }
+  // 周一的原料保留延伸到尚未凑齐整套材料的募兵任务，不能被普通任务在准入阶段再次占用。
+  // 直接订单成品已经从 admission 扣除；这里只额外保留配方子任务分配到的现货。
+  const guildHeld = new Map();
+  for (const allocation of allocations) if (allocation.kind === 'stock' && !allocation.owner.startsWith('demand:') && guildOwner(allocation.owner)) {
+    guildHeld.set(allocation.id, (guildHeld.get(allocation.id) ?? 0) + allocation.num);
+  }
+  /** 普通任务只能使用募兵已分配原料之外的余量；募兵任务可以消耗自己的保留量。 */
+  function availableFor(task, id) { return (admission.get(id) ?? 0) - (task.guildPriority ? 0 : (guildHeld.get(id) ?? 0)); }
   /** 保护仅持续到目标实际开工或离队；不能让旧制造位索引永久冻结工厂。 */
   function hasProtectedWaiting(buildingId) {
     const protectedJob = state.protectedJobs?.[buildingId];
@@ -253,19 +270,22 @@ export function planProduction({ config, water, stock, needs, options, disabledB
     if (!urgentProducts.has(task.productId) || !canAdmit(task) || (totals.get(task.productId) ?? 0) >= stockCap) continue;
     const required = new Map();
     for (const [id, num] of task.recipe.costItem) required.set(id, (required.get(id) ?? 0) + num);
-    if (![...required].every(([id, num]) => (admission.get(id) ?? 0) >= num)) continue;
+    if (![...required].every(([id, num]) => availableFor(task, id) >= num)) continue;
     for (const building of factories) if (resolve(building.buildingId) === task.recipe.buildType && building.level >= task.recipe.unlockLevel
       && (!task.deferred || task.deferred.buildingId === building.buildingId)) urgentBuildings.add(building.buildingId);
   }
-  const readyOrder = [...tasks].sort((a, b) => Number(factories.some(building => isLongDue(b, building))) - Number(factories.some(building => isLongDue(a, building)))
+  const readyOrder = [...tasks].sort((a, b) => Number(b.guildPriority) - Number(a.guildPriority) || Number(factories.some(building => isLongDue(b, building))) - Number(factories.some(building => isLongDue(a, building)))
     || a.tier - b.tier || Number(b.demand) - Number(a.demand) || a.order - b.order);
   for (const task of readyOrder) {
     const required = new Map();
     for (const [id, num] of task.recipe.costItem) required.set(id, (required.get(id) ?? 0) + num);
     // 净需求用于算要补多少；准入分配用于决定现在谁拿材料。每份现货只给一个完整可执行任务。
     task.ready = canAdmit(task) && (totals.get(task.productId) ?? 0) < stockCap
-      && [...required].every(([id, num]) => (admission.get(id) ?? 0) >= num);
-    if (task.ready) for (const [id, num] of required) admission.set(id, admission.get(id) - num);
+      && [...required].every(([id, num]) => availableFor(task, id) >= num);
+    if (task.ready) for (const [id, num] of required) {
+      admission.set(id, admission.get(id) - num);
+      if (task.guildPriority) guildHeld.set(id, Math.max(0, (guildHeld.get(id) ?? 0) - num));
+    }
   }
   const choices = [];
   for (const building of factories) {
@@ -273,13 +293,13 @@ export function planProduction({ config, water, stock, needs, options, disabledB
     const candidates = tasks.filter(task => task.ready && task.recipe.buildType === resolve(building.buildingId) && task.recipe.unlockLevel <= building.level
       && (!task.deferred || task.deferred.buildingId === building.buildingId) && (totals.get(task.productId) ?? 0) < stockCap);
     for (const job of waiting.filter(job => job.buildingId === building.buildingId)) {
-      candidates.push({ ...job, queued: true, demand: job.usedBy.some(ownerForDemand), order: job.position, productId: job.productId });
+      candidates.push({ ...job, queued: true, demand: job.usedBy.some(ownerForDemand), guildPriority: job.usedBy.some(guildOwner), order: job.position, productId: job.productId });
     }
     const streak = state.streaks?.[building.buildingId] ?? 0;
     const protectedWaiting = hasProtectedWaiting(building.buildingId);
     const longDue = !protectedWaiting && !urgentBuildings.has(building.buildingId) && streak >= options.priorityBurstLimit && candidates.some(task => task.demand && task.tier === 3);
     // 每连续安排若干短料，就给已具备材料的长订单一个开工机会；其余按档位和需求顺序。
-    candidates.sort((a, b) => (longDue ? Number(b.demand && b.tier === 3) - Number(a.demand && a.tier === 3) || Number(Boolean(b.queued)) - Number(Boolean(a.queued)) : 0)
+    candidates.sort((a, b) => Number(Boolean(b.guildPriority)) - Number(Boolean(a.guildPriority)) || (longDue ? Number(b.demand && b.tier === 3) - Number(a.demand && a.tier === 3) || Number(Boolean(b.queued)) - Number(Boolean(a.queued)) : 0)
       || a.tier - b.tier || Number(b.demand) - Number(a.demand) || a.order - b.order);
     let best = candidates[0];
     if (!best) continue;
@@ -310,6 +330,6 @@ export function planProduction({ config, water, stock, needs, options, disabledB
     if (best && queue.length < slots) choices.push({ kind: 'start', building, task: best, longDue: longDue && best.demand && best.tier === 3 });
   }
   // 可执行的长订单保底先获得原料和生产位，其余优先安排短料；每一步写后都会重新规划。
-  choices.sort((a, b) => Number(b.longDue) - Number(a.longDue) || a.task.tier - b.task.tier || Number(b.task.demand) - Number(a.task.demand) || a.task.order - b.task.order);
+  choices.sort((a, b) => Number(Boolean(b.task.guildPriority)) - Number(Boolean(a.task.guildPriority)) || Number(b.longDue) - Number(a.longDue) || a.task.tier - b.task.tier || Number(b.task.demand) - Number(a.task.demand) || a.task.order - b.task.order);
   return { choices, restocking, allocations, tasks, active, waiting, factories, urgentBuildings: [...urgentBuildings], warnings: [...new Set(warnings)] };
 }

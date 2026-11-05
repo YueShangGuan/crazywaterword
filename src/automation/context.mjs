@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { businessDate, loadLedger, writeJson, accountDirectory, accountSpending } from './settings.mjs';
+import { moduleActive } from './schedule.mjs';
 
 const activeRoles = new Set();
 const LOCK_INITIALIZATION_GRACE_MS = 5_000;
@@ -72,8 +73,25 @@ export async function withRoleLock(accountId, roleId, work) {
   try { return await work(); } finally { activeRoles.delete(key); fs.closeSync(fd); fs.unlinkSync(lockFile); }
 }
 
-/** 构造全部玩法共用的连接、协议、库存、日额度和停止上下文。 */
-export function createContext({ client, protocol, config, player, accountId, settings, initialPushes = new Map(), dryRun = false, stop = { aborted: false }, onStep = () => {}, now = () => Date.now() }) {
+/**
+ * 构造全部玩法共用的连接、协议、库存、日额度和停止上下文。
+ *
+ * @param {object} options 上下文依赖和运行回调。
+ * @param {import('../client.mjs').GameClient} options.client 当前账号连接。
+ * @param {object} options.protocol 当前协议定义。
+ * @param {object|null} options.config 当前游戏配置。
+ * @param {object|null} options.player 当前登录角色。
+ * @param {string} options.accountId 当前账号 ID。
+ * @param {object} options.settings 自动化设置。
+ * @param {Map} [options.initialPushes] 登录后已收到的推送快照。
+ * @param {boolean} [options.dryRun] 是否只生成计划而不发写请求。
+ * @param {object} [options.stop] 当前执行的停止信号。
+ * @param {Function} [options.onStep] 记录自动化步骤的回调。
+ * @param {Function} [options.onQuery] 成功只读查询回包的回调。
+ * @param {Function} [options.now] 返回当前时间的函数，测试时可注入。
+ * @returns {object} 供各自动化模块使用的上下文对象。
+ */
+export function createContext({ client, protocol, config, player, accountId, settings, initialPushes = new Map(), dryRun = false, stop = { aborted: false }, onStep = () => {}, onQuery = () => {}, now = () => Date.now() }) {
   const roleId = idString(player?.playerId);
   const { file, ledger } = loadLedger(accountId, roleId);
   const results = [];
@@ -111,7 +129,7 @@ export function createContext({ client, protocol, config, player, accountId, set
     results.push(row); onStep(row); return row;
   }
   /**
-   * 将已由只读核对确认完成的未确认请求结算到账本。
+   * 将已由只读核对确认完成的未确认请求结算到账本，并移除本轮内存锁。
    * 只有调用方已经拿到服务端状态证据时才能调用，避免把未知写结果误记为成功。
    */
   function settlePending(key) {
@@ -130,6 +148,8 @@ export function createContext({ client, protocol, config, player, accountId, set
       stop.aborted = true;
       throw error;
     }
+    // 结算完成后必须同时释放本轮内存锁，否则同一自动化运行内仍会把后续同键动作误判为未确认。
+    uncertain.delete(key);
     return true;
   }
   /** 标记当前模块已被未确认写请求阻断，供调度器跳过该模块的剩余工作。 */
@@ -140,6 +160,13 @@ export function createContext({ client, protocol, config, player, accountId, set
     moduleBlockReason = null;
     return reason;
   }
+  /**
+   * 判断请求是否仍有未决记录；只允许持久化过的写请求在读回确认后恢复，避免把外部变化误当成新操作成功。
+   *
+   * @param {string} key 请求幂等键。
+   * @returns {boolean} 是否需要先做只读结算。
+   */
+  function hasPending(key) { return uncertain.has(key) || Boolean(ledger.pending[key]); }
   /** 读取当前配置表；缺表由调用方明确报告，不能套用历史数值。 */
   function rows(name) { return config?.tables?.[name]?.data ?? []; }
   /** 串行只读查询并缓存服务端真值，供提交后确认使用。 */
@@ -150,6 +177,8 @@ export function createContext({ client, protocol, config, player, accountId, set
     const value = await client.request(name, body, response, 8000);
     assertReady();
     snapshots.set(name, value);
+    // 服务端缓存只接收成功的协议回包；动作中的确认查询也能即时更新对应分类。
+    onQuery(name, value);
     return value;
   }
   /** 每个模块入口及发生写操作后刷新库存，避免重复消费过期快照。 */
@@ -173,17 +202,29 @@ export function createContext({ client, protocol, config, player, accountId, set
     }
     return [...needed].every(([id, count]) => (stock.get(id) ?? 0) - (keep[id] ?? 0) >= count);
   }
-  /** 为一个已知价格的消费预留总额与模块额，结果不明时继续占用。 */
-  function reserve(key, ruby) {
+  /**
+   * 为一个已知价格的消费预留账本金额；强制券购买只跳过额度比较，仍检查实时余额。
+   *
+   * @param {string} key 请求幂等键。
+   * @param {number} ruby 本次预计消耗的钻石数。
+   * @param {{ bypassSpendingLimits?: boolean }} options 是否允许突破普通钻石额度与保留量。
+   * @returns {string|null} 预留令牌；零钻石动作不创建预留。
+   */
+  function reserve(key, ruby, { bypassSpendingLimits = false } = {}) {
     if (!Number.isFinite(ruby) || ruby < 0) throw new Error('消费价格无效');
     if (ruby === 0) return null;
     const policy = settings.spending;
     day();
     const account = accountSpending(accountId, roleId, ledger, now());
-    if (!policy.enabled || policy.dailyLimit <= 0 || (policy.modules[moduleId] ?? 0) <= 0) throw new Error('钻石消费未开启或额度为 0');
-    if (account.spent + account.held + ruby > policy.dailyLimit || (account.modules[moduleId] ?? 0) + (account.heldModules[moduleId] ?? 0) + ruby > policy.modules[moduleId]) throw new Error('钻石日额度不足');
     const balanceHeld = Object.values(ledger.pending).reduce((sum, p) => sum + p.ruby, 0);
-    if ((stock.get('RUBY') ?? 0) - balanceHeld - ruby < policy.minRubyStock) throw new Error('消费后低于钻石保留量');
+    if (bypassSpendingLimits) {
+      // 强制目标券仍不能制造负钻石；未确认预留也必须从可用余额中扣除。
+      if ((stock.get('RUBY') ?? 0) - balanceHeld - ruby < 0) throw new Error('钻石余额不足');
+    } else {
+      if (!policy.enabled || policy.dailyLimit <= 0 || (policy.modules[moduleId] ?? 0) <= 0) throw new Error('钻石消费未开启或额度为 0');
+      if (account.spent + account.held + ruby > policy.dailyLimit || (account.modules[moduleId] ?? 0) + (account.heldModules[moduleId] ?? 0) + ruby > policy.modules[moduleId]) throw new Error('钻石日额度不足');
+      if ((stock.get('RUBY') ?? 0) - balanceHeld - ruby < policy.minRubyStock) throw new Error('消费后低于钻石保留量');
+    }
     const token = randomUUID();
     ledger.pending[key] = { token, ruby, module: moduleId, date: businessDate(now()) };
     persist(); return token;
@@ -193,30 +234,45 @@ export function createContext({ client, protocol, config, player, accountId, set
    *
    * @param {string} name 协议请求名。
    * @param {object} body 已通过 protobuf 校验的请求体。
-   * @param {{ confirmAfterResponse?: boolean }} options 写入选项；空回包不能证明业务状态时，强制执行 confirm 读回。
+   * @param {{ response?: string|null, confirm?: () => Promise<boolean>, accept?: (value: unknown) => boolean|Promise<boolean>, allowed?: () => boolean, continueAfterUncertain?: boolean, blockModuleOnUncertain?: boolean, confirmAfterResponse?: boolean, bypassSpendingLimits?: boolean }} options 写入选项；allowed 在实际提交前复查日期，空回包不能证明业务状态时强制执行 confirm 读回。
    */
-  async function action(name, body = {}, { label = name, ruby = 0, expenses = [], response, confirm, accept, timeout = 8000, key = `${name}:${JSON.stringify(body)}`, continueAfterUncertain = false, confirmAfterResponse = false } = {}) {
+  async function action(name, body = {}, { label = name, ruby = 0, expenses = [], response, confirm, accept, allowed = () => true, timeout = 8000, key = `${name}:${JSON.stringify(body)}`, continueAfterUncertain = false, blockModuleOnUncertain = true, confirmAfterResponse = false, bypassSpendingLimits = false } = {}) {
     assertReady();
     if (!protocol[name]) return record({ request: name, label, status: 'skipped', reason: '当前协议缺少请求' });
     if (!enough(expenses)) return record({ request: name, label, status: 'skipped', reason: '资源不足' });
     ruby = Math.max(ruby, expenses.filter(([id]) => id === 'RUBY').reduce((sum, [, num]) => sum + num, 0));
     // 使用当前生成器校验必填字段；多余字段会被 protobuf 静默丢弃，所以显式拒绝。
     validateMessage(protocol[name], body);
-    if (uncertain.has(key) || ledger.pending[key]) {
-      if (continueAfterUncertain) blockModule('上次结果未确认，禁止重复提交');
-      else stop.aborted = true;
+    if (hasPending(key)) {
+      // 上轮写入可能已在服务端生效但确认读回迟到；先只读核验并结算原预留，绝不重发请求。
+      let verified = false;
+      if (confirm && client.connected && !fatal) {
+        try { verified = await confirm(); } catch { /* 读回失败仍按未确认处理。 */ }
+      }
+      if (verified) {
+        const pendingRuby = ledger.pending[key]?.ruby ?? ruby;
+        settlePending(key);
+        return record({ request: name, label, status: 'success', verifiedByRead: true, ruby: pendingRuby });
+      }
+      // 有些互不依赖的权益可只跳过当前动作；默认仍隔离整个模块，避免改变既有写入保护边界。
+      if (continueAfterUncertain) {
+        if (blockModuleOnUncertain) blockModule('上次结果未确认，禁止重复提交');
+      } else stop.aborted = true;
       return record({ request: name, label, status: 'uncertain', reason: '上次结果未确认，禁止重复提交' });
     }
+    // 宠物和装备可能在同批次跨过上海午夜，不能只在模块入口检查一次执行日。
+    if ((['pet', 'equip'].includes(moduleId) && !moduleActive(moduleId, settings.modules[moduleId], { client, now })) || !allowed())
+      return record({ request: name, label, status: 'skipped', reason: '已离开设置的执行日期或活动周期' });
     if (dryRun) {
       // 预览也核验消费开关和额度，但不落盘预留、不向网关发送写请求。
-      try { reserve(key, ruby); delete ledger.pending[key]; } catch (error) { return record({ request: name, label, status: 'skipped', reason: error.message }); }
+      try { reserve(key, ruby, { bypassSpendingLimits }); delete ledger.pending[key]; } catch (error) { return record({ request: name, label, status: 'skipped', reason: error.message }); }
       for (const [id, num] of expenses) stock.set(id, (stock.get(id) ?? 0) - num);
       if (ruby > 0) { const d = day(); d.spent += ruby; d.modules[moduleId] = (d.modules[moduleId] ?? 0) + ruby; if (!expenses.some(([id]) => id === 'RUBY')) stock.set('RUBY', (stock.get('RUBY') ?? 0) - ruby); }
       return record({ request: name, body, label, ruby, status: 'planned' });
     }
     if (writes >= 500) throw new Error('单轮动作达到上限');
     let token;
-    try { token = reserve(key, ruby); } catch (error) { return record({ request: name, label, status: 'skipped', reason: error.message }); }
+    try { token = reserve(key, ruby, { bypassSpendingLimits }); } catch (error) { return record({ request: name, label, status: 'skipped', reason: error.message }); }
     const expected = response === undefined ? (protocol[`${name.slice(0, -7)}Response`] ? `${name.slice(0, -7)}Response` : null) : response;
     /** 结算只发生一次；库存刷新失败不能把已确认消费重新变成预留。 */
     function settle() { if (token && settlePending(key)) token = null; }
@@ -264,8 +320,10 @@ export function createContext({ client, protocol, config, player, accountId, set
       uncertain.add(key);
       if (!ledger.pending[key]) ledger.pending[key] = { token: randomUUID(), ruby, module: moduleId, date: businessDate(now()) };
       persist();
-      if (continueAfterUncertain) blockModule(error.message);
-      else stop.aborted = true;
+      // 未确认记录已经落盘，即使继续本轮也会阻止该幂等键重发。
+      if (continueAfterUncertain) {
+        if (blockModuleOnUncertain) blockModule(error.message);
+      } else stop.aborted = true;
       return record({ request: name, label, status: 'uncertain', reason: error.message });
     }
     settle();
@@ -284,5 +342,5 @@ export function createContext({ client, protocol, config, player, accountId, set
   function dispose() { client.off('fatal', terminal); client.off('close', terminal); client.off('message', capture); }
   /** 将结果与额度归属切换到当前玩法。 */
   function setModule(id) { moduleId = id; moduleBlockReason = null; }
-  return { client, protocol, config, player, accountId, roleId, season: settings.season, settings, dryRun, stop, now, results, snapshots, pushes, stock, ledger, query, action, rows, enough, refreshStock, record, count, memory, dispose, assertReady, setModule, settlePending, consumeModuleBlock, get moduleId() { return moduleId; } };
+  return { client, protocol, config, player, accountId, roleId, season: settings.season, settings, dryRun, stop, now, results, snapshots, pushes, stock, ledger, query, action, rows, enough, refreshStock, record, count, memory, dispose, assertReady, setModule, settlePending, consumeModuleBlock, hasPending, get moduleId() { return moduleId; } };
 }

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { amount } from './context.mjs';
-import { skip } from './common.mjs';
+import { reconcileFactoryHarvestPending, skip } from './common.mjs';
+import { serverTime, shanghaiWeekday } from './schedule.mjs';
 import { planProduction, productionEffects, waitingProduction } from './production-planner.mjs';
 
 const MEMORY_KEY = 'factory.production';
@@ -31,6 +32,8 @@ function findJob(water, target) {
  * @returns {Promise<void>} 本轮无可执行动作、预览或写入未确认时结束。
  */
 export async function scheduleProduction(ctx, options, needs, disabledBuildings = []) {
+  // 优先排产会直接收成；开始规划前先恢复已经没有待领成品的遗留收成锁。
+  await reconcileFactoryHarvestPending(ctx);
   const state = structuredClone(ctx.memory(MEMORY_KEY) ?? { restocking: [], streaks: {}, deferred: [], protectedJobs: {} });
   const effectsResponse = await ctx.query('GameEffectRequest');
   // 只合并本轮查询之后收到的效果推送，不能让旧推送覆盖更新的查询快照。
@@ -83,7 +86,13 @@ export async function scheduleProduction(ctx, options, needs, disabledBuildings 
     for (let iteration = 0; iteration < 200; iteration++) {
       ctx.assertReady();
       water = await ctx.query('OnWaterRequest');
-      const plan = planProduction({ config: ctx.config, water, stock: ctx.stock, needs, options, disabledBuildings,
+      // 每次写后重新判断上海星期，跨午夜自动恢复保存的普通需求顺序。
+      const guildPriority = options.priorityProduce && options.mondayGuildPriority && shanghaiWeekday(serverTime(ctx)) === 'monday';
+      /** 异步队列核对可能跨午夜；实际写入只接受仍与规划一致的优先策略。 */
+      const samePolicy = () => guildPriority === Boolean(options.priorityProduce && options.mondayGuildPriority && shanghaiWeekday(serverTime(ctx)) === 'monday');
+      // 额外读取的募兵需求仅在周一参与；其他日期严格恢复已保存的来源集合与顺序。
+      const currentNeeds = guildPriority ? needs : needs.filter(need => need.source !== 'guild' || options.proposedPriority.includes('guild'));
+      const plan = planProduction({ guildPriority, config: ctx.config, water, stock: ctx.stock, needs: currentNeeds, options, disabledBuildings,
         effects: productionEffects({ effects: [...effectValues].map(([id, value]) => ({ id, value })) }, ctx.protocol), now: ctx.now() / 1000, state });
       state.restocking = plan.restocking;
       for (const [buildingId, protectedJob] of Object.entries(state.protectedJobs)) {
@@ -95,10 +104,15 @@ export async function scheduleProduction(ctx, options, needs, disabledBuildings 
         const building = plan.factories.find(row => row.factory.finishedProducts?.length);
         if (building) {
           const before = building.factory.finishedProducts.reduce((sum, item) => sum + amount(item.num), 0);
-          const result = await ctx.action('GainFactoryProduceRequest', { buildingId: building.buildingId }, { label: '领取排产成品并刷新材料', confirmAfterResponse: true, confirm: async () => {
+          const result = await ctx.action('GainFactoryProduceRequest', { buildingId: building.buildingId }, {
+            label: '领取排产成品并刷新材料', confirmAfterResponse: true,
+            // 收成读回滞后时保留幂等锁且跳过本轮排产，不能让单座工厂的未知结果终止整个挂机循环。
+            continueAfterUncertain: true,
+            confirm: async () => {
             const current = (await ctx.query('OnWaterRequest')).building?.find(row => row.buildingId === building.buildingId)?.factory;
             return Boolean(current) && (current.finishedProducts ?? []).reduce((sum, item) => sum + amount(item.num), 0) < before;
-          } });
+            },
+          });
           if (result.status !== 'success' || ctx.stop.aborted) return;
           continue;
         }
@@ -138,7 +152,7 @@ export async function scheduleProduction(ctx, options, needs, disabledBuildings 
         state.intent = { kind: 'reorder', buildingId, idx: choice.cancel.idx, productId: choice.cancel.productId, token: randomUUID(), key,
           before: outputCount(water, ctx.stock, choice.cancel.productId) };
         if (!ctx.dryRun) persist();
-        const result = await ctx.action('CancelFactoryProduceRequest', { buildingId, index: choice.cancel.idx }, { key, label: `重排等待项 ${choice.cancel.productId}`, confirm: async () => {
+        const result = await ctx.action('CancelFactoryProduceRequest', { buildingId, index: choice.cancel.idx }, { key, allowed: samePolicy, label: `重排等待项 ${choice.cancel.productId}`, confirm: async () => {
           const current = await ctx.query('OnWaterRequest');
           await ctx.refreshStock();
           return !findJob(current, state.intent) && outputCount(current, ctx.stock, state.intent.productId) < state.intent.before;
@@ -156,8 +170,8 @@ export async function scheduleProduction(ctx, options, needs, disabledBuildings 
         before: outputCount(water, ctx.stock, task.productId) };
       if (!ctx.dryRun) persist();
       let confirmedWater;
-      const result = await ctx.action('StartFactoryProduceRequest', { buildingId, productId: task.productId }, { key,
-        label: `${task.tier}档生产 ${task.productId}`, expenses: task.recipe.costItem, confirm: async () => {
+      const result = await ctx.action('StartFactoryProduceRequest', { buildingId, productId: task.productId }, { key, allowed: samePolicy,
+        label: `${guildPriority && task.guildPriority ? '周一联盟募兵优先 · ' : ''}${task.tier}档生产 ${task.productId}`, expenses: task.recipe.costItem, confirm: async () => {
           const current = await ctx.query('OnWaterRequest');
           await ctx.refreshStock();
           confirmedWater = current;

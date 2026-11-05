@@ -1,5 +1,44 @@
 import { amount, idString } from './context.mjs';
 
+/**
+ * 从工厂收成待确认键中还原目标建筑，格式异常时不尝试猜测目标。
+ *
+ * @param {string} key 待确认账本键。
+ * @returns {string|null} 工厂建筑 ID；无法证明目标时返回 null。
+ */
+function pendingFactoryHarvestBuildingId(key) {
+  const prefix = 'GainFactoryProduceRequest:';
+  if (!key.startsWith(prefix)) return null;
+  try {
+    const { buildingId } = JSON.parse(key.slice(prefix.length));
+    return typeof buildingId === 'string' && buildingId ? buildingId : null;
+  } catch { return null; }
+}
+
+/**
+ * 通过工厂当前待领列表结算已不再可见的收成请求。
+ *
+ * 收成请求超时后不能重发；但同一工厂已没有待领成品时，旧收成无论由原请求还是人工操作完成，
+ * 都不再存在可重复领取的目标，可以安全解除该请求的幂等锁。
+ *
+ * @param {object} ctx 自动化上下文。
+ * @returns {Promise<void>} 所有可由当前工厂快照证明完成的收成记录已结算。
+ */
+export async function reconcileFactoryHarvestPending(ctx) {
+  const pending = Object.keys(ctx.ledger.pending)
+    .map(key => ({ key, buildingId: pendingFactoryHarvestBuildingId(key) }))
+    .filter(entry => entry.buildingId);
+  if (!pending.length) return;
+  const water = await ctx.query('OnWaterRequest');
+  for (const { key, buildingId } of pending) {
+    const factory = water.building?.find(building => building.buildingId === buildingId)?.factory;
+    // 仅空待领列表能证明旧收成已经不再可重复领取；工厂不存在或仍有成品都保留保护锁。
+    if (factory && !(factory.finishedProducts?.length) && ctx.settlePending(key)) {
+      ctx.record({ request: 'GainFactoryProduceRequest', label: `恢复未确认工厂收成 ${buildingId}`, status: 'success', verifiedByRead: true });
+    }
+  }
+}
+
 /** 将协议资产转换为规划器统一使用的物品/资源需求。 */
 export function costs(assets = [], protocol) {
   return assets.filter(Boolean).map(a => [a.type === 1 ? Object.entries(protocol.Resource).find(([, value]) => value === Number(a.id))?.[0] : a.id, amount(a.num)]);
@@ -21,11 +60,23 @@ export async function rewardAction(ctx, request, body = {}, options = {}) {
   } });
 }
 
-/** 静默写入用对应业务快照读回；预览只读取前态，不假设操作已经成功。 */
+/**
+ * 静默写入用对应业务快照读回；预览只读取前态，不假设操作已经成功。
+ *
+ * @param {object} ctx 自动化上下文。
+ * @param {string} request 写入协议名。
+ * @param {object} body 写入请求体。
+ * @param {string} stateRequest 读回状态协议名。
+ * @param {(value: object) => unknown} select 用于比较写前写后状态的选择器。
+ * @param {{ stateBody?: object, confirm?: () => Promise<boolean> }} options 读回参数；复杂异步状态可提供专用确认器。
+ * @returns {Promise<object>} 统一写入结果。
+ */
 export async function mutate(ctx, request, body, stateRequest, select = value => value, options = {}) {
-  const { stateBody = {}, ...actionOptions } = options;
+  const { stateBody = {}, confirm: suppliedConfirm, ...actionOptions } = options;
   const before = JSON.stringify(select(await ctx.query(stateRequest, stateBody)));
-  return ctx.action(request, body, { ...actionOptions, confirm: async () => JSON.stringify(select(await ctx.query(stateRequest, stateBody))) !== before });
+  // 默认比较读回快照；个别静默协议落库较慢时，调用方提供的确认器仍只读状态而不会重发写请求。
+  const confirm = suppliedConfirm ?? (async () => JSON.stringify(select(await ctx.query(stateRequest, stateBody))) !== before);
+  return ctx.action(request, body, { ...actionOptions, confirm });
 }
 
 /** 在明确的次数上限内刷新并处理，预览只产生第一步以免假定写操作已经生效。 */

@@ -1,8 +1,9 @@
 import { surveyWorld, planWorld, makeTypeResolver } from '../world.mjs';
 import { amount, idString } from './context.mjs';
-import { costs, repeat, succeeded, skip, awaitPush, mutate } from './common.mjs';
+import { costs, repeat, succeeded, skip, awaitPush, mutate, reconcileFactoryHarvestPending } from './common.mjs';
 import { openDays } from './activity.mjs';
 import { scheduleProduction } from './production.mjs';
+import { serverTime, shanghaiWeekday } from './schedule.mjs';
 
 /**
  * 仅从当前连接的活动推送读取仍在进行中的英雄突袭订单，防止过期活动或上一连接的状态进入排产。
@@ -72,8 +73,8 @@ async function completeHeroRaidOrder(ctx) {
  */
 export async function demand(ctx, sources = ['resident', 'cargo', 'guild'], { includeCovered = false } = {}) {
   const needs = new Map();
-  /** 相同物品跨订单累加，第一需求来源决定排产优先级。 */
-  const add = (assets, source) => { for (const [id, count] of costs(assets, ctx.protocol)) { const row = needs.get(id) ?? { id, need: 0, source }; row.need += count; needs.set(id, row); } };
+  /** 同来源合并数量，跨来源保留身份，让周一优先级能沿配方依赖继承。 */
+  const add = (assets, source) => { for (const [id, count] of costs(assets, ctx.protocol)) { const key = `${source}:${id}`, row = needs.get(key) ?? { id, need: 0, source }; row.need += count; needs.set(key, row); } };
   for (const source of sources) {
     try {
       if (source === 'resident') { const water = await ctx.query('OnWaterRequest'); for (const order of water.workerOrder ?? []) if (!order.refreshTime || order.refreshTime <= ctx.now() / 1000) add(order.requirements, source); }
@@ -92,7 +93,18 @@ export async function demand(ctx, sources = ['resident', 'cargo', 'guild'], { in
     for (const job of building.factory?.factoryQ ?? []) pending.set(job.productId, (pending.get(job.productId) ?? 0) + 1);
     for (const [id, num] of costs(building.factory?.finishedProducts, ctx.protocol)) pending.set(id, (pending.get(id) ?? 0) + num);
   }
-  return [...needs.values()].map(row => ({ ...row, lack: Math.max(0, row.need - (ctx.stock.get(row.id) ?? 0) - (pending.get(row.id) ?? 0)) })).filter(row => includeCovered || row.lack > 0);
+  // 库存及在产只分配一次；农田只关心总缺口，排产则需要保留每个来源。
+  const supply = new Map(ctx.stock), missing = new Map();
+  for (const [id, num] of pending) supply.set(id, (supply.get(id) ?? 0) + num);
+  const result = [...needs.values()].map(row => {
+    const used = Math.min(row.need, supply.get(row.id) ?? 0);
+    supply.set(row.id, (supply.get(row.id) ?? 0) - used);
+    const entry = { ...row, lack: row.need - used };
+    const total = missing.get(row.id) ?? { ...entry, need: 0, lack: 0 };
+    total.need += entry.need; total.lack += entry.lack; missing.set(row.id, total);
+    return entry;
+  });
+  return includeCovered ? result : [...missing.values()].filter(row => row.lack > 0);
 }
 
 /**
@@ -103,6 +115,8 @@ export async function demand(ctx, sources = ['resident', 'cargo', 'guild'], { in
  * @returns {Promise<void>} 所有可执行建筑和工厂动作处理完毕后返回。
  */
 export async function island(ctx, options) {
+  // 先只读结算空待领工厂的遗留收成，避免上轮已完成的收成永久阻断后续排产。
+  await reconcileFactoryHarvestPending(ctx);
   const survey = await surveyWorld({ request: (name, body, response) => ctx.query(name, body, response) }, ctx.protocol, { config: ctx.config, player: ctx.player });
   const plan = planWorld(survey, { config: ctx.config, allowSpeedUp: options.speedUp });
   const enabledKinds = { collectProduct: options.collect, gainFactory: options.factory.gain, finishUpgrade: options.finish, build: options.build, upgrade: options.upgrade, speedUpUpgrade: options.speedUp };
@@ -116,12 +130,19 @@ export async function island(ctx, options) {
     const row = ctx.rows('BuildingUpgradeCfg').find(r => r.buildingType === type && r.level === level + 1);
     const expenses = ['build', 'upgrade'].includes(step.kind) ? row?.consume : step.body.speedUp ? [['加速器', step.body.speedUp.useNum]] : [];
     if (['build', 'upgrade'].includes(step.kind) && !expenses) { skip(ctx, '缺少建筑消耗配置'); continue; }
-    await mutate(ctx, step.request, step.body, 'OnWaterRequest', s => s.building?.filter(b => ids.includes(b.buildingId)), { label: step.label, response: step.response, expenses });
+    await mutate(ctx, step.request, step.body, 'OnWaterRequest', s => s.building?.filter(b => ids.includes(b.buildingId)), {
+      label: step.label,
+      response: step.response,
+      expenses,
+      // 成品收取读回滞后时只保留该写入的幂等锁，不能中断同一轮的其他挂机模块。
+      continueAfterUncertain: step.kind === 'gainFactory',
+    });
   }
   const f = options.factory;
   await completeHeroRaidOrder(ctx);
-  // 英雄突袭只在当前活动推送有效时贡献缺口；常规需求来源仍按用户已保存的顺序计算。
-  const needs = f.priorityProduce ? await demand(ctx, [...new Set([...f.proposedPriority, 'heroRaid'])], { includeCovered: true }) : [];
+  // 预读募兵供跨午夜策略切换；排产器只在周一纳入额外来源，其他日期保持保存的来源顺序。
+  // 英雄突袭只有当前活动推送有效时才贡献缺口。
+  const needs = f.priorityProduce ? await demand(ctx, [...new Set([...f.proposedPriority, ...(f.mondayGuildPriority ? ['guild'] : []), 'heroRaid'])], { includeCovered: true }) : [];
   const water = await ctx.query('OnWaterRequest');
   for (const building of water.building ?? []) {
     if (!building.factory) continue;
@@ -163,9 +184,85 @@ export async function island(ctx, options) {
   if (f.priorityProduce) await scheduleProduction(ctx, f, needs, options.disabledBuildings);
 }
 
-/** 农田按照实际产量、背包和在田数量计算备货，缺种子只排真实配方。 */
+/**
+ * 从账本键还原待确认种植的地块和作物。
+ *
+ * @param {string} key 待确认请求的幂等键。
+ * @returns {{buildingId: string, productId: string}|null} 可验证的种植目标；格式异常时返回 null。
+ */
+function pendingFarmPlant(key) {
+  const prefix = 'FarmPlantRequest:';
+  if (!key.startsWith(prefix)) return null;
+  try {
+    const [plant] = JSON.parse(key.slice(prefix.length)).args ?? [];
+    return plant?.buildingId && plant?.productId ? plant : null;
+  } catch { return null; }
+}
+
+/**
+ * 找出同一块农田的所有待确认种植，作物不同也不能绕过地块级重复提交保护。
+ *
+ * @param {object} ctx 自动化上下文。
+ * @param {string} buildingId 农田建筑 ID。
+ * @returns {string[]} 同一农田的待确认请求键。
+ */
+function pendingFarmPlantKeys(ctx, buildingId) {
+  return Object.keys(ctx.ledger.pending).filter(key => pendingFarmPlant(key)?.buildingId === buildingId);
+}
+
+/**
+ * 用当前农田状态确认曾超时的种植请求，防止已落地的种植记录永久阻断后续自动化。
+ *
+ * @param {object} ctx 自动化上下文。
+ * @param {object} water 最新 OnWater 快照。
+ * @returns {void} 只结算能由相同地块和作物明确证明的待确认请求。
+ */
+function reconcileFarmPlantPending(ctx, water) {
+  const prefix = 'FarmPlantRequest:';
+  for (const key of Object.keys(ctx.ledger.pending).filter(entry => entry.startsWith(prefix))) {
+    const plant = pendingFarmPlant(key);
+    if (!plant) continue;
+    const farm = water.building?.find(building => building.buildingId === plant.buildingId)?.farm;
+    // 同一地块当前正种植同一作物，才足以证明之前的请求已经被服务端接受。
+    if (farm?.productId === plant.productId && ctx.settlePending(key)) {
+      ctx.record({ request: 'FarmPlantRequest', label: `恢复未确认种植 ${plant.productId}`, status: 'success', verifiedByRead: true });
+    }
+  }
+}
+
+/**
+ * 在有限窗口内轮询农田快照，等待静默种植请求写入服务端状态。
+ *
+ * FarmPlantRequest 没有专用响应；首次 OnWater 读回可能早于异步落库，短暂轮询可以避免把已接受的请求误记为未确认。
+ *
+ * @param {object} ctx 自动化上下文。
+ * @param {string} buildingId 目标农田建筑 ID。
+ * @param {string} productId 目标作物 ID。
+ * @returns {Promise<boolean>} 当前农田明确显示目标作物时返回 true。
+ */
+async function confirmFarmPlant(ctx, buildingId, productId) {
+  const attempts = 5;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (attempt > 0) {
+      // 静默写入后的状态同步有延迟；等待后重读，不重新发送写请求。
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+    const farm = (await ctx.query('OnWaterRequest')).building?.find(building => building.buildingId === buildingId)?.farm;
+    if (farm?.productId === productId) return true;
+  }
+  return false;
+}
+
+/**
+ * 农田按照实际产量、背包和在田数量计算备货，缺种子时只排真实配方。
+ *
+ * @param {object} ctx 自动化上下文。
+ * @param {object} options 已验证的农田模块设置。
+ * @returns {Promise<void>} 收割、种植和加速处理完毕后返回。
+ */
 export async function farm(ctx, options) {
   let water = await ctx.query('OnWaterRequest');
+  reconcileFarmPlantPending(ctx, water);
   const now = ctx.now() / 1000;
   const ripe = (water.building ?? []).filter(b => b.farm?.productId && b.farm.ripeTime <= now);
   if (options.harvest && ripe.length) await ctx.action('FarmHarvestRequest', { buildingId: ripe.map(b => b.buildingId) });
@@ -185,6 +282,12 @@ export async function farm(ctx, options) {
       const crop = crops.find(r => shortages.some(n => n.id === r.id && n.lack > (inField.get(r.id) ?? 0)))
         ?? crops.find(r => Number(options.cropKeepStock[r.id]) > (ctx.stock.get(r.id) ?? 0) + (inField.get(r.id) ?? 0));
       if (!crop) break;
+      const pendingKeys = pendingFarmPlantKeys(ctx, plot.buildingId);
+      if (pendingKeys.length) {
+        // 账本曾以作物区分种植键；此处按地块汇总，避免改作物后对同一块空田再次发包。
+        ctx.record({ request: 'FarmPlantRequest', label: `农田 ${plot.buildingId}`, status: 'uncertain', reason: '该农田上次种植结果未确认，禁止重复提交' });
+        continue;
+      }
       if (!ctx.enough([crop.material])) {
         if (options.seedOnDemand) {
           const recipe = ctx.rows('BuildingProduceCfg').find(r => r.itemId === crop.material[0]);
@@ -208,7 +311,12 @@ export async function farm(ctx, options) {
         }
         skip(ctx, `${crop.id} 缺少种子`); continue;
       }
-      const result = await mutate(ctx, 'FarmPlantRequest', { args: [{ buildingId: plot.buildingId, productId: crop.id }] }, 'OnWaterRequest', s => s.building?.find(b => b.buildingId === plot.buildingId)?.farm, { expenses: [crop.material] });
+      const result = await mutate(ctx, 'FarmPlantRequest', { args: [{ buildingId: plot.buildingId, productId: crop.id }] }, 'OnWaterRequest', s => s.building?.find(b => b.buildingId === plot.buildingId)?.farm, {
+        expenses: [crop.material],
+        confirm: async () => confirmFarmPlant(ctx, plot.buildingId, crop.id),
+        // 种植未知只隔离当前农田；不同地块和后续独立模块仍可继续处理。
+        continueAfterUncertain: true,
+      });
       if (succeeded(result)) inField.set(crop.id, (inField.get(crop.id) ?? 0) + crop.produceNum);
     }
   }
@@ -218,7 +326,7 @@ export async function farm(ctx, options) {
   }
 }
 
-/** 居民订单应用资源、奖励、冷却、农作物和每日上限过滤，并重刷低收益订单。 */
+/** 居民订单先按经验和金币重刷低收益订单，收益达标后再检查材料过滤与库存。 */
 export async function resident(ctx, options) {
   const water = await ctx.query('OnWaterRequest');
   const crops = new Set(ctx.rows('FarmlandPlantCfg').map(r => r.id));
@@ -226,17 +334,27 @@ export async function resident(ctx, options) {
   for (const order of water.workerOrder ?? []) {
     if (order.refreshTime > ctx.now() / 1000 || (options.dailyCap > 0 && done >= options.dailyCap)) continue;
     const needed = costs(order.requirements, ctx.protocol);
-    if (needed.some(([id]) => options.blockedMaterials.includes(id) || (options.skipCropOrders && crops.has(id)))) continue;
-    // 缺料订单保留等待生产，不能为了筛掉低收益而消耗订单名额。
-    if (!ctx.enough(needed)) { skip(ctx, '订单材料不足', `订单 ${order.index}`); continue; }
     const rewards = new Map();
-    for (const [id, quantity] of needed) for (const [resource, num] of ctx.rows('WorkerOrderCfg').find(r => r.itemId === id)?.reward ?? []) rewards.set(resource, (rewards.get(resource) ?? 0) + num * quantity);
-    // 材料齐全但经验或金币未达阈值时，拒单会让服务端生成一条新的居民订单。
-    if ((rewards.get('EXP') ?? 0) < options.minExp || (rewards.get('GOLD') ?? 0) < options.minGold) {
-      await mutate(ctx, 'DenyOrderRequest', { index: order.index }, 'OnWaterRequest', state => state.workerOrder);
+    // 特殊订单的奖励由 textId/times 直接索引，不按普通订单材料重复累加，否则阈值判断会偏离服务端实际奖励。
+    const special = order.isSpecial
+      ? ctx.rows('WorkerSpecOrderCfg').find(row => String(row.times) === String(order.textId))
+      : null;
+    // 特殊订单缺配置时不能套用普通订单奖励，避免误交或误刷新。
+    if (order.isSpecial && !special?.reward?.length) { skip(ctx, '缺少特殊订单实际奖励配置', `订单 ${order.index}`); continue; }
+    if (special) for (const [resource, num] of special.reward ?? []) rewards.set(resource, (rewards.get(resource) ?? 0) + num);
+    else for (const [id, quantity] of needed) for (const [resource, num] of ctx.rows('WorkerOrderCfg').find(r => r.itemId === id)?.reward ?? []) rewards.set(resource, (rewards.get(resource) ?? 0) + num * quantity);
+    // 收益不达标的订单不值得等待备料，必须在材料过滤和库存检查之前拒单重刷。
+    // 基地订单日金币越高比拼积分越多，周四专用门槛替换普通门槛，0 不限制。
+    /** 读到实际提交点的上海星期，避免跨午夜沿用旧门槛。 */
+    const minGold = () => shanghaiWeekday(serverTime(ctx)) === 'thursday' ? options.thursdayMinGold : options.minGold;
+    if ((rewards.get('EXP') ?? 0) < options.minExp || (rewards.get('GOLD') ?? 0) < minGold()) {
+      await mutate(ctx, 'DenyOrderRequest', { index: order.index }, 'OnWaterRequest', state => state.workerOrder, { allowed: () => (rewards.get('EXP') ?? 0) < options.minExp || (rewards.get('GOLD') ?? 0) < minGold() });
       continue;
     }
-    const result = await ctx.action('FinishWorkerOrderRequest', { index: order.index }, { expenses: needed });
+    if (needed.some(([id]) => options.blockedMaterials.includes(id) || (options.skipCropOrders && crops.has(id)))) continue;
+    // 只有收益达标的缺料订单才保留，等待后续生产补齐材料。
+    if (!ctx.enough(needed)) { skip(ctx, '订单材料不足', `订单 ${order.index}`); continue; }
+    const result = await ctx.action('FinishWorkerOrderRequest', { index: order.index }, { expenses: needed, allowed: () => (rewards.get('GOLD') ?? 0) >= minGold() });
     if (succeeded(result)) done++;
   }
   if (options.orderReward) await repeat(ctx, 20, async () => {
@@ -341,6 +459,60 @@ export async function gather(ctx, options) {
   });
 }
 
+/**
+ * 按当天服务端付费次数补足用户的钻石点金目标，并将实际花费归属挂机模块。
+ *
+ * 免费次数不属于此目标；写入前读取 ClickGoldInfo，回包后再次读取 paidTimes，避免单一回包或旧快照导致重复扣钻。
+ *
+ * @param {object} ctx 自动化上下文。
+ * @returns {Promise<void>} 未配置、已达目标、缺少服务端状态或写入结束后返回。
+ */
+async function paidClickGold(ctx) {
+  const target = ctx.settings.spending.clickGoldTimes;
+  if (!Number.isSafeInteger(target) || target <= 0) return;
+
+  await ctx.refreshStock();
+  const info = (await ctx.query('ClickGoldInfoRequest')).info;
+  const paidTimes = Number(info?.paidTimes);
+  const maxPaidTimes = Number(info?.maxPaidTimes);
+  if (!Number.isSafeInteger(paidTimes) || paidTimes < 0 || !Number.isSafeInteger(maxPaidTimes) || maxPaidTimes < paidTimes) {
+    skip(ctx, '服务端未返回有效的付费点金次数或当日上限', '付费点金');
+    return;
+  }
+  if (paidTimes >= target) return;
+
+  const price = Number(ctx.rows('OfflineParamCfg').find(row => row.paramName === '点金价格')?.paramValue);
+  if (!Number.isSafeInteger(price) || price <= 0) {
+    skip(ctx, '缺少有效的付费点金价格', '付费点金');
+    return;
+  }
+
+  const requested = target - paidTimes;
+  const times = Math.min(requested, maxPaidTimes - paidTimes);
+  if (times <= 0) {
+    skip(ctx, `付费点金目标 ${target} 次未完成：服务端当日上限 ${maxPaidTimes} 次已用完`, '付费点金');
+    return;
+  }
+  if (times < requested) {
+    // 目标高于服务端当日上限时，只提交已被服务端明确允许的次数，不能把拒绝当作正常流程。
+    skip(ctx, `付费点金目标 ${target} 次超过服务端当日上限 ${maxPaidTimes} 次，本次最多执行 ${times} 次`, '付费点金');
+  }
+  const ruby = price * times;
+  if (!Number.isSafeInteger(ruby)) {
+    skip(ctx, '付费点金钻石消耗无效', '付费点金');
+    return;
+  }
+  const expectedPaidTimes = paidTimes + times;
+  await ctx.action('ClickGoldRequest', { times, free: false }, {
+    label: `付费点金 x${times}`,
+    ruby,
+    response: 'ClickGoldResponse',
+    confirmAfterResponse: true,
+    // ClickGoldResponse 只能证明协议回包已收到；只有 paidTimes 增长才证明当天次数和扣钻动作已落到服务端状态。
+    confirm: async () => Number((await ctx.query('ClickGoldInfoRequest')).info?.paidTimes) >= expectedPaidTimes,
+  });
+}
+
 /** 挂机领取使用累计时长，等级上限和等级奖励来自当前配置。 */
 export async function afk(ctx, options) {
   const state = await ctx.query('AfkInfoRequest'); const info = state.afkInfo;
@@ -355,4 +527,5 @@ export async function afk(ctx, options) {
     return succeeded(await ctx.action('UpgradeAfkLevelRequest', { level: 1 }, { expenses: [row.consume] }));
   });
   if (options.levelReward) await repeat(ctx, 50, async () => { const current = (await ctx.query('AfkInfoRequest')).afkInfo; const next = ctx.config.nextAfkRewardLevel(current.rewardedLevel); if (!next || next > current.level) return false; return succeeded(await ctx.action('DrawAfkLevelRewardRequest', { level: next })); });
+  await paidClickGold(ctx);
 }
