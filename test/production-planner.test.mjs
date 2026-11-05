@@ -210,3 +210,47 @@ test('factory settings: reject inverted tiers, inverted watermarks, and disabled
   const settings = defaultSettings(); settings.modules.island.factory.fastTimeSecs = 0;
   assert.equal(validateSettings(settings).modules.island.factory.fastTimeSecs, 0);
 });
+
+
+test('Monday guild: shared ingredients and dependencies precede other orders and buffers', () => {
+  const input = scenario({ recipes: [recipe('快料', 60), recipe('募兵货', 7200, [['中料', 1]]), recipe('中料', 500)],
+    stock: [['木材', 1]], needs: [{ id: '快料', need: 1, source: 'resident' }, { id: '募兵货', need: 1, source: 'guild' }] });
+  input.guildPriority = true;
+  const plan = planProduction(input);
+  assert.equal(plan.choices[0].task.productId, '中料');
+  assert.equal(plan.choices[0].task.guildPriority, true);
+  assert.equal(plan.tasks.filter(task => task.ready).length, 1);
+  assert.equal(plan.allocations.filter(row => row.id === '木材' && row.kind === 'stock').reduce((sum, row) => sum + row.num, 0), 1);
+  input.guildPriority = false;
+  assert.equal(planProduction(input).choices[0].task.productId, '快料');
+});
+
+test('Monday guild: guild dependencies can use stock claimed by a later ordinary order; inventory is exclusive', () => {
+  const input = scenario({ recipes: [recipe('募兵货', 7200, [['快料', 1]]), recipe('快料', 60)], stock: [['快料', 1]],
+    needs: [{ id: '快料', need: 1, source: 'resident' }, { id: '募兵货', need: 1, source: 'guild' }], options: demandOnly() });
+  input.guildPriority = true;
+  const plan = planProduction(input);
+  assert.equal(plan.choices[0].task.productId, '募兵货');
+  assert.equal(plan.allocations.filter(row => row.id === '快料' && row.kind === 'stock').length, 1);
+});
+
+test('Monday guild: full automatic queues and protected waiting jobs stay protected', () => {
+  for (const automatic of [false, true]) {
+    const input = scenario({ recipes: [recipe('募兵货', 7200), recipe('快料', 60)], stock: [['木材', 2]], slots: 2,
+      queue: [{ idx: 1, productId: '快料', finishTime: 1100 }, { idx: 2, productId: '快料', finishTime: 0 }],
+      needs: [{ id: '募兵货', need: 1, source: 'guild' }], options: demandOnly(),
+      state: { protectedJobs: { '1食品厂': { idx: 2, productId: '快料' } } } });
+    input.guildPriority = true; input.water.building[0].factory.autoProductId = automatic ? '快料' : '';
+    assert.equal(planProduction(input).choices.length, 0);
+  }
+});
+
+
+test('Monday guild: partially supplied guild recipe reserves ingredients from ordinary ready tasks', () => {
+  const input = scenario({ recipes: [recipe('募兵货', 7200, [['木材', 1], ['铁矿', 1]]), recipe('普通货', 60)],
+    stock: [['木材', 1]], needs: [{ id: '普通货', need: 1, source: 'resident' }, { id: '募兵货', need: 1, source: 'guild' }], options: demandOnly() });
+  input.guildPriority = true;
+  assert.equal(planProduction(input).choices.length, 0, 'wood stays reserved for the incomplete guild recipe');
+  input.guildPriority = false;
+  assert.equal(planProduction(input).choices[0].task.productId, '普通货', 'ordinary admission policy resumes on other days');
+});

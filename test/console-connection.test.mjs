@@ -13,7 +13,7 @@ const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-console-connection-'
 process.env.CW_DATA_DIR = directory;
 const { saveStore, upsertAccount } = await import('../src/accounts.mjs');
 const { defaultSettings, saveSettings } = await import('../src/automation/settings.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { automationEntryLogLevel, createConsole, parseGiftCodes } = await import('../src/server.mjs');
 after(() => fs.rmSync(directory, { recursive: true, force: true }));
 
 /** 创建独立控制台及两个假账号，便于验证断开状态不会串到其他账号。 */
@@ -38,7 +38,7 @@ async function consoleFixture(t) {
     return { status: response.status, value: await response.json() };
   }
   await api('/api/accounts');
-  return { app, api };
+  return { app, api, base };
 }
 
 /**
@@ -64,6 +64,207 @@ function mockGateway(t, login = async () => ({ result: 0, initSeqNo: 1, playerIn
   t.mock.method(GameClient.prototype, 'request', request);
   return connecting;
 }
+
+/** 已确认的主线战败是正常业务结果，其他失败状态仍须以错误样式展示。 */
+test('console: mainline loss uses the normal log style', () => {
+  assert.equal(automationEntryLogLevel({ request: 'ChallengeStageRequest', status: 'failed' }), 'info');
+  assert.equal(automationEntryLogLevel({ request: 'TrialRaidChallengeRequest', status: 'failed' }), 'info');
+  assert.equal(automationEntryLogLevel({ request: 'TrialRaidChallengeRequest', status: 'failed', reason: '试炼进度读回失败' }), 'error');
+  assert.equal(automationEntryLogLevel({ request: 'ChallengeStageRequest', status: 'rejected' }), 'error');
+});
+
+/** 兑换码文本只能去除分隔空白和重复项，不能更改服务端可能区分的大小写。 */
+test('console: batch gift code parser preserves order and case', () => {
+  assert.deepEqual(parseGiftCodes(' A\nB, A， b\r\n ,C '), ['A', 'B', 'b', 'C']);
+});
+
+/** 在线账号必须按账号、兑换码顺序发送明确回包请求，重复码在服务端解析阶段即排除。 */
+test('console: batch gift codes redeem online accounts in account-code order', async t => {
+  const requests = [];
+  mockGateway(t, undefined, async function (name, body, response) {
+    if (name === 'GotGiftCodeRequest') {
+      requests.push({ client: this, body, response });
+      return { reward: { asset: [{ type: 0, id: '木材', num: 2 }] } };
+    }
+    return {};
+  });
+  const { app, api } = await consoleFixture(t);
+  assert.equal((await api('/api/connect', {}, 'connection-a')).status, 200);
+  assert.equal((await api('/api/connect', {}, 'connection-b')).status, 200);
+  assert.equal(app.sessions.get('connection-a').client.connected, true);
+  assert.equal(app.sessions.get('connection-b').client.connected, true);
+  assert.equal(app.sessions.get('connection-a').busy, null);
+  assert.equal(app.sessions.get('connection-b').busy, null);
+
+  const started = await api('/api/gift-codes/redeem', { confirm: true, codes: 'FIRST, SECOND\nFIRST' });
+  assert.equal(started.status, 200);
+  assert.deepEqual(started.value.codes, ['FIRST', 'SECOND']);
+  // 首次奖励摘要会加载本地配置表；允许冷缓存解析完成，仍验证最终的严格账号、兑换码顺序。
+  await waitFor(() => requests.length === 4, () => '批量兑换未完成两个在线账号的顺序请求：' + JSON.stringify(requests), 300);
+
+  assert.deepEqual(requests, [
+    { client: app.sessions.get('connection-a').client, body: { giftCode: 'FIRST' }, response: 'GotRewardResponse' },
+    { client: app.sessions.get('connection-a').client, body: { giftCode: 'SECOND' }, response: 'GotRewardResponse' },
+    { client: app.sessions.get('connection-b').client, body: { giftCode: 'FIRST' }, response: 'GotRewardResponse' },
+    { client: app.sessions.get('connection-b').client, body: { giftCode: 'SECOND' }, response: 'GotRewardResponse' },
+  ]);
+  assert.equal(app.sessions.get('connection-a').busy, null);
+  assert.equal(app.sessions.get('connection-b').busy, null);
+});
+
+/** 离线账号只能写明未调用，批次不能为了兑换码隐式使用保存的凭证重新登录。 */
+test('console: batch gift codes skip offline accounts without connecting them', async t => {
+  const login = mockGateway(t, undefined, async function (name) {
+    if (name === 'GotGiftCodeRequest') return { reward: { asset: [] } };
+    return {};
+  });
+  const { api } = await consoleFixture(t);
+  assert.equal((await api('/api/connect', {}, 'connection-a')).status, 200);
+  const started = await api('/api/gift-codes/redeem', { confirm: true, codes: 'ONLINE-ONLY' });
+  assert.equal(started.status, 200);
+  await new Promise(resolve => setTimeout(resolve, 25));
+  assert.equal(login.mock.callCount(), 1);
+});
+
+/** 忙碌账号的批次保留全局单活锁，释放原业务锁后才可发送兑换请求。 */
+test('console: batch gift codes wait for a busy account and reject a second batch', async t => {
+  const requests = [];
+  mockGateway(t, undefined, async function (name, body) {
+    if (name === 'GotGiftCodeRequest') requests.push(body.giftCode);
+    return { reward: { asset: [] } };
+  });
+  const { app, api } = await consoleFixture(t);
+  assert.equal((await api('/api/connect', {}, 'connection-a')).status, 200);
+  const session = app.sessions.get('connection-a');
+  session.busy = 'POST /api/tasks/run';
+
+  assert.equal((await api('/api/gift-codes/redeem', { confirm: true, codes: 'WAIT-ME' })).status, 200);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.deepEqual(requests, []);
+  const duplicate = await api('/api/gift-codes/redeem', { confirm: true, codes: 'SECOND-BATCH' });
+  assert.equal(duplicate.status, 400);
+  assert.match(duplicate.value.error, /正在执行/);
+
+  session.busy = null;
+  await waitFor(() => requests.length === 1, '原业务锁释放后批量兑换没有继续');
+});
+
+/** Prompt 拒绝是单码业务结果；仍在线时必须继续处理后续兑换码。 */
+test('console: batch gift codes continue after a server prompt rejection', async t => {
+  const requests = [];
+  mockGateway(t, undefined, async function (name, body) {
+    if (name !== 'GotGiftCodeRequest') return {};
+    requests.push(body.giftCode);
+    if (body.giftCode === 'REJECTED') {
+      // 客户端只在 PromptResponse 已明确归属时附加 prompt；这与超时等未知终态不同。
+      const error = new Error('server prompt: invalid gift code');
+      error.prompt = { prompt: 1 };
+      throw error;
+    }
+    return { reward: { asset: [] } };
+  });
+  const { api } = await consoleFixture(t);
+  assert.equal((await api('/api/connect', {}, 'connection-a')).status, 200);
+  assert.equal((await api('/api/gift-codes/redeem', { confirm: true, codes: 'REJECTED, NEXT' })).status, 200);
+  await waitFor(() => requests.length === 2, 'Prompt 拒绝后没有继续下一兑换码');
+  assert.deepEqual(requests, ['REJECTED', 'NEXT']);
+});
+
+/** 超时后响应可能迟到且无请求 ID；当前账号必须停止，避免把旧回包归属给下一兑换码。 */
+test('console: batch gift codes stop the account after a response timeout', async t => {
+  const requests = [];
+  mockGateway(t, undefined, async function (name, body) {
+    if (name !== 'GotGiftCodeRequest') return {};
+    requests.push(body.giftCode);
+    if (body.giftCode === 'TIMEOUT') throw new Error('timeout waiting for GotRewardResponse (sent GotGiftCodeRequest)');
+    return { reward: { asset: [] } };
+  });
+  const { api } = await consoleFixture(t);
+  assert.equal((await api('/api/connect', {}, 'connection-a')).status, 200);
+  assert.equal((await api('/api/gift-codes/redeem', { confirm: true, codes: 'TIMEOUT, NEXT' })).status, 200);
+  await waitFor(() => requests.length === 1, '超时兑换码没有发出');
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.deepEqual(requests, ['TIMEOUT']);
+});
+
+/** 连接中止后必须停止该账号剩余码，同时继续处理下一个仍在线账号。 */
+test('console: batch gift codes stop an account after its connection fails', async t => {
+  const requests = [];
+  let brokenClient = null;
+  mockGateway(t, undefined, async function (name, body) {
+    if (name !== 'GotGiftCodeRequest') return {};
+    requests.push({ client: this, code: body.giftCode });
+    if (!brokenClient) {
+      brokenClient = this;
+      this.setState('STOPPED');
+      throw new Error('socket closed');
+    }
+    return { reward: { asset: [] } };
+  });
+  const { app, api } = await consoleFixture(t);
+  assert.equal((await api('/api/connect', {}, 'connection-a')).status, 200);
+  assert.equal((await api('/api/connect', {}, 'connection-b')).status, 200);
+  assert.equal((await api('/api/gift-codes/redeem', { confirm: true, codes: 'BREAK, SHOULD-NOT-SEND' })).status, 200);
+  await waitFor(() => requests.length === 3, '连接故障后没有继续处理下一在线账号');
+  assert.deepEqual(requests, [
+    { client: app.sessions.get('connection-a').client, code: 'BREAK' },
+    { client: app.sessions.get('connection-b').client, code: 'BREAK' },
+    { client: app.sessions.get('connection-b').client, code: 'SHOULD-NOT-SEND' },
+  ]);
+});
+
+/** 跨账号批次以全局 SSE 广播，当前账号页也必须收到其他账号的逐条兑换结果。 */
+test('console: batch gift code events broadcast all account results through SSE', async t => {
+  mockGateway(t, undefined, async name => name === 'GotGiftCodeRequest' ? { reward: { asset: [] } } : {});
+  const { api, base } = await consoleFixture(t);
+  assert.equal((await api('/api/connect', {}, 'connection-a')).status, 200);
+  assert.equal((await api('/api/connect', {}, 'connection-b')).status, 200);
+  let stream;
+  let events = '';
+  await new Promise((resolve, reject) => {
+    const request = http.get(base + '/api/events?account=connection-a', response => {
+      stream = response;
+      response.setEncoding('utf8');
+      response.on('data', chunk => { events += chunk; });
+      resolve();
+    });
+    request.on('error', reject);
+  });
+  t.after(() => stream?.destroy());
+
+  assert.equal((await api('/api/gift-codes/redeem', { confirm: true, codes: 'SSE-CODE' })).status, 200);
+  await waitFor(() => events.includes('"accountId":"connection-b"') && events.includes('"phase":"summary"'),
+    () => 'SSE 未广播其他账号的兑换结果或汇总：' + events, 150);
+});
+
+/** 设置页读取海盗次数只能复用已连接会话，不能为展示数据隐式登录游戏。 */
+test('console: pirate sweep status reports the current role without implicit login', async t => {
+  const login = mockGateway(t, async () => ({ result: 0, initSeqNo: 1, playerInfo: { playerId: '1', nickname: '离线角色', level: 1, vip: { vipLevel: 12 } } }), async name => name === 'AllPirateRequest' ? { sweepTimes: 4 } : {});
+  const { api } = await consoleFixture(t);
+  const disconnected = await api('/api/automation/pirate-sweep-status');
+  assert.equal(disconnected.status, 200);
+  assert.deepEqual(disconnected.value, { connected: false });
+  assert.equal(login.mock.callCount(), 0);
+
+  assert.equal((await api('/api/connect', {})).status, 200);
+  const connected = await api('/api/automation/pirate-sweep-status');
+  assert.equal(connected.status, 200);
+  assert.deepEqual(connected.value, { connected: true, dailyLimit: 30, used: 4, remaining: 26 });
+});
+
+/** 在线保存海盗目标时必须用当前角色 VIP 上限拒绝超额设置。 */
+test('console: pirate sweep settings enforce the connected role daily cap', async t => {
+  const login = mockGateway(t, async () => ({ result: 0, initSeqNo: 1, playerInfo: { playerId: '1', nickname: 'VIP12角色', level: 1, vip: { vipLevel: 12 } } }), async name => name === 'AllPirateRequest' ? { sweepTimes: 0 } : {});
+  const { api } = await consoleFixture(t);
+  assert.equal((await api('/api/connect', {})).status, 200);
+  const settings = defaultSettings();
+  settings.modules.world.pirate.dailySweepLimit = 31;
+  settings.modules.world.pirate.sweepTypes = [{ type: 1, times: 31 }];
+  const rejected = await api('/api/automation/settings', { confirm: true, settings });
+  assert.equal(rejected.status, 400);
+  assert.match(rejected.value.error, /当前角色上限 30/);
+  assert.equal(login.mock.callCount(), 1);
+});
 
 /**
  * 启动只接收本测试通知的本地企微 Webhook，避免访问真实机器人地址。
@@ -153,39 +354,53 @@ test('console: disconnect during login prevents a late reply from restoring the 
   assert.equal((await api('/api/overview')).value.status.connected, false);
 });
 
-/** 页面刷新留下旧总览采集时，新页面应加入同一条只读结果而不是收到忙碌错误。 */
-test('console: concurrent overview requests share the in-flight collection', async t => {
+/** 总览接口只读账号缓存，连续请求不得再次向游戏发送整组查询。 */
+test('console: concurrent overview requests read the in-memory cache', async t => {
   mockGateway(t);
   const { app, api } = await consoleFixture(t);
   assert.equal((await api('/api/connect', {})).status, 200);
   const session = app.sessions.get('connection-a');
-  let releaseFirstQuery;
-  let firstQueryStarted;
-  const firstQuery = new Promise(resolve => { releaseFirstQuery = resolve; });
-  const queryStarted = new Promise(resolve => { firstQueryStarted = resolve; });
+  await waitFor(() => !session.cache.syncing && !session.cache.initialSync, '登录后的总览缓存没有完成首次同步');
   let queryCount = 0;
-  t.mock.method(GameClient.prototype, 'request', async () => {
-    queryCount += 1;
-    if (queryCount === 1) {
-      firstQueryStarted();
-      await firstQuery;
-    }
-    return {};
-  });
-
+  t.mock.method(GameClient.prototype, 'request', async () => { queryCount += 1; return {}; });
   const first = api('/api/overview');
-  await queryStarted;
   const second = api('/api/overview');
-  await new Promise(resolve => setTimeout(resolve, 20));
-  assert.equal(session.busy, 'GET /api/overview');
-  releaseFirstQuery();
-
   const [firstResponse, secondResponse] = await Promise.all([first, second]);
   assert.equal(firstResponse.status, 200);
   assert.equal(secondResponse.status, 200);
-  assert.equal(session.busy, null);
-  assert.equal(session.overviewPromise, null);
-  assert.equal(queryCount, 49);
+  assert.equal(queryCount, 0);
+  assert.deepEqual(firstResponse.value.cache, secondResponse.value.cache);
+});
+
+/** 空闲定时同步失败时保留农田旧快照，并把生产分类标记为过期和报错。 */
+test('console: idle cache refresh preserves the last trusted category value on failure', async t => {
+  let failFarm = false;
+  let refresh;
+  mockGateway(t, undefined, async function (name) {
+    if (failFarm && name === 'OnWaterRequest') throw new Error('农田状态读取失败');
+    if (name === 'OnWaterRequest') return { building: [{ buildingId: '1农田', farm: { productId: '小麦', ripeTime: 123 } }] };
+    return {};
+  });
+  t.mock.method(globalThis, 'setInterval', callback => {
+    refresh = callback;
+    return { unref() {} };
+  });
+  t.mock.method(globalThis, 'clearInterval', () => {});
+  const { app, api } = await consoleFixture(t);
+  assert.equal((await api('/api/connect', {})).status, 200);
+  const session = app.sessions.get('connection-a');
+  await waitFor(() => typeof refresh === 'function' && !session.cache.syncing && !session.cache.initialSync, '空闲总览定时器没有启动');
+  const before = await api('/api/overview');
+  const productionBefore = before.value.production;
+  const categoryBefore = before.value.cache.categories.production;
+
+  failFarm = true;
+  refresh();
+  await waitFor(() => !session.cache.syncing && session.cache.categories.get('production')?.stale === true, '农田分类失败后没有标记过期');
+  const after = await api('/api/overview');
+  assert.deepEqual(after.value.production, productionBefore);
+  assert.equal(after.value.cache.categories.production.updatedAt, categoryBefore.updatedAt);
+  assert.match(after.value.cache.categories.production.error, /农田状态读取失败/);
 });
 
 /** 只读总览在挂机循环运行期间仍可查询，避免手动刷新被写操作保护拦截。 */
@@ -193,12 +408,70 @@ test('console: overview remains readable while the loop is running', async t => 
   mockGateway(t);
   const { app, api } = await consoleFixture(t);
   assert.equal((await api('/api/connect', {})).status, 200);
+  await waitFor(() => !app.sessions.get('connection-a').cache.syncing, '核心总览缓存没有完成同步');
   const session = app.sessions.get('connection-a');
   session.loop.running = true;
   const response = await api('/api/overview');
   assert.equal(response.status, 200);
   assert.equal(response.value.status.connected, true);
   session.loop.running = false;
+});
+
+/** 总览读取万吨货轮后只为当前目标查询一次占有榜，并匹配当前角色名次。 */
+test('console: overview includes merchant ship reward and current role rank', async t => {
+  mockGateway(t,
+    async () => ({ result: 0, initSeqNo: 1, playerInfo: { playerId: '42', nickname: '万吨角色', level: 10 } }),
+    async function (name, body) {
+      if (name === 'TreasureLootStatsRequest') return { todayRewardTimes: 3 };
+      if (name === 'TreasureLootListRequest') return { treasure: [{ uid: 77, color: 5, reward: { asset: [{ type: 0, id: '高级宝箱', num: 2 }] } }] };
+      if (name === 'TreasureLootRankRequest') {
+        assert.deepEqual(body, { uid: 77 });
+        return { items: [{ playerId: '42', rank: 4, rewardTimes: 1 }] };
+      }
+      return {};
+    });
+  const { app, api } = await consoleFixture(t);
+  assert.equal((await api('/api/connect', {})).status, 200);
+  await waitFor(() => !app.sessions.get('connection-a').cache.syncing, '核心总览缓存没有完成同步');
+  const overview = await api('/api/overview');
+  assert.equal(overview.status, 200);
+  assert.equal(overview.value.merchantShip.remainingRewardTimes, 3);
+  assert.equal(overview.value.merchantShip.uid, 77);
+  assert.equal(overview.value.merchantShip.rank, 4);
+  assert.deepEqual(overview.value.merchantShip.reward.map(({ id, num }) => ({ id, num })), [{ id: '高级宝箱', num: 2 }]);
+});
+
+/** 没有万吨货轮时总览仍返回次数，且不会发起占有榜查询。 */
+test('console: overview keeps merchant reward count without an active ship', async t => {
+  const rankRequests = [];
+  mockGateway(t, undefined, async function (name) {
+    if (name === 'TreasureLootStatsRequest') return { todayRewardTimes: 1 };
+    if (name === 'TreasureLootListRequest') return { treasure: [{ uid: 78, color: 4 }] };
+    if (name === 'TreasureLootRankRequest') rankRequests.push(name);
+    return {};
+  });
+  const { app, api } = await consoleFixture(t);
+  assert.equal((await api('/api/connect', {})).status, 200);
+  await waitFor(() => !app.sessions.get('connection-a').cache.syncing, '总览缓存没有完成首次同步');
+  const overview = await api('/api/overview');
+  assert.equal(overview.value.merchantShip.remainingRewardTimes, 1);
+  assert.equal(overview.value.merchantShip.uid, null);
+  assert.deepEqual(rankRequests, []);
+});
+
+/** 总览可以读取忙碌账号，但不能接管业务锁或在总览结束时提前释放它。 */
+test('console: overview preserves an active operation busy lock', async t => {
+  mockGateway(t);
+  const { app, api } = await consoleFixture(t);
+  assert.equal((await api('/api/connect', {})).status, 200);
+  await waitFor(() => !app.sessions.get('connection-a').cache.syncing, '核心总览缓存没有完成同步');
+  const session = app.sessions.get('connection-a');
+  session.busy = 'POST /api/tasks/run';
+  const response = await api('/api/overview');
+  assert.equal(response.status, 200);
+  assert.equal(response.value.status.connected, true);
+  assert.equal(session.busy, 'POST /api/tasks/run');
+  session.busy = null;
 });
 
 /**
@@ -245,6 +518,7 @@ function pageFixture({ looping = false } = {}) {
   const calls = [];
   const clipboardWrites = [];
   const notificationRequests = [];
+  const giftRedeemRequests = [];
   let notifications = { wecom: { enabled: false, webhook: '' } };
   const windowListeners = new Map();
   const window = {
@@ -279,6 +553,11 @@ function pageFixture({ looping = false } = {}) {
         data = { notifications };
       }
       else if (route === '/api/accounts/notifications') data = { notifications };
+      else if (route === '/api/gift-codes/redeem') {
+        const payload = JSON.parse(options.body);
+        giftRedeemRequests.push(payload);
+        data = { started: true, batchId: 'page-gift', codes: ['CODE-A', 'CODE-B'] };
+      }
       else if (route === '/api/overview') data = { status, resources: [{ name: '金币', amount: 123 }], items: { top: [] }, heroes: { list: [] } };
       else data = { ok: true };
       return { ok: true, json: async () => data };
@@ -288,7 +567,7 @@ function pageFixture({ looping = false } = {}) {
   // 保留实际事件和轮询函数，仅移除启动调用，避免异步 boot 干扰用例顺序。
   vm.runInContext(script.slice(0, script.lastIndexOf('boot();')), context);
   vm.runInContext("current = 'page-a'", context);
-  return { context, calls, node, window, clipboardWrites, notificationRequests, getNotifications: () => notifications };
+  return { context, calls, node, window, clipboardWrites, notificationRequests, giftRedeemRequests, getNotifications: () => notifications };
 }
 
 /** 页面断开后不再采集总览；再次连接立即更新缓存、按钮和总览。 */
@@ -341,11 +620,69 @@ test('console page: overview refresh button requests current overview', async ()
   assert.equal(node('overview-refresh').textContent, '刷新数据');
 });
 
-/** 手动刷新在挂机状态下必须把接口返回的数据写入总览，而不是被轮询保护提前跳过。 */
+/** 自动和手动总览刷新在挂机状态下都必须把接口返回的数据写入总览。 */
 test('console page: manual overview refresh renders data while looping', async () => {
   const { context, calls, node } = pageFixture({ looping: true });
   await vm.runInContext('loadAccounts(false)', context);
   assert.equal(node('overview-refresh').disabled, false);
+
+  await vm.runInContext('refreshOverview()', context);
+  await node('overview-refresh').onclick();
+
+  assert.equal(calls.filter(route => route === '/api/overview').length, 2);
+  assert.ok(node('res').children.length >= 1);
+  assert.match(node('res').innerText, /金币/);
+});
+
+/** 生产面板传给通用表格的图文项必须使用 name，不能泄露未被渲染的协议字段 id。 */
+test('console page: production panel passes product names to the table renderer', () => {
+  const { context } = pageFixture();
+  let farmRows = null;
+  let factoryRows = null;
+  // 该用例只核对生产数据到表格的字段契约，不依赖完整浏览器模板的 DOM 实现。
+  context.chip = () => context.document.createElement('span');
+  context.table = (headers, rows) => {
+    if (headers[0] === '农田') farmRows = rows;
+    if (headers[0] === '工厂') factoryRows = rows;
+    return context.document.createElement('table');
+  };
+
+  vm.runInContext(`renderOverviewProduction({ production: { farms: [
+    { buildingId: '1农田', productId: '小麦', icon: null, ripeTime: 1 },
+  ], factories: [
+    { buildingId: '1食品厂', queue: [{ productId: '香煎鱼排', icon: null, finishTime: 1 }], autoProductId: null, finished: [] },
+    { buildingId: '1海水厂', queue: [], autoProductId: '淡水', autoIcon: null, finished: [] },
+  ] } })`, context);
+
+  assert.equal(farmRows[0][1].cells[0].name, '小麦');
+  assert.equal(factoryRows[0][1].cells[0].name, '香煎鱼排');
+  assert.equal(factoryRows[1][1].cells[0].name, '自动：淡水');
+});
+
+/** 万吨货轮卡片按有船和无船两种状态显示次数、奖品、排名或空状态提示。 */
+test('console page: merchant ship panel renders active and absent states', () => {
+  const active = pageFixture();
+  const { context, node } = active;
+  vm.runInContext(`renderOverviewMerchantShip({ merchantShip: {
+    remainingRewardTimes: 2, uid: 77, reward: [{ name: '高级宝箱', num: 3 }], rank: 5,
+  } })`, context);
+  assert.match(node('overview-merchant-ship').innerText, /今日剩余领奖次数/);
+  assert.match(node('overview-merchant-ship').innerText, /高级宝箱 ×3/);
+  assert.match(node('overview-merchant-ship').innerText, /第 5 名/);
+
+  const absent = pageFixture();
+  vm.runInContext(`renderOverviewMerchantShip({ merchantShip: {
+    remainingRewardTimes: 1, uid: null, reward: [], rank: null,
+  } })`, absent.context);
+  assert.match(absent.node('overview-merchant-ship').innerText, /当前不存在万吨货轮/);
+  assert.doesNotMatch(absent.node('overview-merchant-ship').innerText, /当前奖品/);
+});
+
+/** 手动刷新不能因自动化状态轮询或已有业务请求计数而丢弃服务端返回的总览。 */
+test('console page: manual overview refresh waits through page business activity', async () => {
+  const { context, calls, node } = pageFixture({ looping: true });
+  await vm.runInContext('loadAccounts(false)', context);
+  vm.runInContext("automationRunning = true; activeBusinessRequests = 1", context);
 
   await node('overview-refresh').onclick();
 
@@ -467,6 +804,24 @@ test('console page: account tab saves the current WeCom notification settings', 
   assert.equal(node('wecom-hint').textContent, '企微通知已保存');
 });
 
+/** 页面提交必须带确认标记，并将 SSE 的逐条结果和汇总同步到账号页结果区。 */
+test('console page: batch gift code submit and realtime result panel stay in sync', async () => {
+  const { context, giftRedeemRequests, node } = pageFixture();
+  node('batch-redeem-codes').value = ' CODE-A\nCODE-B ';
+  await vm.runInContext("submitGiftCodeBatch(document.getElementById('batch-redeem-codes').value)", context);
+
+  assert.deepEqual(giftRedeemRequests, [{ confirm: true, codes: ' CODE-A\nCODE-B ' }]);
+  assert.equal(node('batch-redeem-run').disabled, true);
+  vm.runInContext("appendLog({ id: 801, t: 0, level: 'info', message: '批量兑换 · 开始', extra: { batchRedeem: { id: 'page-gift', phase: 'start' } } })", context);
+  vm.runInContext("appendLog({ id: 802, t: 1, level: 'info', message: '兑换码 CODE-A 兑换成功：木材 × 2', extra: { batchRedeem: { id: 'page-gift', phase: 'result', status: 'success', accountTitle: '账号 A', code: 'CODE-A', rewards: '木材 × 2' } } })", context);
+  vm.runInContext("appendLog({ id: 803, t: 2, level: 'info', message: '本批结束：在线 1 个，离线 0 个，成功 1 次，失败 0 次', extra: { batchRedeem: { id: 'page-gift', phase: 'summary', succeeded: 1, failed: 0, offline: 0 } } })", context);
+
+  assert.equal(node('batch-redeem-results').children.length, 1);
+  assert.match(node('batch-redeem-results').children[0].innerText, /CODE-A/);
+  assert.equal(node('batch-redeem-summary').textContent, '成功 1 · 失败 0 · 离线 0');
+  assert.equal(node('batch-redeem-run').disabled, false);
+});
+
 /** 账号通知接口应按账号保存，且只更新企微通知字段。 */
 test('console: account WeCom notification endpoint keeps settings isolated', async t => {
   const { api } = await consoleFixture(t);
@@ -481,12 +836,12 @@ test('console: account WeCom notification endpoint keeps settings isolated', asy
 });
 
 /** 等待后台重连任务完成，超时后给出明确的异步恢复失败信号。 */
-async function waitFor(predicate, message) {
-  for (let attempt = 0; attempt < 50; attempt += 1) {
+async function waitFor(predicate, message, attempts = 50) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     if (predicate()) return;
     await new Promise(resolve => setTimeout(resolve, 10));
   }
-  assert.fail(message);
+  assert.fail(typeof message === 'function' ? message() : message);
 }
 
 /** 单次自动化因业务错误结束时，已启用的企微机器人必须收到包含原因的停止通知。 */

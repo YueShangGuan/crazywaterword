@@ -14,10 +14,13 @@ const equivalents = {
 };
 // 当前协议存在异名响应和同请求的不同玩法响应，必须显式列出并一并往返核对。
 const responseNames = {
+  // 跨服积分宝箱响应与请求不共享前缀，以抓包验证的 GotRewardResponse 为准。
+  GetDailyRewardRequest: ['GotRewardResponse'],
   GainBigFishRequest: ['GainBigResponse'],
   GotTradeReportRequest: ['GotTTradeReportResponse'],
   HeroExclusiveLevelUpRequest: ['HeroExclusiveNextUpResponse'],
   HeroExclusiveStarUpRequest: ['HeroExclusiveNextUpResponse'],
+  LeagueFormationSequenceRequest: ['LeagueFormationResponse'],
   SetAssembleCityRequest: ['SCAssembleCity'],
   SnapStartRequest: ['SnapMatchStateResponse'],
   SnapGiveUpRequest: ['SnapMatchStateResponse'],
@@ -60,7 +63,7 @@ function sample(name, depth = 0) {
   return body;
 }
 
-/** 逐项记录 216 请求字段、响应和目标执行入口，并用当前生成器完成编码/解码验证。 */
+/** 逐项记录已审查请求字段、响应和目标执行入口，并用当前生成器完成编码/解码验证。 */
 export function audit() {
   // 参考范围固定在已审查并提交的索引中；新克隆不应依赖开发者的相邻仓库才能离线验证。
   const manifest = JSON.parse(fs.readFileSync(path.join(root, 'docs/automation-protocol.json'), 'utf8'));
@@ -80,7 +83,7 @@ export function audit() {
     assert.ok(implementation?.length, `缺少执行入口 ${request}`);
     entries.push({ request, reference: evidence, implementation, equivalent: equivalent?.reason, fields: fields(request), response: responses[0] ?? null, responses });
   }
-  assert.equal(entries.length, 216, '参考请求清单发生变化，需要重新审查功能范围');
+  assert.equal(entries.length, 224, '参考请求清单发生变化，需要重新审查功能范围');
   return entries;
 }
 
