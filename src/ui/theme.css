@@ -40,6 +40,22 @@ header .connection #connect:disabled:has(+ #disconnect:enabled), header .connect
 .log-filter { width:fit-content; padding:3px; gap:2px; border-radius:9px; background:#edf3f2 }
 .log-filter [data-slot=button] { border:0; background:transparent; color:#4a6266; height:28px; font-size:12px; border-radius:6px }
 .log-filter [aria-pressed=true] { background:white; color:#155960; box-shadow:0 1px 3px #17485124 }
+/* 兑换码一次作用于多个账号，输入和逐条结果并列可避免在日志中来回查找。 */
+.batch-redeem-layout { display:grid; grid-template-columns:minmax(0,1.1fr) minmax(260px,.9fr); gap:18px; align-items:start }
+.batch-redeem-form { display:grid; gap:9px }
+.batch-redeem-codes { width:100%; min-height:116px; resize:vertical; box-sizing:border-box; border:1px solid #ccd9d9; border-radius:8px; background:#fff; color:#163943; padding:10px 12px; font:500 13px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace; outline:none }
+.batch-redeem-codes::placeholder { color:#6d8588 }
+.batch-redeem-codes:focus { border-color:#198397; box-shadow:0 0 0 3px #19839722 }
+.batch-redeem-note { margin:0; line-height:1.55 }
+.batch-redeem-feed { min-width:0; border:1px solid #d7e5e2; border-radius:10px; background:#f7fbfa; padding:10px }
+.batch-redeem-feed-heading { display:flex; justify-content:space-between; gap:12px; color:#27545a; font-size:13px; font-weight:650; padding:1px 2px 8px }
+.batch-redeem-results { display:grid; gap:6px; max-height:222px; overflow:auto; color:#49656c; font-size:12px; line-height:1.45 }
+.batch-redeem-result { display:grid; grid-template-columns:minmax(74px,auto) 1fr; gap:3px 10px; align-items:baseline; border-left:3px solid #7ba9a4; border-radius:4px; background:#fff; padding:7px 8px }
+.batch-redeem-result.success { border-left-color:#198397 }
+.batch-redeem-result.failed { border-left-color:#ad5a50 }
+.batch-redeem-result.waiting,.batch-redeem-result.offline,.batch-redeem-result.stopped { border-left-color:#b38232 }
+.batch-redeem-result .account { color:#28565b; font-weight:650; overflow-wrap:anywhere }
+.batch-redeem-result .detail { grid-column:2; overflow-wrap:anywhere }
 /* 多栏流式布局让高内容状态卡独立增长，不再把同一行的英雄等面板拉到相同高度。 */
 #tab-overview .overview-layout { display:grid; gap:16px }
 #tab-overview .overview-masonry > * { break-inside:avoid; margin-block-end:16px; min-width:0 }
@@ -47,6 +63,8 @@ header .connection #connect:disabled:has(+ #disconnect:enabled), header .connect
 @media(max-width:640px) {
   header [data-tab] { min-height:42px; padding-inline:9px }
   [data-slot=card-header], [data-slot=card-content] { padding-inline:15px }
+  .batch-redeem-layout { grid-template-columns:minmax(0,1fr) }
+  .batch-redeem-results { max-height:190px }
 }
 @media(prefers-reduced-motion:reduce) { [data-slot=button], [data-slot=switch-thumb] { transition:none } }
 [data-slot=table-cell] { white-space:normal }

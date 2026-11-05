@@ -4,6 +4,7 @@ export const operationLabels = {
   '/api/accounts/credential': '读取账号凭证', '/api/accounts/active': '切换账号',
   '/api/accounts/label': '修改账号备注', '/api/accounts/remove': '删除账号',
   '/api/accounts/pause': '切换账号托管状态',
+  '/api/gift-codes/redeem': '批量兑换码',
   '/api/connect': '连接游戏', '/api/disconnect': '断开连接',
   '/api/capture': '读取采集状态', '/api/capture/start': '开始采集账号', '/api/capture/stop': '停止采集',
   '/api/overview': '刷新总览', '/api/heroes': '查看英雄', '/api/heroes/run': '执行英雄养成',

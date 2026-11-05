@@ -22,6 +22,8 @@ export function automationFormOptions(config) {
     heroes: rows('HeroCfg').filter(row => row.type === '英雄').map(row => ({ value: row.id, label: row.name })),
     breedSpecies: rows('PetSpeciesCfg').map(row => ({ value: row.name, label: row.name })),
     items: [...itemNames].map(([value, label]) => ({ value, label })),
+    // 万吨货轮协议的 type=0 只会返回 ItemCfg 道具；资源币种不作为可配置的匹配材料。
+    rewardMaterials: unique(rows('ItemCfg').map(row => ({ value: row.id, label: row.show_name ?? row.id }))),
     qualities: colors.map(row => ({ value: row.quality, label: row.title })),
     colors: colors.map(row => ({ value: row.quality_index, label: row.title })),
     fleets: rows('BuildingUnlockCfg').filter(row => row.buildingType === '远征船').map(row => ({ value: row.buildingId, label: row.buildingId.replace('远征船', '号远征舰队') })),

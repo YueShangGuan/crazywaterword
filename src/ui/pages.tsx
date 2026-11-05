@@ -32,7 +32,7 @@ export function overviewPage() {
       <Panel title="农作物库存（当前 / 上限）"><div className="material-panel" id="crops" /></Panel>
       <Panel title="主力英雄"><div className="icons" id="hero-strip"><span className="dim">连接后显示</span></div></Panel>
       <div className="fleet-panel" id="overview-fleets" />
-      {['claimable','daily','afk','water','production','trade','world','guild','progress','collection','data-health'].map(name =>
+      {['claimable','daily','afk','water','production','trade','merchant-ship','world','guild','progress','collection','data-health'].map(name =>
         <div key={name} className="overview-card" id={'overview-' + name} />)}
     </div>
     <Panel title="游戏消息">
@@ -146,13 +146,27 @@ export function dailiesPage() {
   </div>)
 }
 
-/** 账号页保留上游凭证导出与双渠道采集，并单独提供本地通知配置。 */
+/** 账号页集中管理本机账号、批量兑换、通知、凭证和双渠道采集。 */
 export function accountPage() {
   return renderToStaticMarkup(<div className="grid gap-4">
     <Panel title="账号">
     <div className="bar"><Button id="export-accounts" variant="outline">导出全部账号</Button><span className="dim">备份含登录凭证，请妥善保管。</span></div>
     <div id="accounts"></div>
 
+    </Panel>
+    <Panel title="批量兑换码">
+      <div className="batch-redeem-layout">
+        <div className="batch-redeem-form">
+          <label htmlFor="batch-redeem-codes">兑换码</label>
+          <textarea id="batch-redeem-codes" className="batch-redeem-codes" rows={5} spellCheck="false" placeholder={'一行一个，或用逗号分隔\n例如：CODE-A, CODE-B'} />
+          <div className="bar"><Button id="batch-redeem-run" variant="default">批量兑换</Button><span id="batch-redeem-hint" className="warn" role="status" /></div>
+          <p className="dim batch-redeem-note">只调用当前已在线的账号；按账号、兑换码顺序执行。忙碌账号会排队等待，离线账号不会自动登录。</p>
+        </div>
+        <div className="batch-redeem-feed">
+          <div className="batch-redeem-feed-heading"><span>本批结果</span><span id="batch-redeem-summary" className="dim">尚未开始</span></div>
+          <div id="batch-redeem-results" className="batch-redeem-results" aria-live="polite">兑换后会在这里显示每个账号的结果。</div>
+        </div>
+      </div>
     </Panel>
     <Panel title="企微通知（当前账号）">
       <div className="bar">

@@ -37,12 +37,23 @@
   .message-empty { padding: 28px 8px; color: #7c8695; text-align: center; }
   @media (max-width:720px) { .message-row { grid-template-columns: 64px minmax(0, 1fr); } .message-row .body { grid-column: 1 / -1; } }
   .automation-group { border:1px solid var(--line); border-radius:4px; padding:8px 12px; margin:8px 0; }
+  /* 未保存按钮与回顶按钮纵向堆叠，避免长表单中丢失保存入口。 */
+  .automation-floating-save { position:fixed; right:max(20px,env(safe-area-inset-right)); bottom:max(84px,calc(84px + env(safe-area-inset-bottom))); z-index:20; min-height:42px; padding:9px 14px; border:1px solid #c36b2d; border-radius:10px; background:#fff5e9; color:#a34e1c; font-weight:650; box-shadow:0 4px 16px #102d3926; }
+  .automation-floating-save:hover { background:#ffead4; border-color:#a9531e; }
+  .automation-floating-save:focus-visible { outline:3px solid var(--signal); outline-offset:3px; }
+  /* 固定入口独立于长表单流，安全区间距保证手机底部也可点击。 */
+  .automation-back-to-top { position:fixed; right:max(20px,env(safe-area-inset-right)); bottom:max(20px,env(safe-area-inset-bottom)); z-index:20; display:inline-flex; align-items:center; gap:7px; min-height:44px; padding:10px 14px; border:1px solid var(--teal); border-radius:10px; background:var(--teal); color:#fff; font-weight:600; box-shadow:0 4px 16px #102d3933; }
+  .automation-back-to-top:hover { background:var(--sea); border-color:var(--sea); }
+  .automation-back-to-top:focus-visible { outline:3px solid var(--signal); outline-offset:3px; }
   .automation-group summary { cursor:pointer; color:var(--teal); }
   .automation-group-note { margin:7px 0 9px; color:var(--muted); font-size:12px; line-height:1.55; }
   .automation-field { display:flex; align-items:center; justify-content:space-between; gap:16px; max-width:780px; margin:8px 0; }
   .automation-field-copy { display:grid; gap:2px; flex:1; min-width:0; }
   .automation-field-label { color:var(--ink); }
   .automation-field-help { color:var(--muted); font-size:12px; line-height:1.45; }
+  .automation-click-gold-control { display:flex; align-items:center; justify-content:flex-end; gap:8px; flex-wrap:wrap; min-width:0; }
+  .automation-click-gold-control input[type=number] { width:84px; }
+  .automation-click-gold-estimate { color:#35646a; font-size:12px; white-space:nowrap; }
   /* 自动化编辑器沿用控制台浅色青绿表面；原生下拉框也固定 light 色彩方案，避免系统深色弹层将候选项显示为黑底。 */
   .automation-editor { display:grid; grid-template-columns:minmax(180px,1fr) minmax(260px,1.2fr) minmax(200px,280px); gap:10px; max-width:1160px; margin:8px 0 14px; padding:10px; border:1px solid #cddedc; border-radius:8px; background:#f8fbfa; box-shadow:0 2px 5px #16394306; color-scheme:light; align-items:start; }
   .automation-editor-pane { min-width:0; padding:8px; border:1px solid #d7e5e2; border-radius:6px; background:#fff; }
@@ -60,6 +71,8 @@
   .automation-editor-rows { display:grid; gap:6px; min-width:0; }
   .automation-editor-row { display:flex; gap:6px; align-items:center; min-width:0; padding:5px; border:1px solid #d7e5e2; border-radius:5px; background:#f8fbfa; }
   .automation-editor-row input[type=text], .automation-editor-row input[type=number] { min-width:0; width:100%; }
+  /* 海盗类型行只需录入一个小整数，不能继承通用编辑器的整行宽度。 */
+  .automation-editor-row input.automation-pirate-sweep-times[type=number] { flex:0 0 72px; width:72px; }
   .automation-editor-row > select { flex:1; min-width:0; }
   .automation-editor input:not([type=checkbox]), .automation-editor select { min-width:0; max-width:100%; width:100%; border:1px solid #ccd9d9; border-radius:4px; background:#fff; color:#29494e; }
   .automation-editor select { color-scheme:light; }
@@ -86,5 +99,5 @@
   #automation-settings :focus-visible { outline:2px solid #72c1cd; outline-offset:2px; }
   .automation-field > .automation-editor { flex:1; }
   @media (max-width:1000px) { .automation-editor { grid-template-columns:minmax(0,1fr) minmax(0,1fr); } .automation-json-pane { grid-column:1 / -1; } }
-  @media (max-width:620px) { .automation-editor { grid-template-columns:minmax(0,1fr); } .automation-json-pane { grid-column:auto; } .automation-field { flex-wrap:wrap; } .automation-field input:not([type=checkbox]) { max-width:100%; } .automation-group { padding:8px; } .automation-editor-row { flex-wrap:wrap; } }
+  @media (max-width:620px) { .automation-editor { grid-template-columns:minmax(0,1fr); } .automation-json-pane { grid-column:auto; } .automation-field { flex-wrap:wrap; } .automation-field input:not([type=checkbox]) { max-width:100%; } .automation-click-gold-control { width:100%; justify-content:space-between; } .automation-click-gold-estimate { white-space:normal; } .automation-group { padding:8px; } .automation-editor-row { flex-wrap:wrap; } }
   #automation-loop-modules { display:flex; gap:12px; flex-wrap:wrap; }

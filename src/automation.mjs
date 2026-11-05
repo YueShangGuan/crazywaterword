@@ -22,7 +22,6 @@ export const automationTasks = [
   ['freeAntiqueRecruit', '藏品免费招募', '藏品', false],
   ['antiqueRecruitRewards', '累计招募档位领奖', '藏品', false],
   ['newbieLogin', '新手七日登录奖励', '限时活动', true],
-  ['weekPass', '周战令奖励', '周期活动', false],
   ['weekGift', '周抽奖免费礼包', '周期活动', false],
   ['tasks', '任务与成就奖励', '领奖', true],
   ['dailyRewards', '每日任务奖励', '领奖', true],

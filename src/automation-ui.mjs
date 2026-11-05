@@ -4,23 +4,58 @@ let automationSettings = null;
 let automationAccount = null;
 let automationRunning = false;
 let automationOptions = null;
+let automationSettingsDirty = false;
+// 页面内保留当前账号最近一次从在线角色读取的上限，断线后仍可阻止明显超限的保存。
+let pirateDailySweepMax = null;
+let automationClickGoldUnitPrice = null;
+// 每个字段只展示其允许的星期，保存契约与服务端严格枚举保持一致。
+const executionModes = {
+  'modules.guild.order.enabled': ['monday', '周一开启'],
+  'modules.pet.enabled': ['tuesday', '周二开启'],
+  'modules.antique.activate': ['wednesday', '周三开启'],
+  'modules.antique.upgrade': ['wednesday', '周三开启'],
+  'modules.antique.suit.activate': ['wednesday', '周三开启'],
+  'modules.equip.enabled': ['friday', '周五开启']
+};
 const automationLabels = {
-  season:'当前赛季',vipFreeAd:'VIP免广告',spending:'钻石消费',enabled:'开启',dailyLimit:'每日总额度',minRubyStock:'最低钻石保留量',modules:'各模块每日额度',
+  season:'当前赛季',vipFreeAd:'VIP免广告',spending:'钻石消费',enabled:'开启',dailyLimit:'每日总额度',minRubyStock:'最低钻石保留量',clickGoldTimes:'钻石点金次数',modules:'各模块每日额度',
   collect:'领取产物',finish:'自动竣工',build:'自动建造',upgrade:'自动升级',speedUp:'使用加速道具',disabledBuildings:'禁用建筑',factory:'工厂',gain:'领取成品',autoProduce:'自动生产',products:'工厂产品（建筑类型 → 产品）',disabledFactories:'禁用工厂',priorityProduce:'需求优先生产',proposedPriority:'需求顺序',speedUpForDemand:'为需求加速',
   harvest:'收割',plant:'种植',cropPriorities:'作物优先级（数字越小越优先）',cropKeepStock:'作物库存水位',priorityPlant:'订单需求优先',seedOnDemand:'缺种子时安排生产',speedUpMaxActions:'每轮最多加速次数',orderReward:'领取订单档位奖',blockedMaterials:'禁止交单材料',skipCropOrders:'跳过作物订单',minExp:'最低经验奖励',minGold:'最低金币奖励',dailyCap:'每日次数上限（0 不设本地上限）',fill:'装填货船',reward:'领取奖励',optionIndex:'选择选项（1 或 2）',
   fishing:'钓鱼',maxFishCasts:'每轮最多钓鱼次数',floater:'拾取浮漂',floaterCollectWhenFull:'满仓仍收取浮漂',openChests:'使用钥匙开箱',maxChests:'每轮最多开箱次数',diving:'潜水',divingEach:'每种潜水材料数量',salvage:'拾荒',salvageEach:'每种拾荒材料数量',enhance:'采集强化',enhanceTargetLevel:'强化目标等级',claim:'领取',levelUp:'升级',levelReward:'领取等级奖励',claimAfterHours:'累计挂机几小时后领取',
   heroes:'指定英雄',levelUpMaxActions:'每轮升级轮数',starUp:'升星',skillLevelUp:'技能升级',skillAdvance:'技能进阶',exclusiveLevelUp:'专武升级',exclusiveStarUp:'专武升星',equipEnhance:'强化所选英雄装备',badgeEnhance:'强化所选英雄徽章',badgeExpItemNum:'徽章经验道具数量',appoint:'委任',positions:'委任位置（按英雄顺序）',watchSkillVideo:'请求英雄广告奖励',universal:'允许万能材料',fragRecruit:'使用碎片招募所选英雄',recruit:'招募',free:'免费次数',tickets:'使用现有券',points:'领取招募积分奖',maxDraws:'每轮最多抽取次数',activate:'激活',suit:'套装',
   breed:'培育',breedSpecies:'培育物种名称',breedMinQuality:'培育最低品质',feed:'喂养',decompose:'放生 / 分解',decomposeBelowQuality:'只处理低于此品质的闲置对象',protectedUids:'保护对象 UID',levelUpTargetLevel:'培养目标等级',advance:'进阶',advanceRooms:'进阶战备室建筑 ID（空为全部）',make:'打造',makeIds:'打造配方 ID',speedUpMinRemainSecs:'剩余秒数达到此值才加速',collectRevenue:'领取博物馆收益',explore:'开新探宝',factor:'探宝倍率',maps:'探宝地图 ID',speedUpDailyLimit:'每日加速次数上限（0 禁止）',speedUpKeepStock:'加速道具保留数量',
-  maxActions:'每轮最多挑战次数',stage:'主线',samePowerRetryCount:'同战力战败重试次数',claimReward:'领取章节奖励',arena:'竞技场',sweep:'扫荡',challenge:'挑战',trial:'试炼',heroExp:'英雄经验试炼',forge:'强化石试炼',petExp:'宠物经验试炼',rubySweep:'允许钻石扫荡',league:'联盟赛',reservePoints:'保留积分',hangupReward:'领取挂机奖励',danReward:'领取段位奖励',passReward:'领取战令奖励',expedition:'远征',finalReward:'领取最终奖励',freePass:'领取远征战令',challengeStopOnHeroDeath:'英雄阵亡时停止',challengeMinTeamHpPct:'最低队伍血量百分比',
-report:'领取战报',fleet:'舰队',repair:'维修',repairThresholds:'各舰队维修耐久阈值（按列表顺序）',repairSpeedUp:'加速维修（可使用钻石）',repairSpeedUpMinRemainSecs:'维修加速剩余秒数门槛',pirate:'海盗',attack:'挑战',attackTypes:'挑战海盗类型',sweepTypes:'扫荡海盗类型',attackTime:'执行时段',start:'开始时间',end:'结束时间',radar:'雷达',kinds:'雷达事件类型',fixed:'固定事件',resField:'已有资源田配比',oasis:'种子田权重',tank:'汽油田权重',chipMine:'芯片矿',hours:'上海小时（空为全天）',fleets:'舰队规则',treasureLoot:'宝藏掠夺',merchantShip:'搁浅商船（万吨货轮）',retryMinutes:'重新夺取间隔（分钟，0 不重试）',cityWar:'城战',online:'领取在线奖',reattack:'允许重复进攻',worldBoss:'世界 Boss',attackTimes:'每轮挑战次数',limitedBoss:'限时 Boss',challenge:'挑战',challengeReward:'领取挑战奖',trade:'海商王',profitLimit:'航行加速最低累计利润',speedUpDailyLimit:'每日航行加速次数',
+  maxActions:'每轮最多挑战次数',stage:'主线',samePowerRetryCount:'同战力战败重试次数',claimReward:'领取章节奖励',arena:'竞技场',sweep:'扫荡',challenge:'挑战',trial:'试炼',heroExp:'英雄经验试炼',forge:'强化石试炼',petExp:'宠物经验试炼',rubySweep:'允许钻石扫荡',league:'联盟赛',reservePoints:'保留挑战券',hangupReward:'领取挂机奖励',danReward:'领取段位奖励',passReward:'领取战令奖励',expedition:'远征',finalReward:'领取最终奖励',freePass:'领取远征战令',challengeStopOnHeroDeath:'英雄阵亡时停止',challengeMinTeamHpPct:'最低队伍血量百分比',dailySweepLimit:'每日扫荡次数（目标）',times:'扫荡次数',
+report:'领取战报',fleet:'舰队',repair:'维修',repairThresholds:'各舰队维修耐久阈值（按列表顺序）',repairSpeedUp:'加速维修（可使用钻石）',repairSpeedUpMinRemainSecs:'维修加速剩余秒数门槛',pirate:'海盗',attack:'挑战',attackTypes:'挑战海盗类型',sweepTypes:'扫荡海盗类型',attackTime:'执行时段',start:'开始时间',end:'结束时间',radar:'雷达',kinds:'雷达事件类型',fixed:'固定事件',resField:'已有资源田配比',oasis:'种子田权重',tank:'汽油田权重',chipMine:'芯片矿',hours:'执行小时（空为全天）',fleets:'舰队规则',treasureLoot:'宝藏掠夺',merchantShip:'搁浅商船（万吨货轮）',retryMinutes:'重新夺取间隔（分钟，0 不重试）',rewardMaterials:'奖励材料筛选',cityWar:'城战',online:'领取在线奖',reattack:'允许重复进攻',worldBoss:'世界 Boss',attackTimes:'每轮挑战次数',limitedBoss:'限时 Boss',challenge:'挑战',challengeReward:'领取挑战奖',trade:'海商王',profitLimit:'航行加速最低累计利润',speedUpDailyLimit:'每日航行加速次数',
   packs:'联盟礼包',guild:'联盟礼包',title:'职级奖励',order:'募兵订单',cityIds:'城市 ID',aid:'互助',receive:'领取帮助',ask:'发起求助',askItems:'求助物品',help:'帮助盟友',helpItems:'帮助物品',helpNicknameKeywords:'盟友昵称关键词',helpMinStock:'帮助后库存保留门槛',helpDailyLimit:'每日帮助次数',tech:'联盟科技',items:'科技 ID',ship:'联盟商船',captain:'应聘船长',crew:'补货登船',qualities:'船只品质',rewardItems:'期望奖励物品',minWaterCoin:'最低水姆币奖励',forbiddenMaterials:'禁用补货材料',relaxFilters:'允许放宽品质与奖励筛选',
-  daily:'免费日奖与已有卡权益',weeklyLottery:'周抽奖（领取免费礼包）',uniqueLottery:'每周专属抽奖（领取免费次数）',dailyTask:'任务与活跃度奖励',growth:'成长、支线与成就',events:'成长活动奖励',email:'邮件奖励',midAutumn:'中秋日奖',signIn:'签到',freeGift:'免费礼包',activeReward:'活跃奖励',blindBox:'盲盒',scoreReward:'积分奖',play:'开始新局',keepCards:'保留盲盒卡',catcher:'海底捞月',repeat:'重复挑战最高开放关卡',keepHooks:'保留捞月钩',maxStage:'最高关卡',sweepStage:'扫荡关卡',workshop:'活动工坊',produce:'生产',keepStock:'备货目标',keepClaws:'保留爪钩',blessing:'祝福',boost:'消耗福运结祝福',skinId:'祝福皮肤 ID',boostTimes:'每次祝福数量',keepKnots:'保留福运结',weekOrder:'不差钱商人',buyMissingMaterials:'允许钻石补齐整单缺料',weekLottery:'幸运转盘',prize:'使用现有转盘币',pve:'水世界牌 PVE',freeMatch:'免费匹配',diamondMatch:'允许钻石匹配',diamondMatchDailyLimit:'每日钻石匹配次数上限（0 禁止）',matchWindows:'匹配时段',dailies:'原有付费日常'
+  daily:'免费日奖与已有卡权益',weeklyLottery:'周抽奖（领取免费礼包）',uniqueLottery:'每周专属抽奖（领取免费次数）',dailyTask:'任务与活跃度奖励',growth:'成长、支线与成就',events:'成长活动奖励',email:'邮件奖励',midAutumn:'中秋日奖',signIn:'签到',freeGift:'免费礼包',activeReward:'活跃奖励',blindBox:'盲盒',scoreReward:'积分奖',play:'开始新局',keepCards:'保留盲盒卡',catcher:'海底捞月',repeat:'重复挑战最高开放关卡',keepHooks:'保留捞月钩',maxStage:'最高关卡',sweepStage:'扫荡关卡',workshop:'活动工坊',produce:'生产',keepStock:'备货目标',keepClaws:'保留爪钩',blessing:'祝福',boost:'消耗福运结祝福',skinId:'祝福皮肤 ID',boostTimes:'每次祝福数量',keepKnots:'保留福运结',weekOrder:'不差钱商人',buyMissingMaterials:'允许钻石补齐整单缺料',weekLottery:'幸运转盘',prize:'使用现有转盘币',pve:'水世界牌 PVE',freeMatch:'免费匹配',diamondMatch:'允许钻石匹配',diamondMatchDailyLimit:'每日钻石匹配次数上限（0 禁止）',matchWindows:'匹配时段',dailies:'原有付费日常',dailiesDiscountTickets2x:'2折英雄藏品券'
 };
 // 酆都玩法沿用活动模块，只增加本期参与开关。
 automationLabels.edict = '酆都捞尸人';
 // 模块名与设置字段分表维护，避免 guild 等同名字段在加载服务端模块标签后被覆盖。
 const automationModuleLabels = { island:'建筑与工厂',farm:'农田',resident:'居民订单',cargo:'货船',choiceEvent:'选择事件',gather:'采集',afk:'挂机收益',hero:'英雄',antique:'藏品',pet:'宠物',equip:'装备',museum:'博物馆',battle:'挑战',world:'世界',guild:'联盟',welfare:'福利',activity:'活动',snap:'水世界牌' };
-const numericArrays = new Set(['positions','makeIds','maps','hours','attackTypes','sweepTypes','cityIds','items','repairThresholds']);
+// 额度用途按实际消费归属填写；没有钻石入口的模块也说明材料边界，避免把增加额度误当成功能开关。
+const automationSpendingScenes = {
+  island:'当前没有主动钻石消费功能；建造、升级和排产使用现有材料，加速使用加速器。',
+  farm:'当前没有主动钻石消费功能；种植使用现有种子，补种子安排工厂生产，农田加速使用加速器。',
+  resident:'当前没有主动钻石消费功能；居民订单使用现有材料，缺料跳过，不购买材料。',
+  cargo:'当前没有主动钻石消费功能；装填货船使用现有材料，不购买缺料。',
+  choiceEvent:'当前没有主动钻石购买或加速功能；本模块只提交已设置的事件选项。',
+  gather:'当前没有主动钻石消费功能；开箱使用现有钥匙，采集强化使用配置材料，不购买钥匙或采集材料。',
+  afk:'钻石点金。按顶部“钻石点金次数”补足当天付费目标；本模块额度为 0 时不执行钻石点金，免费点金不占此额度。',
+  hero:'当前没有主动钻石消费功能；培养使用现有经验、碎片和材料，招募使用免费次数或现有券。折扣商店购买招募券归属“原有付费日常”。',
+  antique:'当前没有主动钻石消费功能；激活、升星和套装升级使用现有材料，招募使用免费次数或现有券。购买藏品券归属“原有付费日常”。',
+  pet:'当前没有主动钻石消费功能；培育、喂养、升级和进阶使用现有材料，不购买缺料。',
+  equip:'当前没有主动钻石消费功能；打造使用现有配方材料，制造加速使用加速器。',
+  museum:'当前没有主动钻石消费功能；探宝按倍率消耗现有材料，加速使用博物馆加速道具。',
+  battle:'英雄经验、强化石、宠物经验三类试炼的钻石扫荡。需要在对应试炼开启“允许钻石扫荡”；积分赛仅使用已验证的免费刷新，不购买挑战券或付费刷新。',
+  world:'舰队钻石维修加速、城战舰队钻石行军加速、海商王贸易船升级中的钻石费用。维修加速优先使用现有加速器；贸易买卖使用贸易金币，航行加速使用海商王加速道具。',
+  guild:'当前没有主动钻石消费功能；募兵、互助和商船补给使用现有材料，联盟科技使用公会科技点。',
+  welfare:'当前没有主动钻石消费功能；只领取免费奖励和已有卡权益，不购买月卡、季卡或礼包。',
+  activity:'“不差钱商人”开启“允许钻石补齐整单缺料”后的材料购买。其他已接入活动使用现有入场券、活动材料或免费次数。',
+  snap:'水世界牌免费匹配次数用尽后的钻石匹配；还需开启“允许钻石匹配”并满足每日匹配次数和时段。该玩法不参与挂机循环。',
+  dailies:'原有日常入口的付费点金、普通折扣商品购买。挂机收益已接管的目标点金计入“挂机收益”；开启“2折英雄藏品券”后的目标券购买会突破普通额度和保留量限制，但仍要求实际钻石余额足够。',
+};
+const numericArrays = new Set(['positions','makeIds','maps','hours','attackTypes','cityIds','items','repairThresholds']);
 const objectArrays = new Set(['fleets','matchWindows']);
 const dictionarySettings = new Set(['products','cropPriorities','cropKeepStock']);
 Object.assign(automationLabels,{breedMinQuality:'培育最高品质',watchVideo:'领取招募广告收益',giveUpPve:'放弃当前 PVE 对局',cancelMatchmaking:'取消当前匹配队列',helpAlly:'允许帮助己方联盟',pvpTrustee:'真人对局使用托管',helpMinStock:'帮助前最低库存门槛',attackTimes:'每日挑战次数上限'});
@@ -33,23 +68,28 @@ const automationSettingCopy = {
   vipFreeAd: { note:'仅当前连接角色等级达到 10 级且 VIP 达到 3 级时显示。开启后，在挑战模块已启用、对应试炼已通关且广告额度未用尽时，自动领取英雄经验、强化石、宠物经验试炼的每日免广告额外扫荡奖励，无需开启钻石扫荡。工厂生产广告加速、建筑升级广告加速、英雄广告招募、藏品广告招募和广告商店奖励暂未接入此开关。' },
   spending: { note:'这是所有钻石操作的共同护栏，不会自行触发消费；每一次消费都要同时通过总开关、总额度、模块额度和余额保留量。' },
   'spending.enabled': { note:'只允许已经在玩法中勾选的钻石操作；关闭时任何模块都不会花钻石。' },
-  'spending.dailyLimit': { note:'同一账号所有角色在上海自然日内合计的消费上限，已确认消费和结果未确认的预留都会占用；0 禁止全部钻石消费。' },
+  'spending.dailyLimit': { note:'同一账号所有角色每日合计的消费上限，已确认消费和结果未确认的预留都会占用；0 禁止全部钻石消费。' },
   'spending.minRubyStock': { note:'当前角色游戏内钻石余额的下限，不是每日可用额度。每次消费后（含未确认预留）余额仍须不少于此值；10000 会按原值保存。' },
-  'spending.modules': { note:'各玩法在上海自然日内的独立额度，同一账号的所有角色合计；它还必须不超过“每日总额度”，设置更高不会增加总额度。' },
+  'spending.clickGoldTimes': { note:'每日付费点金总目标；0 关闭。免费点金不计入，挂机收益模块开启后才会执行，且仍受总额度、挂机额度和最低钻石保留量限制。' },
+  'spending.modules': { note:'各玩法每日的独立额度，同一账号的所有角色合计；它还必须不超过“每日总额度”，设置更高不会增加总额度。' },
+  'spending.dailiesDiscountTickets2x': { note:'强烈建议开启。发现2折或更低折扣的抽卡券、藏品券时必定购买，并使用免费刷新继续查找另一类；此开关会突破钻石购买上限，但仍要求实际钻石余额足够。' },
   'modules.world.fleet.repairSpeedUp': { note:'仅对城战规则中已启用的舰队生效，优先使用现有加速器；无道具或道具被明确拒绝、业务失败时改用钻石。剩余分钟数向上取整，每分钟 10 钻：60 秒 10 钻，61 秒 20 钻；提交前按完整费用检查钻石总额度、模块额度和余额保留量。' },
   'modules.world.fleet.repairSpeedUpMinRemainSecs': { note:'维修剩余时间达到此秒数才尝试加速，避免为即将结束的维修消耗道具或钻石。' },
-  'modules.world.trade.speedUpDailyLimit': { note:'上海自然日内最多加速航行的次数；0 表示不允许该玩法的航行加速。每次使用 1 个海商王加速道具，不会使用钻石。' },
+  'modules.world.pirate.dailySweepLimit': { note:'自动化每日最多扫荡此次数。实际总上限为基础 10 次加当前角色 VIP 的“野怪扫荡次数”额外配置；手动已扫次数也会计入，达到设置值后当天不再扫荡。' },
+  'modules.world.trade.speedUpDailyLimit': { note:'每日最多加速航行的次数；0 表示不允许该玩法的航行加速。每次使用 1 个海商王加速道具，不会使用钻石。' },
   'modules.world.trade.profitLimit': { note:'累计贸易利润不低于此值时才允许航行加速；0 表示利润非负时即可加速。仍需开启航行加速并满足每日次数上限，不影响卖货、买货、迁船或领取奖励。' },
   'modules.museum.speedUpKeepStock': { note:'博物馆加速道具的背包保留数量。库存必须严格高于此值才会使用一个加速道具。' },
   'modules.activity.weekOrder.buyMissingMaterials': { note:'只在一整单缺少的材料都能查到钻石价格时补购；价格缺失、任一额度不足或保留量不足都会跳过整单。' },
   'modules.activity.weekOrder.minRubyStock': { title:'整单补料后最低钻石保留量', note:'只约束“不差钱商人”的缺料补购：补齐这一单后当前角色余额不能低于此值。它是额外护栏，不能替代顶部的全局保留量。' },
   'modules.snap.diamondMatch': { note:'仅在免费匹配次数已用完且处于允许时段时，才会尝试钻石匹配；每局仍需通过钻石消费护栏。' },
-  'modules.snap.diamondMatchDailyLimit': { note:'当前角色在上海自然日内最多发起的钻石匹配次数；0 禁止钻石匹配，不影响免费匹配。' },
-  'modules.snap.matchWindows': { note:'使用上海时间。留空时沿用活动配置的开放时段；填写后只在这些时段内匹配。' },
-  'modules.resident.dailyCap': { note:'当前角色在上海自然日内处理居民订单的本地次数上限；0 不设本地上限，游戏服务端仍可能限制次数。' },
-  'modules.guild.order.dailyLimit': { note:'当前角色在上海自然日内最多完成的联盟募兵订单；0 不设本地上限。' },
+  'modules.snap.diamondMatchDailyLimit': { note:'当前角色每日最多发起的钻石匹配次数；0 禁止钻石匹配，不影响免费匹配。' },
+  'modules.snap.matchWindows': { note:'留空时沿用活动配置的开放时段；填写后只在这些时段内匹配。' },
+  'modules.battle.league.challenge': { note:'按服务端列表从上到下优先选择：先要求总战力较低，再要求两支舰队均严格占优，并自动调整为强队对强队；战斗回包必须两局全胜。当前四人均无稳赢时，仅在服务端 refreshTimes=1 且刷新后钻石余额不变时使用一次免费刷新；刷新后仍无稳赢，才会强打对方弱队、弱打对方强队，且一胜一负后本方 finalScore 不低于 score 才视为保分。阵容缺失、战力相同、换位读回失败或刷新资格不明都会跳过。' },
+  'modules.battle.league.reservePoints': { title:'保留积分赛挑战券', note:'这里保留的是 LEAGUE_POINT 挑战券，不是竞技排名积分。当前券数必须严格大于此值才出战，每次战斗后都会重新读取库存；它不保证平局保分，平局仍以战斗回包的 finalScore 核验。' },
+  'modules.resident.dailyCap': { note:'当前角色每日处理居民订单的本地次数上限；0 不设本地上限，游戏服务端仍可能限制次数。' },
+  'modules.guild.order.dailyLimit': { note:'当前角色每日最多完成的联盟募兵订单；0 不设本地上限。' },
   'modules.guild.aid.helpMinStock': { note:'帮助盟友前，自己的该物品库存必须至少达到此数量；帮助后库存可能低于该值。' },
-  'modules.guild.aid.helpDailyLimit': { note:'当前角色在上海自然日内最多帮助盟友的次数；0 不设本地上限。' },
+  'modules.guild.aid.helpDailyLimit': { note:'当前角色每日最多帮助盟友的次数；0 不设本地上限。' },
 };
 
 // 每个折叠组先交代实际处理的玩法和资源边界，字段说明再补充该项如何改变本组行为。
@@ -66,13 +106,13 @@ const automationFeatureCopy = {
   'modules.afk': { action:'领取累计挂机收益、升级挂机等级和领取等级奖励', scope:'当前角色的挂机进度；领取阈值按服务器累计时间判断' },
   'modules.hero': { action:'培养、委任、招募和强化明确选择的英雄', scope:'当前角色在“指定英雄”中选择的英雄；未选择英雄不会消耗培养资源' },
   'modules.hero.recruit': { action:'使用免费次数或已有招募券，并领取招募积分与广告奖励', scope:'当前角色的英雄招募；不会购买招募券' },
-  'modules.antique': { action:'激活、升星和培养藏品', scope:'当前角色已有或可激活的藏品；万能材料必须单独授权' },
+  'modules.antique': { action:'激活藏品、自动升星、套装激活与升级、招募藏品', scope:'当前角色已有或可激活的藏品；万能材料必须单独授权' },
   'modules.antique.suit': { action:'激活或升级藏品套装', scope:'当前角色满足成员和大师等级条件的套装' },
   'modules.antique.recruit': { action:'使用免费次数或已有藏品招募券', scope:'当前角色的藏品招募；不会购买抽取次数' },
-  'modules.pet': { action:'领取、培育、喂养、升级、进阶和放生宠物', scope:'当前角色宠物；放生会排除阵容、舰队、远征等已引用宠物' },
-  'modules.equip': { action:'领取打造完成的装备、按配方打造、加速和分解闲置装备', scope:'当前角色装备与装备制造台；不会处理未选择或未开放的配方' },
+  'modules.pet': { action:'领取、培育、喂养、升级、进阶和放生宠物', scope:'常规动作受执行日期限制，每日战令培育补做独立于普通模式；放生会排除阵容、舰队、远征等已引用宠物' },
+  'modules.equip': { action:'领取打造完成的装备、按配方打造、加速和分解闲置装备', scope:'整个常规模块受执行日期限制；当前角色装备与装备制造台；不会处理未选择或未开放的配方' },
   'modules.museum': { action:'领取博物馆收益、结算探宝、领奖、开新探宝和道具加速', scope:'当前角色博物馆关卡与可用英雄；每名英雄在同轮最多分配到一个探宝关卡' },
-  'modules.battle': { action:'处理主线、竞技场、试炼、联盟赛与远征', scope:'当前角色当前开放的战斗内容；失败或读回异常会停止对应战斗链' },
+  'modules.battle': { action:'处理主线、竞技场、试炼、联盟赛与远征', scope:'当前角色当前开放的战斗内容；联盟赛按列表顺序只挑战两局全胜目标，必要时仅一次已验证免费刷新后才尝试经积分核验的保分平局；失败或读回异常会停止对应战斗链' },
   'modules.battle.stage': { action:'连续挑战主线并领取章节奖励', scope:'当前角色已开放的主线关卡；失败不会继续推进后续关卡' },
   'modules.battle.arena': { action:'挑战或扫荡竞技场', scope:'当前角色当前可挑战的竞技场目标；胜负以服务器结果为准' },
   'modules.battle.trial.heroExp': { action:'挑战或扫荡英雄经验试炼', scope:'当前角色开放的英雄经验试炼；钻石扫荡仍受钻石消费护栏限制' },
@@ -82,16 +122,16 @@ const automationFeatureCopy = {
   'modules.battle.expedition': { action:'挑战或扫荡远征，并领取最终奖励和现有战令权益', scope:'当前角色当前选择的远征副本；阵亡或低血量会按设置停止挑战' },
   'modules.world': { action:'处理战报、舰队、海盗、雷达、资源田、世界活动与贸易', scope:'当前角色世界地图状态；同一舰队被先处理的玩法占用后不会重复派遣' },
   'modules.world.fleet': { action:'维修符合阈值的闲置舰队，并在允许时加速维修', scope:'当前角色城战规则中明确配置的舰队；不会维修未纳入城战规则的舰队' },
-  'modules.world.pirate': { action:'挑战或扫荡海盗', scope:'当前角色已解锁海盗；只在配置的上海时间段内执行' },
+  'modules.world.pirate': { action:'挑战或扫荡海盗', scope:'当前角色已解锁海盗；只在配置的执行时段内执行' },
   'modules.world.radar': { action:'派遣雷达事件并领取雷达奖励', scope:'当前角色当前雷达事件；每次派遣前重新选择闲置舰队' },
   'modules.world.resField': { action:'调整已有资源田的类型配比', scope:'当前角色已经占有的资源田；只释放超额已知类型，不搜索或占领新资源田' },
   'modules.world.chipMine': { action:'领取芯片矿奖励并派遣舰队挖矿', scope:'当前角色芯片矿活动；受开放小时、每日次数、空位和舰队规则共同限制' },
   'modules.world.treasureLoot': { action:'按规则派遣舰队进行宝藏掠夺', scope:'当前角色可见的宝藏目标；会排除己方联盟和不符合舰队规则的目标' },
-  'modules.world.merchantShip': { action:'在上海整点检查万吨货轮并派遣选中远征舰队', scope:'当前角色的搁浅商船目标；只处理已确认的万吨货轮，不需要预先打开活动页面' },
+  'modules.world.merchantShip': { action:'每轮检查当前万吨货轮，按间隔派遣选中的空闲远征舰队', scope:'当前角色的搁浅商船目标；只处理已确认的万吨货轮，城战时段保留舰队' },
   'modules.world.cityWar': { action:'领取城战在线奖励、集结、进攻、驻守与行军加速', scope:'当前角色在开放时段的城战；每支舰队按自身规则执行，已记录的进攻不会重复提交' },
   'modules.world.worldBoss': { action:'领取世界 Boss 伤害奖励并挑战 Boss', scope:'当前角色世界 Boss；只使用尚未被其他世界玩法占用的舰队' },
   'modules.world.limitedBoss': { action:'领取限时 Boss 奖励并派遣舰队挑战', scope:'当前角色当前开放的限时 Boss；只使用设置中选择且空闲的舰队' },
-  'modules.world.trade': { action:'处理海商王领奖、升级、加速、买卖货物和迁船', scope:'当前角色当前贸易船；交易仅在上海 10:00 至 21:59 的执行窗口运行' },
+  'modules.world.trade': { action:'处理海商王领奖、升级、加速、买卖货物和迁船', scope:'当前角色当前贸易船；交易仅在 10:00 至 21:59 的执行窗口运行' },
   'modules.guild': { action:'处理联盟礼包、募兵、互助、科技和联盟商船', scope:'当前角色所在联盟；未入盟时本组不发送后续联盟操作' },
   'modules.guild.packs': { action:'领取联盟礼包和职级奖励', scope:'当前角色当前可领取的联盟福利；已领状态不会重复提交' },
   'modules.guild.order': { action:'完成联盟募兵订单', scope:'当前角色当前可接的指定城市订单；冷却、材料和每日次数都必须满足' },
@@ -146,8 +186,8 @@ const automationFieldActionCopy = {
   blockedMaterials:'订单需要这些材料时不交单；不会消耗被列出的材料',
   skipCropOrders:'居民订单包含农作物时直接跳过；不影响非农作物订单',
   minExp:'订单经验低于此值时不交单并请求刷新；0 不按经验过滤',
-  minGold:'订单金币低于此值时不交单并请求刷新；0 不按金币过滤',
-  dailyCap:'限制上海自然日内本组处理次数；0 表示不设本地上限',
+  minGold:'非周四使用此金币门槛，周四由下方专用门槛替换；金币低于门槛时刷新，0 不按金币过滤',
+  dailyCap:'限制本组每日处理次数；0 表示不设本地上限',
   fill:'用现有库存填充货船的未完成舱位；库存不足的舱位保持跳过',
   reward:'领取已完成货船或活动的可领奖励；已领取状态不会重复提交',
   optionIndex:'选择当前选择事件的第 1 或第 2 个选项；不会根据奖励自动改选',
@@ -205,14 +245,14 @@ const automationFieldActionCopy = {
   explore:'结算已完成探宝、领取奖励后，为符合条件的空闲关卡开启新探宝',
   factor:'选择探宝时间倍率；当前等级未开放该倍率时不启动探宝',
   maps:'限定参与探宝的博物馆关卡；空列表表示所有可用关卡',
-  speedUpDailyLimit:'限制上海自然日内本组加速次数；0 表示禁止本组加速',
+  speedUpDailyLimit:'限制本组每日加速次数；0 表示禁止本组加速',
   maxActions:'限制本轮主线挑战次数；失败后不会继续挑战后续关卡',
   samePowerRetryCount:'主线失败时允许以相同战力重试的次数；0 表示失败即停止',
   claimReward:'领取已达到条件且未领取的章节、活动或祝福奖励',
   sweep:'扫荡当前已通过且允许扫荡的内容；不主动挑战未通过关卡',
   challenge:'挑战当前符合条件的目标或关卡；失败、血量限制或状态异常会停止该链',
   rubySweep:'允许试炼在免费次数用尽后使用钻石扫荡；仍受全局和模块钻石护栏限制',
-  reservePoints:'联盟赛挑战后仍需保留的积分；积分不足时不挑战',
+  reservePoints:'联盟赛挑战后仍需保留的 LEAGUE_POINT 挑战券；当前券数必须严格大于此值才挑战，不等同于竞技排名积分',
   hangupReward:'领取联盟赛挂机收益；只处理可领档位',
   danReward:'领取联盟赛段位奖励；已领取档位不会重复请求',
   passReward:'领取当前已有权益的战令奖励；不购买战令或等级',
@@ -226,24 +266,25 @@ const automationFieldActionCopy = {
   repairSpeedUp:'维修满足剩余时间条件时优先使用加速器；无道具或道具明确失败后按剩余分钟数向上取整、每分钟 10 钻计价，仍受钻石消费护栏限制',
   attack:'挑战当前已解锁的海盗；不扫荡未击败档位',
   attackTypes:'限定可挑战的海盗类型；空列表不会按类型主动挑战',
-  sweepTypes:'限定可扫荡的已击败海盗类型；空列表不会按类型主动扫荡',
-  start:'设置本组执行时段的开始上海时间',
-  end:'设置本组执行时段的结束上海时间；开始和结束共同决定允许窗口',
+  sweepTypes:'为每种已击败海盗设置明确扫荡次数；各行次数之和必须等于每日扫荡目标，空列表不会主动扫荡',
+  start:'设置本组执行时段的开始时间',
+  end:'设置本组执行时段的结束时间；开始和结束共同决定允许窗口',
   kinds:'限定处理的雷达事件类型；未列出的事件保持不动',
   fixed:'允许处理固定雷达事件；关闭时固定事件不会被本组派遣',
   factory:'设置已有资源田中工厂类资源田的目标权重；只用于释放超额资源田',
   oasis:'设置已有资源田中种子田的目标权重；不会新占领资源田',
   tank:'设置已有资源田中汽油田的目标权重；0 表示不保留该类型配额',
-  hours:'限定本组在上海哪些整点执行；空列表表示不按小时限制',
+  hours:'限定本组在哪些整点执行；空列表表示不按小时限制',
   fleets:'按列表顺序使用符合每行条件的舰队；忙碌舰队只跳过自身，不阻塞后续舰队',
-  retryMinutes:'同一整点未成功夺取万吨货轮时的重试间隔；0 表示该整点不重试',
+  retryMinutes:'对同一艘万吨货轮再次尝试派遣的间隔，可跨小时；0 表示同一目标只尝试一次。新货轮立即检查，没有目标或所选舰队全部忙碌时不开始计时',
+  rewardMaterials:'从游戏材料列表中勾选；只匹配万吨货轮奖励中 type=0 的物品名称。留空时不筛选，任一材料命中才派舰；金币、钻石等货币不会触发派遣',
   online:'只在城战在线奖励开放且尚未领取时领取；不触发进攻或驻守',
   reattack:'允许对已记录的城战目标再次进攻；关闭时同一目标会被本地日记录去重',
-  attackTimes:'限制上海自然日内世界 Boss 挑战次数；不影响领取伤害奖励',
+  attackTimes:'限制每日世界 Boss 挑战次数；不影响领取伤害奖励',
   challengeReward:'领取限时 Boss 已达到条件的挑战奖励；不等同于开启挑战',
   profitLimit:'累计贸易利润不低于该值时才允许航行加速；0 表示利润非负时即可加速，不影响买卖、迁船和领奖',
-  dailyLimit:'限制当前玩法在上海自然日的本地次数；0 表示不设本地上限',
-  cityIds:'限定可完成联盟募兵的城市；未列出的城市订单不会提交',
+  dailyLimit:'限制当前玩法每日的本地次数；0 表示不设本地上限',
+  cityIds:'限定可完成联盟募兵的城市；留空时自动读取联盟城市并优先使用盟主推荐城市；未列出的城市订单不会提交',
   receive:'领取自己已经完成的联盟帮助；不发起新的求助',
   ask:'为指定物品发起联盟求助；只选择当前配置表存在的物品',
   askItems:'限定可以发起求助的物品；空列表不主动求助',
@@ -251,7 +292,7 @@ const automationFieldActionCopy = {
   helpItems:'限定可以贡献给盟友的物品；其他物品请求不处理',
   helpNicknameKeywords:'限定盟友昵称必须包含的关键词；空列表不按昵称额外过滤',
   helpMinStock:'帮助前自己的库存必须达到该值；帮助后库存可能低于该值',
-  helpDailyLimit:'限制上海自然日内帮助盟友次数；0 表示不设本地上限',
+  helpDailyLimit:'限制每日帮助盟友次数；0 表示不设本地上限',
   items:'限定允许升级的联盟科技；未选择科技不会消耗科技点',
   captain:'为符合条件的联盟商船尝试应聘船长；会校验英雄、星级和专属装备条件',
   crew:'为符合筛选的联盟商船补齐可用舱位；只用现有材料',
@@ -294,8 +335,8 @@ const automationFieldActionCopy = {
   cancelMatchmaking:'取消当前匹配队列；队列为空时不发送请求',
   freeMatch:'使用当前免费匹配次数发起匹配；免费次数不足时不自动改用钻石',
   diamondMatch:'免费次数用尽后允许钻石匹配；仍受匹配次数、时段和钻石护栏限制',
-  diamondMatchDailyLimit:'限制当前角色上海自然日内的钻石匹配次数；0 表示禁止钻石匹配',
-  matchWindows:'限定水世界牌匹配的上海时间段；空列表沿用活动配置时间',
+  diamondMatchDailyLimit:'限制当前角色每日的钻石匹配次数；0 表示禁止钻石匹配',
+  matchWindows:'限定水世界牌匹配的时段；空列表沿用活动配置时间',
   maxMatches:'限制本轮水世界牌新开或续办的对局数量；不改变服务器活动次数',
 };
 
@@ -309,12 +350,12 @@ const automationRuleFieldCopy = {
   roles:'功能：勾选本行舰队可执行的城战行动。影响范围：只影响该舰队；未勾选的行动不会由它执行。',
   gotoCityId:'功能：指定本行舰队驻守或前往的城战城市。影响范围：只影响本行的前往或驻守动作，0 表示按当前城战目标自动决定。',
   marchSpeedUp:'功能：允许本行舰队在确认行军后使用钻石加速。影响范围：只影响该舰队的行军，仍受钻石消费护栏限制。',
-  start:'功能：设置一条匹配时段的开始上海时间。影响范围：只影响水世界牌在该时段内是否可匹配。',
-  end:'功能：设置一条匹配时段的结束上海时间。影响范围：只影响水世界牌在该时段内是否可匹配。',
+  start:'功能：设置一条匹配时段的开始时间。影响范围：只影响水世界牌在该时段内是否可匹配。',
+  end:'功能：设置一条匹配时段的结束时间。影响范围：只影响水世界牌在该时段内是否可匹配。',
 };
 
 /**
- * Returns the player-facing title and business explanation for one setting.
+ * 返回设置标题、功能和影响范围；钻石模块额度同时展示实际消费场景。
  * Exact paths take precedence because several features reuse names such as
  * enabled、dailyLimit 与 minRubyStock 等同名字段在不同玩法中的作用范围不同。
  *
@@ -324,12 +365,24 @@ const automationRuleFieldCopy = {
  */
 function settingCopy(path, key) {
   const pathName = path.join('.');
+  // 日程控件提供完整业务含义，避免沿用布尔总开关或经验升级的旧说明。
+  if (executionModes[pathName]) return {
+    title: pathName === 'modules.antique.upgrade' ? '自动升星' : key === 'enabled' ? '执行模式' : automationLabels[key],
+    note: '可选择关闭、开启或' + executionModes[pathName][1] + '；按当前连接服务端时差判断。' +
+      (pathName === 'modules.pet.enabled' ? '约束整个常规宠物模块；每日培育补做独立执行。' : pathName === 'modules.equip.enabled' ? '约束整个装备模块，继续使用当前选择的配方。' : '只约束本动作，仍需开启所属模块总开关。')
+  };
+  if (key === 'mondayGuildPriority') return { title:'周一优先联盟募兵', note:'仅在需求优先生产开启时生效：周一募兵及原料依赖优先获得材料和新生产位；不自动开启募兵交单，不取消在产或抢占受保护队列，其他日期恢复保存的需求顺序。' };
+  if (key === 'thursdayMinGold') return { title:'周四最低金币奖励', note:'基地订单日金币奖励越高，比拼积分越多；周四用此门槛替换普通最低金币奖励，0 表示不限制金币，其他订单过滤与次数限制仍生效。' };
+  if (key === 'dailyBreedForPass') return { title:'每天培养一只', note:'用来完成每日勇士战令，独立于普通宠物执行模式与培育筛选。主挂机在任务未达标时，用现有对应材料培育一只可培育的最低品质海兽；每天最多补做一次，不用万能材料、钻石或加速，不自动收取成熟海兽腾位。' };
   const copy = automationSettingCopy[pathName];
   if (copy) return { title:copy.title || automationLabels[key] || key, note:copy.note || '' };
   const ownFeature = automationFeatureCopy[pathName];
   if (ownFeature) return { title:automationLabels[key] || key, note:'功能：' + ownFeature.action + '。影响范围：' + ownFeature.scope + '。' };
-  // 钻石模块额度的每一行都只是共享总额度下的子上限，不能让通用“设置值”文案掩盖这一层约束。
-  if (path.length === 3 && path[0] === 'spending' && path[1] === 'modules') return { title:automationLabels[key] || key, note:'功能：设置“' + (automationLabels[key] || key) + '”在上海自然日内可使用的钻石子额度。影响范围：同一账号所有角色在该玩法的消费合计；仍必须同时满足每日总额度和最低钻石保留量。' };
+  // 模块额度只是消费上限；直接列出归属功能和无钻石入口的模块，说明设置额度后实际会影响什么。
+  if (path.length === 3 && path[0] === 'spending' && path[1] === 'modules') {
+    const title = automationModuleLabels[key] || automationLabels[key] || key;
+    return { title, note:'应用场景：' + automationSpendingScenes[key] + ' 功能：设置“' + title + '”每日可使用的钻石子额度；0 禁止本模块受额度保护的钻石消费。影响范围：同一账号所有角色在该玩法的消费合计；受额度保护的消费还必须同时满足钻石消费总开关、每日总额度和最低钻石保留量。' };
+  }
   // 顶层模块开关只授权该玩法；资源、时段和子功能条件仍会决定是否实际执行。
   if (path.length === 3 && path[0] === 'modules' && key === 'enabled') return { title:automationLabels[key], note:'这是该玩法的总开关。开启后仍需满足已勾选的子功能、库存、时段和游戏状态条件。' };
   const feature = [...path.slice(0, -1)].map((_, index, parts) => parts.slice(0, parts.length - index).join('.')).map(name => automationFeatureCopy[name]).find(Boolean);
@@ -394,7 +447,7 @@ function addMerchantShipFleetRow(fleet, container) {
  * Renders merchant-ship switches and fleet choices with the same setting rows
  * and three-column editor used by the other automation configuration groups.
  *
- * @param {{enabled: boolean, retryMinutes: number, fleets: Array<{enabled: boolean, buildingId: string}>}} value Saved merchant-ship settings.
+ * @param {{enabled: boolean, retryMinutes: number, rewardMaterials: string[], fleets: Array<{enabled: boolean, buildingId: string}>}} value Saved merchant-ship settings.
  * @param {string[]} path Full settings path for scalar controls.
  * @returns {HTMLElement} Merchant-ship configuration panel.
  */
@@ -411,6 +464,9 @@ function merchantShipFields(value, path) {
   const retry = editorInput('retryMinutes', value.retryMinutes);
   retry.dataset.setting = path.concat('retryMinutes').join('.'); retry.dataset.kind = 'number'; retry.setAttribute('aria-label', retryCopy.title); retry.title = retryCopy.note;
   retryLabel.appendChild(retry); panel.appendChild(retryLabel);
+
+  const materialsCopy = settingCopy(path.concat('rewardMaterials'), 'rewardMaterials');
+  panel.append(settingHeading(materialsCopy.title, materialsCopy.note), primitiveArrayEditor(value.rewardMaterials, 'rewardMaterials', path.concat('rewardMaterials').join('.')));
 
   const editor = structuredEditor('fleets', path.concat('fleets').join('.'), 'merchant');
   const add = el('button', 'tiny', '添加舰队'); add.type = 'button'; add.title = '新增一条舰队规则';
@@ -456,6 +512,48 @@ function tradeFields(value, path) {
   panel.appendChild(field('speedUp', 'boolean'));
   panel.appendChild(field('speedUpDailyLimit', 'number'));
   panel.appendChild(field('profitLimit', 'number'));
+  return panel;
+}
+
+/**
+ * 渲染海盗设置，并将角色当天的服务器扫荡计数固定显示在类型选择与次数输入旁。
+ *
+ * @param {{attack: boolean, sweep: boolean, attackTypes: number[], sweepTypes: Array<{type: number, times: number}>, dailySweepLimit: number, attackTime: {start: string, end: string}}} value 当前账号的海盗设置。
+ * @param {string[]} path 设置根路径。
+ * @returns {HTMLElement} 海盗设置面板。
+ */
+function pirateFields(value, path) {
+  const panel = el('div');
+  /** 添加与通用设置读取器兼容的单值控件，避免海盗设置走另一条保存路径。 */
+  const field = key => {
+    const copy = settingCopy(path.concat(key), key);
+    const row = el('label', 'automation-field'); row.appendChild(settingText(copy.title, copy.note));
+    const input = editorInput(key, value[key]); input.dataset.setting = path.concat(key).join('.'); input.dataset.kind = typeof value[key]; input.title = copy.note;
+    // 角色切换或断线后仍保留最近一次在线读取的动态上限，避免输入框回到无上限状态。
+    if (key === 'dailySweepLimit' && pirateDailySweepMax !== null) input.max = String(pirateDailySweepMax);
+    row.appendChild(input); return { row, input };
+  };
+
+  panel.append(field('attack').row, field('sweep').row);
+  const daily = field('dailySweepLimit');
+  panel.appendChild(daily.row);
+  const status = el('p', 'automation-group-note', '正在读取当前角色的海盗扫荡次数…'); status.dataset.pirateSweepStatus = '';
+  panel.appendChild(status);
+  let sweepEditor = null;
+  // 每次修改每日目标都立即刷新对象数组 JSON，并让超出动态上限的输入保持不可保存状态。
+  daily.input.oninput = () => {
+    daily.input.setCustomValidity('');
+    if (daily.input.max && Number(daily.input.value) > Number(daily.input.max)) daily.input.setCustomValidity('不能超过当前角色上限 ' + daily.input.max + ' 次');
+    sweepEditor?.sync();
+  };
+  const sweepCopy = settingCopy(path.concat('sweepTypes'), 'sweepTypes');
+  panel.appendChild(settingHeading(sweepCopy.title, sweepCopy.note));
+  sweepEditor = pirateSweepEditor(value.sweepTypes, path.concat('sweepTypes').join('.'), daily.input);
+  panel.appendChild(sweepEditor);
+  const attackCopy = settingCopy(path.concat('attackTypes'), 'attackTypes');
+  panel.append(settingHeading(attackCopy.title, attackCopy.note), primitiveArrayEditor(value.attackTypes, 'attackTypes', path.concat('attackTypes').join('.')));
+  // 执行时段继续复用通用分组，保证与其他世界玩法的时间输入一致。
+  settingFields({ attackTime:value.attackTime }, path, panel);
   return panel;
 }
 
@@ -537,6 +635,8 @@ function structuredEditor(key, settingPath, kind) {
   const sync = () => {
     try { output.value = JSON.stringify(root.readSetting(), null, 2); error.textContent = ''; }
     catch (failure) { output.value = ''; error.textContent = failure.message; }
+    // 编辑器的增删改可能只触发内部重绘，不一定产生原生 input/change 事件。
+    markAutomationSettingsDirty();
   };
   root.addEventListener('input', sync); root.addEventListener('change', sync);
   root.append(palette, selected, result); return { root, palette, rows, sync };
@@ -558,11 +658,12 @@ function editorPalette(container, choices, onPick) {
   if (!choices.length) container.appendChild(el('p', 'automation-editor-note', '暂无可选项；请检查本地游戏配置和赛季设置。'));
 }
 
-/** 数组按点击顺序保存，可移除或上移；维修阈值允许不同舰队使用相同数值。 */
+/** 数组按点击顺序保存，可移除或上移；仅没有本地候选表的字符串项允许手填。 */
 function primitiveArrayEditor(value, key, settingPath) {
   const { root, palette, rows, sync } = structuredEditor(key, settingPath, 'array');
   const selected = [...value], choices = editorChoices(key), labels = new Map(choices.map(item => [String(item.value), item.label]));
   const repeatable = key === 'repairThresholds';
+  const manualStringEntry = ['protectedUids', 'helpNicknameKeywords'].includes(key);
   /** 返回副本，防止保存过程或调用者改写页面中的选择顺序。 */
   root.readSetting = () => [...selected];
   /** 重绘选择列表与按钮状态，顺序同时决定需求优先级、英雄委任和舰队阈值。 */
@@ -587,10 +688,10 @@ function primitiveArrayEditor(value, key, settingPath) {
     if (index >= 0 && !repeatable) selected.splice(index, 1); else selected.push(item);
     render();
   };
-  if (!['protectedUids','helpNicknameKeywords','repairThresholds'].includes(key)) editorPalette(palette, choices, pick);
+  if (!manualStringEntry && !repeatable) editorPalette(palette, choices, pick);
   palette.appendChild(el('p', 'automation-editor-note', '按选择顺序保存，可在当前设置中上移或移除。'));
-  // UID、昵称和逐舰队阈值没有静态配置表，逐项填写且保持 UID 为十进制字符串。
-  if (['protectedUids','helpNicknameKeywords','repairThresholds'].includes(key)) {
+  // UID 与昵称没有稳定的本地候选表，保留逐项填写；货轮奖励材料复用游戏物品表，防止名称输入错误。
+  if (manualStringEntry || repeatable) {
     const add = el('div', 'automation-editor-add'); const input = editorInput(key, repeatable ? 0 : '');
     input.setAttribute('aria-label', automationLabels[key]); input.placeholder = repeatable ? '耐久阈值' : key === 'protectedUids' ? '对象 UID' : '盟友昵称关键词';
     const button = el('button', 'tiny', '添加'); button.type = 'button';
@@ -611,6 +712,71 @@ function primitiveArrayEditor(value, key, settingPath) {
     add.append(input, button); palette.appendChild(add);
   }
   render(); return root;
+}
+
+/**
+ * 编辑按海盗类型分配的扫荡次数，并将分配总和校验为每日扫荡目标。
+ *
+ * @param {Array<{type: number, times: number}>} value 已保存的类型分配。
+ * @param {string} settingPath 设置字段路径。
+ * @param {HTMLInputElement} dailyInput 每日扫荡目标输入框。
+ * @returns {HTMLElement} 海盗扫荡对象数组编辑器。
+ */
+function pirateSweepEditor(value, settingPath, dailyInput) {
+  const { root, palette, rows, sync } = structuredEditor('sweepTypes', settingPath, 'pirate-sweep');
+  const selected = value.map(row => ({ type: row.type, times: row.times }));
+  const choices = editorChoices('sweepTypes');
+  const labels = new Map(choices.map(item => [String(item.value), item.label]));
+
+  /** 读取当前输入并拒绝重复类型、无效次数及与每日目标不一致的分配。 */
+  root.readSetting = () => {
+    const dailyLimit = readEditorInput(dailyInput, 'number', automationLabels.dailySweepLimit);
+    const seen = new Set();
+    const result = selected.map((row, index) => {
+      if (!Number.isSafeInteger(row.type) || row.type < 1) throw new Error('海盗类型第 ' + (index + 1) + ' 行类型无效');
+      if (seen.has(row.type)) throw new Error('海盗类型不能重复配置 ' + row.type);
+      if (!Number.isSafeInteger(row.times) || row.times < 1) throw new Error('海盗类型第 ' + (index + 1) + ' 行次数必须为正整数');
+      seen.add(row.type);
+      return { type: row.type, times: row.times };
+    });
+    const total = result.reduce((sum, row) => sum + row.times, 0);
+    // 空数组表示关闭类型扫荡；只要配置了类型，就必须完整拆分每日目标。
+    if (result.length && total !== dailyLimit) throw new Error('海盗类型次数合计 ' + total + '，必须等于每日扫荡次数 ' + dailyLimit);
+    return result;
+  };
+
+  /** 重绘类型分配行；次数输入直接更新对象数组，JSON 预览始终反映当前值。 */
+  const render = () => {
+    clear(rows);
+    if (!selected.length) rows.appendChild(el('span', 'automation-editor-note', '暂未选择'));
+    selected.forEach((row, index) => {
+      const line = el('div', 'automation-editor-row');
+      const label = el('span', 'automation-dictionary-label', (index + 1) + '. ' + (labels.get(String(row.type)) || row.type));
+      const input = editorInput('times', row.times); input.className = 'automation-pirate-sweep-times'; input.min = '1'; input.setAttribute('aria-label', (labels.get(String(row.type)) || row.type) + '扫荡次数');
+      input.oninput = () => { row.times = Number(input.value); sync(); };
+      const up = el('button', 'tiny', '↑'); up.type = 'button'; up.disabled = index === 0; up.setAttribute('aria-label', '上移 ' + row.type);
+      up.onclick = () => { [selected[index - 1], selected[index]] = [selected[index], selected[index - 1]]; render(); };
+      const remove = el('button', 'automation-chip-remove', '×'); remove.type = 'button'; remove.setAttribute('aria-label', '移除 ' + row.type);
+      remove.onclick = () => { selected.splice(index, 1); render(); };
+      line.append(label, input, up, remove); rows.appendChild(line);
+    });
+    for (const button of palette.querySelectorAll('[data-editor-choice]')) {
+      const pressed = selected.some(row => String(row.type) === button.dataset.editorChoice);
+      button.classList.toggle('on', pressed); button.setAttribute('aria-pressed', String(pressed)); button.disabled = pressed;
+    }
+    sync();
+  };
+
+  /** 点击候选类型新增一行，默认次数为 1，避免空白对象进入保存结果。 */
+  const pick = type => {
+    if (selected.some(row => row.type === type)) return;
+    selected.push({ type, times: 1 });
+    render();
+  };
+  editorPalette(palette, choices, pick);
+  palette.appendChild(el('p', 'automation-editor-note', '点击海盗类型加入当前设置，再填写该类型扫荡次数。'));
+  render();
+  return root;
 }
 
 /** 作物通过点击添加数值行，工厂通过所属产品下拉框选择，动态字典不按其键递归成配置组。 */
@@ -684,18 +850,61 @@ function objectArrayEditor(value, key, settingPath) {
     row.appendChild(remove); rows.appendChild(row); sync();
   };
   const add = el('button', 'tiny', key === 'matchWindows' ? '添加时段' : '添加舰队'); add.type = 'button'; add.onclick = () => addRow(structuredClone(model));
-  palette.append(add, el('p', 'automation-editor-note', key === 'matchWindows' ? '使用上海时间；留空沿用活动时间配置，支持精确到秒。' : '按排列顺序派出已开启的舰队；自动选择时只使用闲置舰队。'));
+  palette.append(add, el('p', 'automation-editor-note', key === 'matchWindows' ? '留空沿用活动时间配置，支持精确到秒。' : '按排列顺序派出已开启的舰队；自动选择时只使用闲置舰队。'));
   value.forEach(addRow); sync(); return root;
 }
 
-/** 将嵌套设置生成为分类参数表；复杂数组和动态字典使用三列点击编辑器。 */
+/**
+ * 将用户输入的点金次数和当前配置价格转换为右侧实时消费提示。
+ *
+ * @param {string|number} rawTimes 输入框中的原始次数。
+ * @param {number|null} price 设置接口返回的单次钻石价格。
+ * @returns {string} 可直接展示的价格与预计消耗文案。
+ */
+function clickGoldEstimate(rawTimes, price) {
+  const times = Number(rawTimes);
+  if (String(rawTimes).trim() === '' || !Number.isSafeInteger(times) || times < 0) return '请输入有效的非负整数次数';
+  if (!Number.isSafeInteger(price) || price <= 0) return '暂时无法读取每次点金价格';
+  return '每次 ' + price + ' 钻石 · 预计消耗：' + times + ' × ' + price + ' = ' + times * price + ' 钻石';
+}
+
+/**
+ * 渲染付费点金目标与实时消费估算；数值仍使用通用 data-setting 保存，估算只是未保存的页面反馈。
+ *
+ * @param {number} value 当前保存的每日目标次数。
+ * @param {string[]} path 设置路径。
+ * @returns {HTMLElement} 可直接加入钻石消费设置组的表单行。
+ */
+function clickGoldTimesField(value, path) {
+  const copy = settingCopy(path, 'clickGoldTimes');
+  const row = el('label', 'automation-field'); row.appendChild(settingText(copy.title, copy.note));
+  const control = el('div', 'automation-click-gold-control');
+  const input = editorInput('clickGoldTimes', value);
+  input.dataset.kind = 'number'; input.dataset.setting = path.join('.'); input.title = copy.note;
+  const estimate = el('span', 'automation-click-gold-estimate');
+  const refresh = () => { estimate.textContent = clickGoldEstimate(input.value, automationClickGoldUnitPrice); };
+  input.addEventListener('input', refresh); refresh();
+  control.append(input, estimate); row.appendChild(control); return row;
+}
+
+/**
+ * 将嵌套设置生成为分类参数表；复杂数组和动态字典使用三列点击编辑器。
+ *
+ * @param {object} value 当前设置子树。
+ * @param {string[]} path 当前设置路径。
+ * @param {HTMLElement} parent 要追加控件的父节点。
+ */
 function settingFields(value, path, parent) {
   for (const [key, sample] of Object.entries(value)) {
+    // 该强制购买开关属于原有付费日常，放在模块额度组之后显示；实际保存路径仍保持在 spending 下。
+    if (path.join('.') === 'spending' && key === 'dailiesDiscountTickets2x') continue;
     const fullPath = path.concat(key), copy = settingCopy(fullPath, key), title = copy.title;
     const pathName = fullPath.join('.');
     // 两个世界活动各自独立折叠，避免平铺字段和把不同玩法混入同一个面板。
     if (pathName === 'modules.world.merchantShip') { parent.appendChild(worldActivityGroup(copy, merchantShipFields(sample, fullPath))); continue; }
     if (pathName === 'modules.world.trade') { parent.appendChild(worldActivityGroup(copy, tradeFields(sample, fullPath))); continue; }
+    if (pathName === 'modules.world.pirate') { parent.appendChild(worldActivityGroup(copy, pirateFields(sample, fullPath))); continue; }
+    if (pathName === 'spending.clickGoldTimes') { parent.appendChild(clickGoldTimesField(sample, fullPath)); continue; }
     if (dictionarySettings.has(key)) { parent.appendChild(settingHeading(title, copy.note)); parent.appendChild(dictionaryEditor(sample, key, fullPath.join('.'))); continue; }
     if (Array.isArray(sample)) {
       if (objectArrays.has(key)) { parent.appendChild(settingHeading(title, copy.note)); parent.appendChild(objectArrayEditor(sample, key, fullPath.join('.'))); }
@@ -705,10 +914,18 @@ function settingFields(value, path, parent) {
     if (sample && typeof sample === 'object' && Object.keys(sample).length) {
       const group = el('details', 'automation-group'); group.open = key === 'spending'; group.appendChild(el('summary', null, title));
       if (copy.note) group.appendChild(el('p', 'automation-group-note', copy.note));
-      settingFields(sample, fullPath, group); parent.appendChild(group); continue;
+      settingFields(sample, fullPath, group); parent.appendChild(group);
+      if (path.join('.') === 'spending' && key === 'modules') {
+        const forceKey = 'dailiesDiscountTickets2x', forceCopy = settingCopy(['spending', forceKey], forceKey);
+        const label = el('label', 'automation-field'); label.appendChild(settingText(forceCopy.title, forceCopy.note));
+        const input = editorInput(forceKey, value[forceKey]); input.dataset.kind = 'boolean'; input.dataset.setting = ['spending', forceKey].join('.'); input.title = forceCopy.note;
+        label.appendChild(input); parent.appendChild(label);
+      }
+      continue;
     }
     const label = el('label', 'automation-field'); label.appendChild(settingText(title, copy.note));
-    const input = editorInput(key, sample);
+    const mode = executionModes[pathName];
+    const input = mode ? editorSelect([{value:'off',label:'关闭'},{value:'always',label:'开启'},{value:mode[0],label:mode[1]}], sample, title) : editorInput(key, sample);
     if (copy.note) input.title = copy.note;
     // 城市与科技候选项依赖赛季；切换时重新生成候选项并保留当前表单选择。
     if (key === 'season') input.onchange = refreshEditorOptions;
@@ -754,10 +971,15 @@ async function loadAutomation() {
   const account = current;
   const data = await call('/api/automation/settings');
   if (account !== current) return;
+  if (automationAccount !== account) pirateDailySweepMax = null;
   automationSettings = data.settings; automationAccount = account;
   automationOptions = data.options;
+  automationClickGoldUnitPrice = data.clickGoldUnitPrice;
   Object.assign(automationLabels, data.labels);
   const form = clear($('automation-settings')), pick = clear($('automation-select'));
+  // 表单是动态重建的，监听父节点即可覆盖普通控件和编辑器内部的改动。
+  form.oninput = markAutomationSettingsDirty;
+  form.onchange = markAutomationSettingsDirty;
   pick.appendChild(new Option('全部已启用模块','all'));
   const shared = el('details','automation-group'); shared.open = true;
   shared.appendChild(el('summary',null,'账号与钻石额度'));
@@ -803,6 +1025,38 @@ async function loadAutomation() {
     label.append(input,document.createTextNode(' '+(id === 'snap' ? '历史活动：' + data.labels[id] : data.labels[id])));choices.appendChild(label);
   }
   $('automation-hint').textContent='已加载当前账号设置。保存后生效；新模块默认关闭。';
+  setAutomationSettingsDirty(false);
+  void loadPirateSweepStatus(account);
+}
+
+/**
+ * 读取当前连接角色的海盗扫荡进度；断线或账号切换时只显示状态，不隐式登录或写入游戏。
+ *
+ * @param {string} account 请求发起时的账号标识。
+ * @returns {Promise<void>}
+ */
+async function loadPirateSweepStatus(account) {
+  const status = document.querySelector('[data-pirate-sweep-status]');
+  if (!status) return;
+  try {
+    const data = await call('/api/automation/pirate-sweep-status');
+    if (account !== current || !status.isConnected) return;
+    if (!data.connected) {
+      status.textContent = '连接游戏后显示当前角色的每日上限、今日已扫荡和剩余次数。';
+      return;
+    }
+    pirateDailySweepMax = data.dailyLimit;
+    // 输入控件跟随当前角色的 VIP 总上限；旧目标超限时只压缩总目标，类型分配保留并由编辑器提示重新调整。
+    const input = document.querySelector('[data-setting="modules.world.pirate.dailySweepLimit"]');
+    if (input) {
+      input.max = String(data.dailyLimit);
+      if (Number(input.value) > data.dailyLimit) input.value = String(data.dailyLimit);
+      input.oninput?.();
+    }
+    status.textContent = '当前角色：最大 ' + data.dailyLimit + ' 次 · 今日已扫荡 ' + data.used + ' 次 · 剩余 ' + data.remaining + ' 次。';
+  } catch (error) {
+    if (account === current && status.isConnected) status.textContent = '暂时无法读取海盗扫荡次数：' + error.message;
+  }
 }
 
 /** 读取所有参数控件生成结构化设置，禁止保存到已切换的账号。 */
@@ -821,6 +1075,10 @@ function readAutomationForm() {
     // 保存重新读取表单，不信任可被改写或尚未刷新的 JSON 展示文本。
     target[keys.at(-1)] = editor.readSetting();
   }
+  const pirate = settings.modules?.world?.pirate;
+  // 断线后继续沿用最近一次在线读取的角色上限，避免仅依赖 input.max 被脚本或粘贴绕过。
+  if (pirate && pirateDailySweepMax !== null && pirate.dailySweepLimit > pirateDailySweepMax)
+    throw new Error('每日扫荡次数不能超过当前角色上限 ' + pirateDailySweepMax + ' 次');
   return settings;
 }
 
@@ -869,7 +1127,7 @@ function saveAutomationSettings() {
   const account=current;
   openConfirm('保存当前账号自动化设置',[el('div',null,'这些设置控制资源消耗、分解、放生和钻石额度。额度 0 禁止钻石消费。')],async()=>{
     if(account!==current)throw new Error('账号已切换，请重新确认当前账号设置');
-    const data=await call('/api/automation/settings',{method:'POST',body:JSON.stringify({confirm:true,settings})});automationSettings=data.settings;$('automation-hint').textContent='设置已保存';
+    const data=await call('/api/automation/settings',{method:'POST',body:JSON.stringify({confirm:true,settings})});automationSettings=data.settings;setAutomationSettingsDirty(false);$('automation-hint').textContent='设置已保存';
   });
 }
 
@@ -908,6 +1166,35 @@ function startAutomationLoop() {
     await call('/api/loop/start',{method:'POST',body:JSON.stringify({confirm:true,rounds,everySeconds,modules,automationOnly:true})});await refreshAutomation();
   });
 }
+/** 仅在自动化页离开整页顶部后显示入口；编辑器和日志内部滚动不影响它。 */
+function updateAutomationBackToTop() {
+  $('automation-back-to-top').hidden = $('tab-automation').classList.contains('hidden') || window.scrollY <= 0;
+  $('automation-floating-save').hidden = $('tab-automation').classList.contains('hidden') || !automationSettingsDirty;
+}
+
+/** 标记当前自动化表单存在未保存改动，并同步浮动保存入口。 */
+function setAutomationSettingsDirty(dirty) {
+  automationSettingsDirty = Boolean(dirty);
+  updateAutomationBackToTop();
+}
+
+/** 动态表单的输入和选择变化都进入同一个未保存状态。 */
+function markAutomationSettingsDirty() {
+  setAutomationSettingsDirty(true);
+}
+
+/** 返回控制台顶部以便访问保存和导航；减少动画偏好下直接定位。 */
+function scrollAutomationToTop() {
+  // 尊重系统的减少动画设置，避免长表单平滑滚动造成不适。
+  const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth';
+  window.scrollTo({ top: 0, behavior });
+}
+
+// 整页滚动监听不阻塞滚动；首次同步也覆盖浏览器恢复的滚动位置。
+window.addEventListener('scroll', updateAutomationBackToTop, { passive: true });
+$('automation-back-to-top').onclick = scrollAutomationToTop;
+$('automation-floating-save').onclick = saveAutomationSettings;
+updateAutomationBackToTop();
 $('automation-load').onclick=reloadAutomationSettings;
 $('automation-save').onclick=saveAutomationSettings;
 $('automation-plan').onclick=previewAutomation;
