@@ -100,6 +100,7 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'income-old.json'), 'utf8
 const protocol = (await import('../src/proto.mjs')).loadProtocol();
 const { GameClient } = await import('../src/client.mjs');
 const { loadStore, saveStore } = await import('../src/accounts.mjs');
+const { defaultSettings, saveSettings, loadLedger, businessDate, writeJson } = await import('../src/automation/settings.mjs');
 const { createConsole } = await import('../src/server.mjs');
 
 let logins = 0;
@@ -161,6 +162,23 @@ try {
   const afterStop = logins;
   await sleep(1300);
   assert.equal(logins, afterStop, '用户停止后不能再重连');
+
+  // 断线前已落盘但未确认的钓鱼请求不能被恢复后的循环重发，也不能再次终止持续挂机。
+  const gatherSettings = defaultSettings();
+  Object.assign(gatherSettings.modules.gather, { enabled: true, fishing: true, maxFishCasts: 1 });
+  saveSettings('a', gatherSettings);
+  assert.equal((await startLoop()).status, 200);
+  await waitFor(() => session().loop.completed >= 1, '写入未确认钓鱼前完成首轮');
+  const pending = loadLedger('a', '1');
+  pending.ledger.pending['StartFishingRequest:{}'] = { token: 'reconnect-pending-fishing', ruby: 0, module: 'gather', date: businessDate(Date.now()) };
+  writeJson(pending.file, pending.ledger);
+  const beforeFishingRecovery = session().client;
+  dropConnection(beforeFishingRecovery);
+  await waitFor(() => session().client?.connected && session().client !== beforeFishingRecovery && session().loop.completed >= 1 && session().loop.running,
+    '未确认钓鱼后的自动重连与持续挂机');
+  assert.equal((await (await fetch(url('/api/automation/status?account=a'))).json()).error, null, '未确认钓鱼只能阻断采集模块');
+  assert.equal((await post('/api/loop/stop?account=a', { confirm: true })).status, 200);
+  await session().loop.job;
 
   // 默认策略：被顶号后不重连，也不在重启时恢复。
   assert.equal((await startLoop()).status, 200);

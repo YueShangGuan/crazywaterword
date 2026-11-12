@@ -207,6 +207,15 @@ const week = (type, period) => ({ type, period, startTime: now - 100, endTime: n
   assert.equal(got, 1, '两位英雄都达标才领下一档');
 }
 {
+  const client = game({
+    WeekHeroStarInfoRequest: () => ({ gotStage: 0 }),
+    AllHeroRequest: () => ({ heroes: [{ heroId: '甲', star: 0 }] }),
+    WeekHeroStarGotRewardRequest: () => assert.fail('缺少配置英雄时不应发送领奖请求'),
+  });
+  await claimWeeklyRewards(client, config, [week(3, 8)], onlyKeys('weekHeroStar'), record(), {});
+  assert.equal(client.sent, undefined, '缺少配置英雄不能被误判为 0 星首档可领奖');
+}
+{
   const free = game({ WeekChipInfoRequest: () => ({ gifts: [] }), WeekUniqueLotteryRequest: () => ({ gotFree: false }) });
   await claimWeeklyRewards(free, config, [week(6, 1), week(7, 1)], onlyKeys('weekChipFree', 'weekUniqueFree'), record(), {});
   assert.deepEqual(free.sent.map(row => row[0]), ['WeekChipGotFreeRequest', 'GotUniqueLotteryFreeRequest']);

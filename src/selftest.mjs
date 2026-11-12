@@ -348,7 +348,7 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
 // Heartbeat matching. The server echoes our int64 timestamp back in long form, so a
 // naive identity check never matches and every ping looks like a timeout.
 {
-  const { GameClient, toNumber, nextSeqNo, isSeqNoInRange, MAX_SEQ } = await import('./client.mjs');
+  const { GameClient, toNumber, nextSeqNo, isSeqNoInRange, MAX_SEQ, PING_TIMEOUT_MS, TICK_INTERVAL_MS } = await import('./client.mjs');
   const client = new GameClient({ protocol });
   const sent = 1791350000123;
   const high = Math.floor(sent / 4294967296);
@@ -371,6 +371,17 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
   assert.equal(client.lastPingTimestamp, sent, 'mismatched echo leaves the ping outstanding');
   client.lastPingTimestamp = 0;
   assert.equal(client.tryHandlePong({ clientTimestamp: sent }), false, 'unsolicited pong is ignored');
+
+  // 自动化写入高峰可能让一个 1 秒 tick 延迟；仍在五个 tick 容错期内时不能主动断开健康连接。
+  let disconnectReason;
+  client.failConnection = reason => { disconnectReason = reason; };
+  client.socket = { readyState: 1 };
+  client.lastPingTimestamp = Date.now() - TICK_INTERVAL_MS * 2;
+  client.tick();
+  assert.equal(disconnectReason, undefined, 'single delayed tick must not create a false heartbeat disconnect');
+  client.lastPingTimestamp = Date.now() - PING_TIMEOUT_MS - 1;
+  client.tick();
+  assert.equal(disconnectReason, '心跳超时，连接已断开', 'heartbeat still disconnects after the full grace window');
 
   assert.equal(nextSeqNo(MAX_SEQ), 1, 'seq wraps to 1');
   assert.equal(nextSeqNo(5), 6, 'seq increments');
@@ -829,6 +840,32 @@ roundTrip(Buffer.from('RequestResponse'.repeat(200)), 'text');
   assert.equal(tier.claimable, false, '7 orders is not enough for the 12-order tier');
   assert.equal(nextOrderTier(orderCfg, { orderNum: 12, rewardedNum: 6 }).claimable, true);
   assert.equal(nextOrderTier(orderCfg, { orderNum: 99, rewardedNum: 18 }).tier, null, 'the last tier claims nothing');
+
+  // 档位赛季从 worldId 推导（客户端 WorkerOrderUtil 的规则），与设置的“当前赛季”（地图场景）无关；
+  // 赛季 1 的表只到 40 档，赛季 2 开服满 5 天后才有 45 档——漏掉这一层会静默漏领 45 档奖励。
+  const seasonalCfg = { tables: { OrderDailyRewardCfg: { data: [
+    { season: 1, worldOpenDays: 1, reqNum: 6 }, { season: 1, worldOpenDays: 1, reqNum: 40 },
+    { season: 2, worldOpenDays: 1, reqNum: 6 }, { season: 2, worldOpenDays: 1, reqNum: 40 },
+    { season: 2, worldOpenDays: 5, reqNum: 6 }, { season: 2, worldOpenDays: 5, reqNum: 45 },
+  ] } } };
+  const openTime = 1_000_000_000;
+  // worldAge(days)：世界开服第 days+1 天；now 必须放在选项层，player 里只带身份字段。
+  const worldAge = days => ({ player: { worldId: 2002000001, worldOpenTime: openTime }, now: openTime + days * 86400 });
+  // 赛季 2 且开服满 5 天：45 档按 worldId 推导出来，与设置填什么无关。
+  assert.equal(nextOrderTier(seasonalCfg, { orderNum: 45, rewardedNum: 40, ...worldAge(5) }).tier, 45, 'worldId season 2 with 5 days open sees the 45 tier');
+  assert.equal(nextOrderTier(seasonalCfg, { orderNum: 45, rewardedNum: 40, ...worldAge(5) }).claimable, true, '45 orders reaches the 45 tier');
+  // 同一赛季但开服第 4 天（不足 5 天）：仍按第 1 天档组，最高 40，不能提前探测 45。
+  assert.equal(nextOrderTier(seasonalCfg, { orderNum: 45, rewardedNum: 40, ...worldAge(3) }).tier, null, 'a world younger than 5 days stays on the day-1 group');
+  // worldId 推导出的赛季超出表内最大值：封顶到最新赛季的最新档组。
+  assert.equal(nextOrderTier(seasonalCfg, { orderNum: 45, rewardedNum: 40, ...worldAge(0), player: { worldId: 2999000001, worldOpenTime: openTime } }).tier, 45, 'a season beyond the table caps to the newest group');
+  // 登录快照缺 worldId：视图路径保持未解析（不顺延、不猜测）；领取路径 probe 用全表并集探测 45。
+  const unknown = nextOrderTier(seasonalCfg, { orderNum: 45, rewardedNum: 40, player: {} });
+  assert.equal(unknown.tier, null, 'an unknown season resolves no tier instead of guessing');
+  assert.deepEqual(unknown.reqNums, [], 'an unknown season stays unresolved so the survey never postpones');
+  const probedTier = nextOrderTier(seasonalCfg, { orderNum: 45, rewardedNum: 40, player: {}, probe: true });
+  assert.equal(probedTier.tier, 45, 'probe mode falls back to the union of every season table');
+  assert.equal(probedTier.claimable, true, 'probe mode stays claimable at 45 orders');
+  assert.equal(probedTier.probed, true, 'probe mode reports the fallback so callers can guard retries');
   checked += 1;
 }
 

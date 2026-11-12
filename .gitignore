@@ -3,3 +3,6 @@ work/
 data/
 output/
 .playwright-cli/
+
+# ZCode 本地会话数据
+.zcode/

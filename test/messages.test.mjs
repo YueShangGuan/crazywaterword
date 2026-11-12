@@ -4,6 +4,7 @@ import {
   MESSAGE_LIMIT,
   appendMessage,
   createMessageStore,
+  formatSystemChat,
   loadInitialMessages,
   messagesFromPush,
   normalizeChatMessage,
@@ -12,15 +13,57 @@ import {
   snapshotMessages,
 } from '../src/messages.mjs';
 
-/** 验证世界和联盟频道使用协议 channel 正确分组，并保留系统消息参数。 */
+/** 验证世界和联盟频道使用协议 channel 正确分组，系统消息按模板转成可读文本。 */
 test('messages: chat channels normalize into world and guild tabs', () => {
   const world = normalizeChatMessage(1, { content: { text: '世界发言' }, timestamp: 100 });
   const guild = normalizeChatMessage(2, { sender: { nickname: '盟友' }, content: { systemMsgId: '加入公会', systemMsgParams: ['小明'] }, timestamp: 101 });
   assert.equal(world.kind, 'world');
   assert.equal(world.text, '世界发言');
   assert.equal(guild.kind, 'guild');
-  assert.match(guild.text, /加入公会/);
-  assert.match(guild.text, /小明/);
+  assert.equal(guild.text, '欢迎小明加入联盟');
+  assert.equal(guild.segments.length, 3);
+  assert.deepEqual(guild.segments[0], { text: '欢迎' });
+  assert.deepEqual(guild.segments[1], { text: '小明', color: '#fdb405' });
+  assert.deepEqual(guild.segments[2], { text: '加入联盟' });
+});
+
+/** 验证系统消息模板会翻译城市编号、货轮品质与职位枚举，并保留配置里的高亮分段。 */
+test('messages: system chat templates resolve city ids, ship grades and roles', () => {
+  const ctx = {
+    cityNames: new Map([[61, '营地G0'], [4, '营地A3']]),
+    factionNames: { 1: '太阳岛', 2: '铁锈湾', 3: '风栖港', 4: '水之都' },
+  };
+  const streak = normalizeChatMessage(1, { content: { systemMsgId: '国战连杀', systemMsgParams: ['威呀', '61', '5', '0', '4', '0', '1'] }, timestamp: 100 }, ctx);
+  assert.equal(streak.text, '威呀在营地G0城战中斩获5连胜');
+  assert.deepEqual(streak.segments, [
+    { text: '威呀', color: '#fdb405' },
+    { text: '在营地G0城战中斩获' },
+    { text: '5', color: '#fdb405' },
+    { text: '连胜' },
+  ]);
+  const seize = formatSystemChat('橙宝藏易主', ['2', '47', 'ORANGE'], ctx);
+  assert.equal(seize.map((segment) => segment.text).join(''), '联盟铁锈湾正在抢占万吨货轮');
+  const seizeFallback = formatSystemChat('橙宝藏易主', ['9', '47', 'ORANGE']);
+  assert.equal(seizeFallback.map((segment) => segment.text).join(''), '联盟9正在抢占万吨货轮');
+  const treasureStreak = formatSystemChat('宝藏连杀', ['梦千世界', 'ORANGE', '47', '5', '0', '2', '0']);
+  assert.equal(treasureStreak.map((segment) => segment.text).join(''), '梦千世界在万吨货轮中斩获5连胜');
+  const declare = formatSystemChat('宣战成功', ['1', 'VICE_PRESIDENT', '哈哈有辱斯文', '78'], ctx);
+  assert.equal(declare.map((segment) => segment.text).join(''), '联盟太阳岛副盟主哈哈有辱斯文对城市城 #78宣战');
+  const ship = normalizeChatMessage(2, { content: { systemMsgId: '货轮第一', systemMsgParams: ['梦千世界'] }, timestamp: 101 });
+  assert.equal(ship.text, '恭喜梦千世界一骑绝尘，成功占领万吨货轮');
+  const captainSmall = formatSystemChat('联盟商船船长', ['乱世霸蛮荒0955', 'GUILD_SHIP_S']);
+  assert.equal(captainSmall.map((segment) => segment.text).join(''), '乱世霸蛮荒0955已经成为(史诗商船)联盟商船船长，快去一起完成订单吧！');
+  const captainMedium = formatSystemChat('联盟商船船长', ['沙场点兵4576', 'GUILD_SHOP_M']);
+  assert.equal(captainMedium.map((segment) => segment.text).join(''), '沙场点兵4576已经成为(传说商船)联盟商船船长，快去一起完成订单吧！');
+  const captainLarge = formatSystemChat('联盟商船船长', ['啵啵萝卜', 'GUILD_SHOP_L']);
+  assert.equal(captainLarge.map((segment) => segment.text).join(''), '啵啵萝卜已经成为(超凡商船)联盟商船船长，快去一起完成订单吧！');
+});
+
+/** 验证未收录的系统消息仍按 "编号 · 参数" 原样拼接，不抛错也不产生分段。 */
+test('messages: unknown system message ids keep the raw joined fallback', () => {
+  const unknown = normalizeChatMessage(1, { content: { systemMsgId: '未知消息', systemMsgParams: ['甲', '乙'] }, timestamp: 100 });
+  assert.equal(unknown.text, '未知消息 · 甲 · 乙');
+  assert.equal(unknown.segments, null);
 });
 
 /** 验证批量推送会拆成多条消息，私聊和通知也会得到安全显示文本。 */

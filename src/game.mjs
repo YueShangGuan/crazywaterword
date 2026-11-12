@@ -172,15 +172,19 @@ function summarizeCargoShip(ship, index) {
   };
 }
 
-/** 将万吨货轮奖励压成总览可直接展示的资产列表。 */
+/** 将万吨货轮奖励压成总览可直接展示的资产列表和当日次数统计。 */
 function summarizeMerchantShip(state) {
   // 万吨货轮沿用世界宝藏列表中的 color=5 标记，其他宝藏不能进入该卡片。
   const treasure = asArray(state?.TreasureLootListRequest?.treasure)
     .find((entry) => Number(entry.color) === 5);
   const stats = state?.TreasureLootStatsRequest;
   return {
-    remainingRewardTimes: stats?.todayRewardTimes ?? null,
+    // 协议字段记录的是当天已领取次数；总览同时展示总额度，避免把已用次数误读成剩余次数。
+    todayRewardTimes: stats?.todayRewardTimes ?? null,
+    totalRewardTimes: stats?.totalRewardTimes ?? null,
     uid: treasure?.uid ?? null,
+    // 占领总进度（0-100）；总览状态行用它替代“已出现”字样。
+    progress: treasure?.progress ?? null,
     reward: treasure ? summarizeAssets(treasure.reward?.asset) : [],
   };
 }

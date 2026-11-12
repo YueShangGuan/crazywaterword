@@ -53,6 +53,8 @@ export function describeLogError(message, context) {
       return (label ? label + '超时' : '请求超时') + '，游戏服务器未及时回复';
     })
     .replace(/\bserver prompt:\s*([^\n]+)/g, (_, reason) => explainPrompt(reason.trim(), context))
+    // 客户端已在结果码 2 且凭证时间戳过期时追加标记；必须排在通用规则前，否则先被吞掉。
+    .replace(/\blogin rejected: result=2[^\n]*\(credential expired\)/g, '当前登录凭证失效，请重新登录')
     .replace(/\blogin rejected: result=(\d+)([^\n]*)/g, (_, code, reason) => {
       const label = code === '1' ? '游戏服务器维护中，暂时无法登录' : '游戏服务器拒绝登录（结果码 ' + code + '）';
       return /[\u4e00-\u9fff]/.test(reason) ? label + '：' + reason.trim() : label;

@@ -10,7 +10,7 @@ const config = {
     AntiqueBaseCfg: { data: [{ antiqueId: '藏品蓝1', showName: '黑白掌机' }] },
     AntiqueRecruitTaskCfg: { data: [
       { season: 1, id: 1, times: 50 }, { season: 1, id: 2, times: 100 },
-      { season: 2, id: 1, times: 200 }, { season: 2, id: 2, times: 400 },
+      { season: 2, id: 1, times: 200 }, { season: 2, id: 2, times: 400 }, { season: 2, id: 3, times: 600 },
     ] },
   },
   materialName: id => id === 'RUBY' ? '钻石' : '未知材料',
@@ -79,6 +79,10 @@ export async function testAntiqueRecruit() {
   const lateSeason = mock({ antique: { freeEndTimeSeconds: later, task: { gotId: 0, times: 50 } } });
   await run(lateSeason, { role: { level: 15, worldId: 3000001 }, flags: [claim] });
   assert.deepEqual(lateSeason.writes, [], '第3赛季按最近配置第2赛季处理，不套用第1赛季门槛');
+  const currentWorld = mock({ antique: { freeEndTimeSeconds: later, task: { gotId: 2, times: 580 } } });
+  const waiting = await run(currentWorld, { role: { level: 15, worldId: 2002006318 }, flags: [claim] });
+  assert.deepEqual(currentWorld.writes, [], '第二赛季 580 次未达到第 3 档 600 次时不能发送领取请求');
+  assert.match(waiting[0].reason, /580\/600/, '等待说明必须使用角色世界对应的赛季门槛');
   for (const invalid of [null, { times: 100 }, { times: 100, gotId: 99 }]) {
     const client = mock({ antique: { freeEndTimeSeconds: later, task: invalid } });
     assert((await run(client, { flags: [claim] }))[0].skipped);

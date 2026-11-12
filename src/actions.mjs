@@ -5,7 +5,7 @@
 // from guessing. Requests whose response type does not exist in the protocol table are
 // answered by a push or a generic OkResponse instead, so they are sent fire-and-forget.
 
-// SpeedUpCost.SPEED_UP_ITEM=2（1=钻石 2=加速器 3=广告）；普通加速动作默认只用 2，维修回退由 world.mjs 单独处理 1。
+// SpeedUpCost.SPEED_UP_ITEM=2（1=钻石 2=加速器 3=广告）；普通加速动作默认只用 2，维修回退由 world.mjs 单独处理 1，免广告加速由自动化海岛模块单独处理 3。
 export const SPEED_UP_ITEM_TYPE = 2;
 
 // 「每日精选」里几个礼包的 packId 是客户端写死的字面量（DailyPackBuyPanel 的字段初值），
@@ -212,7 +212,7 @@ export const ACTIONS = {
     request: 'SpeedUpUpgradeBuildingRequest',
     response: null,
     mutate: true,
-    desc: '花加速器缩短建造时间；type=2 是加速器，钻石(1)与广告(3)本工具不用',
+    desc: '花加速器缩短建造时间；type=2 是加速器，钻石(1)与广告(3)不在此动作中使用',
     params: ['buildingId', 'useNum'],
     body: ({ buildingId, useNum }) => ({ buildingId, speedUp: { type: SPEED_UP_ITEM_TYPE, useNum: Number(useNum) } }),
   },

@@ -1575,8 +1575,9 @@
     ],
     "implementation": [
       "src/actions.mjs:27",
-      "src/automation/base.mjs:520",
-      "src/dailies.mjs:200"
+      "src/automation/base.mjs:779",
+      "src/automation/base.mjs:791",
+      "src/dailies.mjs:203"
     ],
     "fields": [
       {
@@ -5300,6 +5301,7 @@
     ],
     "implementation": [
       "src/ad-shop.mjs:81",
+      "src/automation/base.mjs:770",
       "src/automation/battle.mjs:193",
       "src/automation/cultivation.mjs:116"
     ],

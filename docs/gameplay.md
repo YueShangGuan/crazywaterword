@@ -127,6 +127,8 @@ ChurnInfo            UltraOpen            BlackList
 
 `DispWaterBuilding` 有 15 个字段。除建筑本身外，还挂了工厂 `factory`、装备制造 `equipMaking`、舰队 `fleet`、农田 `farm`、宠物培育 `petBreed`、宠物服务 `petServe` 六种功能，同一张建筑表承载了全部水上设施。
 
+`petBreed` 每座建筑都会下发，普通建筑里是默认空结构（`breedQ: []`、`maturePets: []`、`maxQLength: 3`）。真实培育队列只挂在 `BuildingUnlockCfg` 的「宠物培育室」上，判断队列容量和成熟海兽必须按这个建筑 ID 取，不能按字段是否存在或建筑名是否叫「宠物」。
+
 `DispFactory` 三个字段：`factoryQ[]` 生产队列、`finishedProducts[]` 已完成的成品、`autoProductId` 自动生产的产品。
 
 `DisplayAsset` 形状为 `{type, id, num}`，`type=0` 是道具、`type=1` 是资源，`id` 为字符串。
@@ -163,6 +165,13 @@ ChurnInfo            UltraOpen            BlackList
 
 `DispClickGoldInfo` 是点金玩法：`freeTimes`、`paidTimes`、`minGold=7500`、`resetTime`、`maxPaidTimes=7`。
 
+免费次数上限来自 `OfflineParamCfg.免费点金次数`（实测 3），必须先于付费使用：客户端固定 `{times:1, free:true}` 一次一发，
+免费名额用完后才按 `paidTimes` 做钻石点金。挂机收益模块接管日常 1006 后旧日常不再执行，所以这条顺序也要在该模块内保持。
+
+付费点金是十连批量：客户端单次最多 `times:10`。实测一次 `times:17, free:false` 会被服务端以
+`PromptResponse{prompt:5}`（`BUSINESS_BLOCKING`）拒绝，且不扣钻；所以超过十次要分批，余数用同样存在的
+“点金一次” `times:1` 补足。`maxPaidTimes` 是付费次数上限（实测 7 + VIP「普通点金次数」10 = 17），不含免费次数。
+
 ### 3.6 日常：每日任务、成就、活跃宝箱、邮件
 
 - 协议：`DailyTaskInfoRequest`、`AchievementInfoRequest`、`EmailBoxRequest{pageNo}`、`ChurnInfoRequest`、`ChannelRewardInfoRequest`。
@@ -182,6 +191,14 @@ ChurnInfo            UltraOpen            BlackList
 - 协议：`MyResFieldsRequest`、`MyFleetsRequest`、`CargoShipsRequest`、`AllPirateRequest`、`PirateKillRecordRequest`、`WorldBossInfoRequest`、`LimitedBossOpenRequest`、`RadarInfoRequest`。
 
 实测：资源田 `0/10`（上限 10）、舰队 0、货船 0、海盗 0（扫荡次数 0）、世界 Boss `raidId=0`、雷达 `raidId=0`。这些是世界服玩法，本账号等级尚低，基本未参与。
+
+世界地图所需的完整世界状态来自 `WorldInfoRequest{screenCenter:{x,y}}` → `WorldInfoResponse`：
+`fleets[]`（WorldFleet）、`cities[]`（WorldCity）、`myGuildTitle`、`bountyCities[]`、`fortFund`、`blackWaterId`。
+`WorldCity{id,state,guildIdx,defenceFleetNum,attackFleetNum}` 的 `state` 为 1 空闲、2 交战中；`guildIdx` 是城市所属联盟编号，0 为中立。`SCity` 推送是同类城市列表。
+本盟城市来自 `GuildCityInfoResponse.cities[].cityId`，控制台据此标记“我方”，不猜 `guildIdx` 与联盟 ID 的映射。
+城战状态来自 `WarDeclarationResponse{startTime,endTime,assembleCityId,declarations[{cityId,attackGuildIdx,defenceGuildIdx}]}`：`attackGuildIdx` 等于本盟序号的城市是可进攻目标，本盟城市（以及 `defenceGuildIdx` 等于本盟序号的受袭城市）是可防守目标。手动派遣用 `MoveFleetsToCityRequest{buildingId:[id],cityId}`，读回 `MyFleetsResponse` 的 `targetCityId` 后才算确认。
+`WorldInfoResponse.fleets[].owner{playerId,nickname,guildId,title}` 用于区分自己的舰队、同联盟舰队和其他联盟舰队；控制台默认只显示自己的舰队，盟友/敌方舰队需要手动打开图层。
+控制台「世界地图」的地图读取是只读的：底图、舰队和商船位置来自 `loadMapAsset` + `MyFleetsResponse` + `TradeInfoResponse.cargo`；地图页打开时每 30 秒（或手动刷新）发一次上述查询，持续挂机运行期间同样放行（`GameClient` 业务请求在连接内串行排队，不会与挂机请求交叉），控制台单次操作和高级自动化持有操作级锁时仍读缓存。城战手动派遣是独立的写操作，需要二次确认。
 
 ### 3.8 公会
 
@@ -405,11 +422,17 @@ node tools/selftest-describe.mjs    # 字段布局还原自检
 服务端在业务拒绝时不回 `*Response`，只推一条 `PromptResponse{style, prompt, args[]}`，
 而这条消息**不带我们发出去的 seq**，无法直接对应请求。
 
-`HeroLevelUpRequest` / `HeroSkillLevelUpRequest` / `DiscountShopBuyRequest` 这类请求
+`HeroLevelUpRequest` / `HeroSkillLevelUpRequest` 这类请求
 没有配套 Response：成功时服务端一声不吭，被拒时只有那条 PromptResponse。
 一次英雄养成有 160+ 条这样的请求，归错一条就会把同时段在飞的无关请求拒掉 ——
 实测中一条技能升级被拒的 PromptResponse 拒掉了当时在飞的 `AllHeroRequest`，
 整个 HTTP 调用变成 400。
+
+`DiscountShopBuyRequest` 是例外：2026-11-05 / 11-06 抓包确认服务端会回
+`DiscountShopBuyResponse{shopItem, reward}`，`reward` 就是本次买到的奖励，
+购买后同一个 `id` 的槽位立刻换成下一件商品（`isBuy` 仍是 false）。
+所以折扣购买必须用这条回包确认；`id` 只是槽位序号，换页、换商品、换日都会变，
+不能拿 `id` 当跨轮幂等键，也不能靠 `isBuy` 读回判断购买是否生效。
 
 规则：**服务端按请求到达顺序应答，所以一条 prompt 属于最早那条还没被应答的发送**。
 `GameClient.sendWatch(name, body, {window})` 为无响应请求开一个观察窗口（守到 prompt 即被拒，
@@ -481,10 +504,11 @@ node tools/selftest-describe.mjs    # 字段布局还原自检
 | `CancelFactoryProduceRequest{buildingId, index}` | 无 | 仅取消未开工等待项，index 使用服务端制造位 idx |
 | `FinishWorkerOrderRequest{index}` | 有 | 交居民订单 |
 | `UpgradeBuildingRequest{buildingId}` | 无 | 升级建筑 |
-| `SpeedUpUpgradeBuildingRequest{buildingId, speedUp}` | 无 | 加速建造 |
-| `SpeedUpFactoryProduceRequest{buildingId, speedUp, index}` | 无 | 加速生产，`index` 是队列下标 |
+| `SpeedUpUpgradeBuildingRequest{buildingId, speedUp}` | 无专用 Response（抓包回 `OkResponse`） | 加速建造 |
+| `SpeedUpFactoryProduceRequest{buildingId, speedUp, index}` | 无专用 Response（抓包回 `OkResponse`） | 加速生产，`index` 是队列下标 |
 
 `SpeedUpCostParam{type, useNum}`，`type`: 1=钻石 2=加速器 3=广告；普通建造和生产加速仍只用 2。抓包确认舰队维修的钻石请求使用 `type=1,useNum=0`，由服务端按剩余维修时间计算扣钻；城战行军加速使用单字段 `SpeedUpFleetRequest{buildingId}`，每次扣 30 钻石。
+VIP 免广告加速的抓包序列为：先发 `WatchAdvRequest{type:1, id}` 等待 `OkResponse`，再发加速请求 `speedUp:{type:3, useNum:0}`。建筑升级广告 ID 为 8，工厂生产广告 ID 为 6；`AdvEffectCfg` 当前两者的 `dailyLimit` 都是 3。每次广告加速固定减少 1800 秒，因此自动化只对剩余时间严格超过 30 分钟的建造或生产使用；29 分钟跳过、31 分钟执行。
 自动维修优先使用现有加速器，无道具或道具明确失败后按 `ceil(剩余秒数 / 60) × 10` 钻石计价：剩余 60 秒为 10 钻、61 秒为 20 钻。钻石提交前重新读取舰队维修结束时间，按完整费用检查总额度、模块额度和余额保留量；维修已结束或时间无效时跳过，预览采用相同计价规则。
 `useNum` 按客户端 `new SpeedUpResult(!0, SPEED_UP_ITEM, min(ceil(剩余秒/60), 持有量))` 算，最少 1。
 
@@ -528,6 +552,8 @@ node tools/selftest-describe.mjs    # 字段布局还原自检
 - `world_map1`：240x640，97 城，717 块田；`world_map2`：408x1088，281 城，2531 块田。
 - `mapData[gridIdx] = resType * 10000 + cityId`；`cityInfo[cityId] = {gridIdx, fort, res:[田的 gridIdx...], neighbors, monsters}`。
 - 读取入口 `src/world.mjs` 的 `loadMapAsset(scenarioId)`，文件在 `work/cdn/world_map.world_map1.json`。
+- 地图包和协议都只有“城 + 城属田”的归属，没有逐格归属；世界地图按城池真实坐标还原粗网格（`world_map1` 是 10×10，普通城一格，山景城一个单位占 2×2 四格），势力色只画在城池格上（中立/野怪城为灰色），资源田默认隐藏。势力配色对齐官方地图：黄 `#aa943c`、棕 `#885755`、紫 `#825f9e`、青 `#5d8b96` 按 `guildIdx` 1-4 顺序取用（`GUILD_PALETTE`），更多势力按金色角生成。
+- 世界对象（限时 Boss、硅矿、沉船 `wreckPos`）按地图包真实点位换算成格坐标画在对应位置；静态宝藏位（`treasureData`）只是货轮停靠点，不逐个显示。当前万吨货轮（`TreasureLoot` color 5）的位置取 `TreasureLootListResponse` 里该条目的 `gridIdx`（动态，绿色方框整格标注），派遣目标就是这些宝藏位之一。世界 Boss 的 `bossData` 也是四个候选位，只有 `WorldBossInfoResponse.info.gridIdx` 命中的今日 Boss 才画（红色菱形），其余候选位不显示也不进悬停与目标反查。舰队前往非城目标时航线直达真实格点，舰队列表与详情按 `targetGridIdx` 反查对象名。
 
 占田用 `ChallengeResFieldRequest{resFieldGridIdx, fleetBuildingIds}`、放弃用
 `GiveUpResFieldRequest{resFieldGridIdx}`，两者都无 Response。
@@ -676,7 +702,7 @@ node tools/selftest-describe.mjs    # 字段布局还原自检
 | 联动活动签到 | `ClaimActivityDailyCheckInRewardRequest{activityId, checkId}`。客户端按开放日算当天，`signDay` 早于当天的是补签，服务端扣钻石（`dailyActive.checkRuby`）。工具只发当天的 `rewardId`，两个开放时间不在同一天时跳过，用回包 `checkId` 核对。 |
 | 联动活动活跃 | `ClaimActivityDailyActiveRewardRequest`，每次领下一档，回包 `claimedId` 递增。分数来自 `SCAllActivity` 和 `SCActivityActiveScoreUpdate`。 |
 | 联动每日免费礼包 | `ClaimDailyCombGiftRequest`、`ClaimFreeSelectGiftRequest` 只发 `price` 为 0 的礼包。没有响应类型，靠 `sendWatch` 和道具推送确认。服务端只在登录时下发状态，跨天按客户端 `dailyReset` 在本地清空。 |
-| 走江踏浪 | `SnowballDetailRequest` 读积分和档位，`SnowballClaimGiftRequest` 领免费礼包，`SnowballClaimRewardRequest` 领达标档位。不开局，不买体力。 |
+| 走江踏浪 | `SnowballDetailRequest` 读积分、档位和进行中的 session；`SnowballClaimRewardRequest` 领达标档位。开启自动对局后按 `SnowballDetailResponse.session` 续接或 `SnowballStartRequest{multiplier:1}` 开局，用 `SnowballOpRequest` 操作、`SnowballUseItemRequest` 使用火焰/冰冻符；每局结束重读详情确认积分与 session。默认至少 100 瓶能量才开局，连续开局开关只按剩余能量续局；不购买体力。 |
 | 抽奖 | `SpinCompassWheelRequest{num:1}` 只在 `CompassWheelInfoResponse.cost` 是抽奖券时发送，`WeekLotteryPrizeRequest{times:1}` 只在持有周转盘币时发送。各开关默认关闭。罗盘张数按账号设置，默认 10 张，周抽奖每轮最多 10 次。 |
 | 周活动奖励 | 累充 `WeekChargeGotRewardRequest`、升星 `WeekHeroStarGotRewardRequest`、芯片 `WeekChipGotFreeRequest`、翻牌 `GotUniqueLotteryFreeRequest`、周订单 `WeekOrderGotFinalRequest`。提交周订单 `FinishWeekOrderRequest` 接入材料预留，默认关闭。 |
 | VIP 每日奖励 | `GotVipDailyRewardRequest{vipLevel}`，只领不高于当前等级且未领的档位。 |

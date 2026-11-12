@@ -9,7 +9,8 @@ const MEMBER_REQUESTS = new Set([
 ]);
 
 export const TICK_INTERVAL_MS = 1000;
-export const PING_TIMEOUT_MS = 1000;
+// 自动化高峰会让单次计时器晚于 1 秒触发；保留每秒心跳，但给服务端回包 5 个 tick 的容错窗口，避免正常连接被误判为断线。
+export const PING_TIMEOUT_MS = 5 * TICK_INTERVAL_MS;
 export const LOGIN_TIMEOUT_MS = 15000;
 export const ACK_DELAY_MS = 1000;
 export const HEARTBEAT_DEADLINE_MS = 604800000 + TICK_INTERVAL_MS;
@@ -28,6 +29,13 @@ export function toNumber(value) {
     return value.high * 4294967296 + (value.low >>> 0);
   }
   return Number(value);
+}
+
+// 结果码 2（timestamp expired）只有配上一枚已成过去时的采集时间戳，才能断定是
+// 旧采集凭证被服务器判过期；时间戳缺失或异常时返回 false，避免误报。
+export function isCredentialExpired(login) {
+  const timestamp = toNumber(login?.eworldParams?.timestamp);
+  return Number.isFinite(timestamp) && Date.now() > timestamp;
 }
 
 export function isSeqNoInRange(seq, right) {
@@ -136,7 +144,9 @@ export class GameClient extends EventEmitter {
     if (body.result !== 0) {
       this.socket = null;
       this.setState('REJECTED', `result=${body.result} ${body.errorMessage || ''}`);
-      const error = new Error(`login rejected: result=${body.result} ${body.errorMessage || ''}`);
+      // 尾部标记供运行日志把旧采集凭证过期翻译成明确的重新采集提示，其余调用方仍读原始消息。
+      const expired = body.result === 2 && isCredentialExpired(loginBody || this.login);
+      const error = new Error(`login rejected: result=${body.result} ${body.errorMessage || ''}${expired ? ' (credential expired)' : ''}`);
       error.loginResponse = body;
       throw error;
     }

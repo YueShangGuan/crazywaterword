@@ -595,6 +595,12 @@ export async function runLoop(client, protocol, {
   return { history, rejected };
 }
 
+/**
+ * 将单步挂机结果转换为面向控制台的中文说明。
+ *
+ * @param {object} entry 当前循环步骤结果。
+ * @returns {string} 可展示的单步执行说明。
+ */
 export function formatLoopStep(entry) {
   const category = entry.category ?? ({ tasks: '任务', dailies: '日常', world: '海面' })[entry.phase] ?? '挂机';
   const title = entry.step?.label || entry.title || entry.label;
@@ -604,6 +610,11 @@ export function formatLoopStep(entry) {
     const reason = entry.reason || entry.error;
     return message + '已跳过' + (reason ? '：' + reason : '');
   }
+  if (entry.status === 'reminder') return message + '提醒：' + (entry.reason || '请检查自动化设置');
+  if (entry.status === 'uncertain') return message + '待确认，未重复提交：' + (entry.reason || '等待下次只读核对');
+  // 主线回包已明确给出胜负；没有错误原因时表示战败而非请求或网络异常。
+  if (entry.request === 'ChallengeStageRequest' && entry.status === 'failed' && !entry.error && !entry.reason)
+    return message + '已确认战败';
   if (entry.ok === false) return message + '失败：' + (entry.error || '未返回原因');
   if ('sent' in entry) return message + '（已发送）';
   return message;

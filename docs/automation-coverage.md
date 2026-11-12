@@ -14,7 +14,7 @@
 | hero | hero | Hero、Recruit、Appoint、Enhance | 显式选择、资源不足、专武、广告与委任 |
 | antique | antique | Antique、Recruit | 激活、升星、套装成员和大师等级上限 |
 | pet / equip / museum | pet、equip、pet_museum | Pet、Equip、Museum | 队列、喂养、保护对象、品质阈值和探宝多阶段 |
-| battle | battle、trial、league | ChallengeStage、Arena、TrialRaid、League、Expedition | 失败停止、远征血量、战令、钻石扫荡 |
+| battle | battle、trial、league | ChallengeStage、Arena、TrialRaid、League、Expedition | 失败停止、远征血量、战令、钻石扫荡、主线回包丢失只跳本轮 |
 | world | world、world_ext | Fleet、Pirate、Radar、ChipMine、Treasure、City、Boss、Trade | 舰队争用、维修、配比、时段和当前城市交易 |
 | guild | guild | GuildPack、Order、Aid、Tech、Ship | 未入盟、互助库存、任职与补货 |
 | welfare | welfare | Daily、Growth、Login、Email、Activity | 未开放、已领取、成长与活动周期 |
@@ -34,6 +34,7 @@
 | --- | --- | --- | --- | --- |
 | 建筑收取与竣工 | sea666_island_once.py / classify_collectable、finish_ready | base.island；CollectBuildingProduct、FinishUpgradeBuilding | island.collect、finish、disabledBuildings | 只收可领产物/竣工建筑；buildingId 按 repeated string 编码 |
 | 建造、升级、道具加速 | sea666_island_once.py / start_builds、start_upgrades、speed_up_buildings | base.island 复用 world.planWorld；BuildBuilding、UpgradeBuilding、SpeedUpUpgradeBuilding | island.build、upgrade、speedUp | 预算、人口、材料与建筑状态满足才提交；加速仅用现有道具 |
+| 免广告加速 | 2026-11-02/03 VIP 实机抓包 | base.adSpeedUps；WatchAdv、SpeedUpUpgradeBuilding、SpeedUpFactoryProduce | island.adSpeedUp | VIP 3 级；仅剩余严格超过 30 分钟的建造/生产；广告 ID 8/6，type=3、useNum=0；每日各 3 次本地记次，满额后不再查询，跨日恢复 |
 | 工厂成品领取 | sea666_factory.py / run_factory_actions | base.island；GainFactoryProduce | island.factory.gain | 领取后刷新库存再排产 |
 | 禁用与自动生产 | sea666_factory.py / auto_produce_keep_busy、run_factory_actions | base.island；CancelFactoryAutoProduce、SetFactoryAutoProduce、StartFactoryProduce | island.factory.disabledFactories、autoProduce、products | 禁用后取消自动生产，不安排新单；活动工厂交独立模块管理 |
 | 居民/货船/联盟需求汇总 | sea666_demand.py / collect_demand | base.demand；OnWater、CargoShips、GuildInfo、GuildOrder | island.factory.proposedPriority | 按来源顺序累计，共用库存；未入盟不查询联盟订单 |
@@ -52,6 +53,7 @@
 | 采集强化 | sea666_gather.py | base.gather；FishingLevelUp、DivingLevelUp、SalvageLevelUp | gather.enhance、enhanceTargetLevel | 当前等级消耗来自三种 LevelCfg；达到目标或资源不足即停 |
 | 累计挂机领取 | sea666_afk_once.py / run_afk_actions | base.afk；DrawAfkReward | afk.claim、claimAfterHours | 累计 start/finish 时长，零时长不重复领；日常入口遵守相同阈值 |
 | 挂机升级与等级奖励 | sea666_afk_once.py / run_afk_actions | base.afk；UpgradeAfkLevel、DrawAfkLevelReward | afk.levelUp、levelReward | 当前主线限制最高等级，逐档刷新已领奖等级 |
+| 挂机 VIP 免广告额外奖励 | 2026-11-11 抓包（登记 → useAdvCard 领取） | base.afk；WatchAdv、DrawAfkReward{useAdvCard} | 共享开关 vipFreeAd | AdvEffectCfg id=1 每日 1 次；角色 ≥10、VIP ≥3 才登记；不依赖挂机时长，服务端 gotTimes 与本地当日尝试次数双重防重 |
 
 ### 英雄、藏品、宠物、装备、博物馆与挑战
 
@@ -67,7 +69,7 @@
 | 积分与广告 | sea666_hero.py / run_watch_skill_video；sea666_antique.py | cultivation.recruits / hero；GotHeroRecruitTask、GotAntiqueRecruitTask、WatchAdv | recruit.points、watchVideo；hero.watchSkillVideo | 积分达到未领档；广告 ID 在当前表存在且状态允许 |
 | 藏品激活、升星 | sea666_antique.py / antique_once | cultivation.antique；ActivateAntique、AntiqueStarUp | antique.activate、upgrade、universal | 当前碎片足够；万能材料需单独授权；每步读回 |
 | 套装激活、升级 | sea666_antique.py / antique_once | cultivation.antique；AntiqueSuitLevelUp | antique.suit.activate、levelUp | 检查套装成员、大师等级上限和费用 |
-| 宠物领取、培育 | sea666_pet.py / claim_mature_pets、breed_fill_slots | cultivation.pet；GetMaturePet、PetBreed | pet.claim、breed、breedSpecies、breedMinQuality、universal | 服务端队列容量、物种和赛季匹配；breedMinQuality 在界面明确为最高允许品质 |
+| 宠物领取、培育 | sea666_pet.py / claim_mature_pets、breed_fill_slots | cultivation.pet；GetMaturePet、PetBreed | pet.claim、breed、breedSpecies、breedMinQuality、universal | 只认解锁表里的「宠物培育室」队列，普通建筑的默认 petBreed 不算容量；物种和赛季匹配；breedMinQuality 在界面明确为最高允许品质 |
 | 宠物喂养 | sea666_pet.py / feed_breed_jobs | cultivation.pet；PetFeed | pet.feed | 使用服务端 feedRequirements，缺料跳过 |
 | 宠物升级、进阶 | sea666_pet.py / level_up_serve_pets、advance_serve_pets | cultivation.pet；PetLevelUp、PetUpgradeFeed、PetUpgrade | pet.levelUp、levelUpTargetLevel、advance、advanceRooms | 仅战备室宠物；喂满当前要求后才进阶；到目标停止 |
 | 宠物放生 | sea666_pet.py / decompose_pets | cultivation.destroy；FreePet | pet.decompose、decomposeBelowQuality、protectedUids | 必须设阈值，只处理严格低于阈值者；排除战备室、舰队、主线、联盟赛、远征、锦标赛和 Ultra 编队；舰队实例数据不全则暂停 |
@@ -122,6 +124,7 @@
 | 祝福与奖励 | sea666_blessing.py / run_blessing | activity.blessing；CelebrationDetail、CelebrationBoost、ClaimCelebrationReward | activity.blessing.enabled、boost、skinId、boostTimes、claimReward、keepKnots | 只投指定有效皮肤；用本期福运结；上限停止 |
 | 不差钱商人 | sea666_week_order.py / run_week_order | activity.weekOrder；WeekOrderInfo、CommonBuyGoods、FinishWeekOrder、WeekOrderGotFinal | activity.weekOrder.enabled、buyMissingMaterials、minRubyStock | 本期开放；整单缺料都有当前价才购买；全部预算通过；买后读库存再交单 |
 | 幸运转盘 | sea666_welfare.py / run_week_lottery | activity.lottery；WeekLotteryPrize、WeekLotteryTimesReward | activity.weekLottery.enabled、prize、maxDraws | 开启后可只领次数奖；prize 单独开启才耗现有币；本期阈值领奖 |
+| 走江踏浪 | 本次抓包 | activity.snowball；SnowballDetail、Start、Op、UseItem、ClaimReward | activity.snowball.enabled、minEnergy、autoStart | 五列优先、女伙伴优先合成、符文保命；默认 100 瓶启动，连续开局仅按剩余能量续局；每局符文各最多 5 张 |
 | 卡牌 PVE/续局 | sea666_snap.py / run_pve | snap.playPve；SnapStart、SnapEndRound | snap.pve、maxMatches | 新局只用本期有效打牌券；已有局优先续；共同限制能量/区域/放置；结算后不发后续回合 |
 | 免费/钻石匹配 | sea666_snap.py / run_free_match | snap.snap；SnapStartMatchmaking | snap.freeMatch、diamondMatch、diamondMatchDailyLimit、matchWindows | 当前免费次数/钻石价/时段；日次数 0 禁止；统一预算 |
 | 真人对局、托管 | sea666_snap.py / run_free_match | snap.playPvp / trustee；SnapEndRound、SnapPvpToggleTrustee | snap.pvpTrustee | 默认按真实回合出牌，等 SCSnapPvpRoundResult；托管需显式开；回合键包含 matchId/round |
@@ -137,7 +140,7 @@
 | 消费开关、账号总额、模块额、余额保留 | context.reserve | budget、account budget、paid legacy、week order、snap diamond |
 | 多角色共用账号总额，明细隔离 | settings.accountSpending / loadLedger | account budget、service status |
 | 写前预留、拒绝释放、成功结算、重启持久化 | context.action | budget、uncertain、confirmed failure |
-| 超时只读核对、不直接重发、跨日保留不明记录 | context.action、businessDate | uncertain、date |
+| 超时只读核对、不直接重发、写前快照随预留落盘 | context.action、common.mutate、businessDate | uncertain、date、replayed paid sweep |
 | 规划不写业务，不假设多步已完成 | 同一执行器 dryRun | budget dry plan、API、service |
 | 库存、次数、舰队刷新 | context.refreshStock、common.idleFleets | factory demand、hero、module chain、chip mine、treasure |
 | 日常复用已启用对应玩法并去重 | service.dailyGameplay / handledDailyIds | daily gameplay、daily dedup |
@@ -145,7 +148,7 @@
 
 设置按账号散列目录保存；日消费、日计数、活动和远征状态以角色账本隔离。日预算汇总同账号所有角色账本，因此换角色不能重置账号总额度或模块额度。日期统一使用 `Asia/Shanghai`。最低钻石保留量按当前角色余额及该角色的不明预留检查。
 
-结果不明的 `pending` 持久保留并停止业务链；重启或跨日不自动重发。同一请求键在人工核对前继续禁止提交，没有自动清空或猜测成功的入口。真实验收时需结合服务端状态核对，不能用删除账本绕过额度。
+结果不明的 `pending` 在同一请求键上持续禁止重复提交：`mutate` 的写前快照随预留落盘，下一轮回放时「当前状态 ≠ 写前快照」即证明旧写入已生效并只读结算；无法证明时押钻记录继续占押。跨业务日的旧请求不可能还在途中，模块执行前统一解除（押钻记录放弃预留、不计成功或消费，并在解除记录中标注金额，真伪以游戏内钻石流水为准）。真实验收时需结合服务端状态核对，不能用删除账本绕过额度。
 
 ## 网页、CLI 与 API
 

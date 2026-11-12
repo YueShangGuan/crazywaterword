@@ -14,14 +14,16 @@ const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-automation-'));
 process.env.CW_DATA_DIR = directory;
 const { defaultSettings, saveSettings, loadSettings, businessDate, loadLedger, validateSettings, accountDirectory, writeJson } = await import('../src/automation/settings.mjs');
 const { createContext, idString, validateMessage, withRoleLock } = await import('../src/automation/context.mjs');
-const { runAutomation, HANDLERS, handledDailyIds, guardedDailyAction, legacyAction, runPriorityDiscountShop, automationStatus } = await import('../src/automation/service.mjs');
+const { runAutomation, HANDLERS, handledDailyIds, guardedDailyAction, legacyAction, runPriorityDiscountShop, discountPurchaseKey, automationStatus } = await import('../src/automation/service.mjs');
 const { resetRepairSpeedUpFallbackState } = await import('../src/automation/world.mjs');
 const { pirateDailySweepLimit, pirateSweepProgress } = await import('../src/pirates.mjs');
 const { inWindows } = await import('../src/automation/common.mjs');
 const { placementsFor } = await import('../src/automation/snap.mjs');
 const { scheduleProduction } = await import('../src/automation/production.mjs');
 const { expeditionHealth, passReady } = await import('../src/automation/battle.mjs');
-const { GameClient } = await import('../src/client.mjs');
+const { snowball, chooseAction } = await import('../src/automation/snowball.mjs');
+const { GameClient, isCredentialExpired } = await import('../src/client.mjs');
+const { describeLogError } = await import('../src/log-errors.mjs');
 const { PAGE } = await import('../src/page.mjs');
 const { AUTOMATION_SCRIPT } = await import('../src/automation-ui.mjs');
 const { automationFormOptions, guildShipMaterialOptions } = await import('../src/automation/form-options.mjs');
@@ -81,6 +83,25 @@ function fixture({ settings = defaultSettings(), states, handlers, dryRun = fals
   const args = { client, protocol, config: { tables: {} }, player: { playerId: '9007199254740993', level: 100, mainlineStage: 10, ...player }, accountId, settings, dryRun, now };
   const ctx = createContext(args); ctx.setModule('battle');
   return { client, ctx, args, settings };
+}
+
+/**
+ * 为城战进攻夹具补齐本联盟城市和世界地图归属。
+ *
+ * 生产逻辑必须用两类服务端状态确认 attackGuildIdx；测试也显式提供它们，避免把
+ * 缺字段的全服宣战记录误当作当前账号可以进攻的目标。
+ *
+ * @param {object} states 当前用例的其他协议状态。
+ * @param {number} cityId 本联盟城市 ID。
+ * @param {number} guildIdx 本联盟在世界地图中的序号。
+ * @returns {object} 带城战联盟归属的协议状态。
+ */
+function cityWarGuildStates(states, cityId = 1, guildIdx = 7) {
+  return {
+    GuildCityInfoRequest: { cities: [{ cityId }] },
+    WorldInfoRequest: { cities: [{ id: cityId, guildIdx }] },
+    ...states,
+  };
 }
 
 test('ledger persistence retries a transient Windows EPERM rename and removes its temporary file', (t) => {
@@ -214,6 +235,59 @@ async function moduleRun(id, changes, setup, options = {}) {
   finally { f.ctx.dispose(); }
 }
 
+/**
+ * 构造广告加速夹具：建筑与工厂各有一个在产任务，服务端广告次数由 OnWater 快照提供。
+ *
+ * @param {{buildingRemaining?: number, factoryRemaining?: number, adv?: Array<{id: number, gotTimes: number}>, player?: object, dryRun?: boolean, now?: () => number}} options 场景参数。
+ * @returns {ReturnType<typeof fixture>} 已配置海岛模块和广告协议处理器的夹具。
+ */
+function adSpeedUpFixture({ buildingRemaining = 31 * 60, factoryRemaining = 31 * 60, adv = [{ id: 6, gotTimes: 0 }, { id: 8, gotTimes: 0 }], player = {}, dryRun = false, now = () => fixedNow } = {}) {
+  const f = fixture({ dryRun, now, player: { level: 10, vip: { vipLevel: 3 }, ...player }, states: {
+    OnWaterRequest: {
+      building: [
+        { buildingId: '1宠物训练营', level: 5, buildStartTime: fixedNow / 1000 - 60, buildFinishTime: now() / 1000 + buildingRemaining },
+        { buildingId: '1玩具厂', level: 7, factory: { factoryQ: [{ idx: 18, productId: '鱼骨象棋', finishTime: now() / 1000 + factoryRemaining }], finishedProducts: [] } },
+      ],
+      adv,
+    },
+  } });
+  f.ctx.setModule('island');
+  Object.assign(f.settings.modules.island, { enabled: true, collect: false, finish: false, build: false, upgrade: false, speedUp: false, adSpeedUp: true });
+  Object.assign(f.settings.modules.island.factory, { gain: false, autoProduce: false, priorityProduce: false, speedUpForDemand: false });
+  table(f.ctx, 'BuildingCfg', [{ buildingType: '宠物训练营', name: '宠物训练营' }, { buildingType: '玩具厂', name: '玩具厂' }]);
+  table(f.ctx, 'AdvEffectCfg', [{ id: 6, dailyLimit: 3 }, { id: 8, dailyLimit: 3 }]);
+  f.client.handlers.WatchAdvRequest = async ({ type, id }) => {
+    assert.equal(type, 1);
+    assert.ok([6, 8].includes(id));
+    return {};
+  };
+  f.client.handlers.SpeedUpUpgradeBuildingRequest = async ({ buildingId, speedUp }) => {
+    assert.equal(buildingId, '1宠物训练营');
+    assert.deepEqual(speedUp, { type: 3, useNum: 0 });
+    f.client.states.OnWaterRequest.building.find(row => row.buildingId === buildingId).buildFinishTime -= 1800;
+    return {};
+  };
+  f.client.handlers.SpeedUpFactoryProduceRequest = async ({ buildingId, index, speedUp }) => {
+    assert.equal(buildingId, '1玩具厂');
+    assert.equal(index, 18);
+    assert.deepEqual(speedUp, { type: 3, useNum: 0 });
+    f.client.states.OnWaterRequest.building.find(row => row.buildingId === buildingId).factory.factoryQ.find(row => row.idx === index).finishTime -= 1800;
+    return {};
+  };
+  return f;
+}
+
+/** 执行一次海岛模块；调用方负责在 finally 中释放上下文。 */
+async function runIsland(f) {
+  await f.ctx.refreshStock();
+  await HANDLERS.island(f.ctx, f.settings.modules.island);
+}
+
+/** 只统计广告登记和广告加速写请求，忽略库存刷新等只读查询。 */
+function adSpeedUpCalls(f) {
+  return f.client.calls.filter(call => ['WatchAdvRequest', 'SpeedUpUpgradeBuildingRequest', 'SpeedUpFactoryProduceRequest'].includes(call.name));
+}
+
 /** 构造保持服务端榜单顺序的积分赛对手，测试不得借总战力排序掩盖位置优先级。 */
 function leagueRival(playerId, power) {
   return { playerId, nickname: `对手${playerId}`, score: 1000, power };
@@ -328,6 +402,7 @@ test('settings: defaults off; account isolation; strict arrays, dictionaries and
   assert.equal(settings.spending.dailiesDiscountTickets2x, false);
   assert.equal(settings.spending.clickGoldTimes, 0);
   assert.equal(settings.vipFreeAd, false);
+  assert.equal(settings.modules.island.adSpeedUp, false);
   assert.equal(settings.modules.welfare.weeklyLottery, false);
   assert.equal(settings.modules.welfare.uniqueLottery, false);
   assert.equal(settings.modules.world.merchantShip.enabled, false);
@@ -466,15 +541,20 @@ test('automation UI: click-gold target presents its config price and live diamon
 /** 设置说明区分已接通的三类试炼权益和仍待接入的其他广告场景。 */
 test('automation UI: VIP免广告 copy documents the confirmed ad scenes', () => {
   assert.match(AUTOMATION_SCRIPT, /VIP免广告/);
-  assert.match(AUTOMATION_SCRIPT, /工厂生产广告加速/);
+  assert.match(AUTOMATION_SCRIPT, /工厂生产与建筑升级广告加速/);
   assert.match(AUTOMATION_SCRIPT, /建筑升级广告加速/);
   assert.match(AUTOMATION_SCRIPT, /英雄广告招募/);
   assert.match(AUTOMATION_SCRIPT, /藏品广告招募/);
   assert.match(AUTOMATION_SCRIPT, /广告商店奖励/);
   assert.match(AUTOMATION_SCRIPT, /VIP 达到 3 级/);
   assert.match(AUTOMATION_SCRIPT, /英雄经验、强化石、宠物经验试炼的每日免广告额外扫荡奖励/);
+  assert.match(AUTOMATION_SCRIPT, /挂机收益的每日免广告额外奖励（每日 1 次，无需等待挂机时长）/);
   assert.match(AUTOMATION_SCRIPT, /无需开启钻石扫荡/);
   assert.match(AUTOMATION_SCRIPT, /暂未接入此开关/);
+  assert.match(AUTOMATION_SCRIPT, /建筑与工厂/);
+  assert.match(AUTOMATION_SCRIPT, /使用免广告加速（建造\/生产）/);
+  assert.match(AUTOMATION_SCRIPT, /严格超过 30 分钟/);
+  assert.match(AUTOMATION_SCRIPT, /跨天后自动恢复/);
 });
 
 test('automation UI: every rendered setting has specific functionality and scope copy', () => {
@@ -526,20 +606,22 @@ test('automation UI: trade profit copy describes the minimum and zero semantics'
   assert.doesNotMatch(AUTOMATION_SCRIPT, /达到此利润后(?:停止|不)加速|达到(?:此|该)值后(?:不再|停止).*加速/);
 });
 
-/** 总览摘要只识别 color=5 的万吨货轮，并保留今日次数、UID 和奖励资产。 */
+/** 总览摘要只识别 color=5 的万吨货轮，并保留已用次数、总额度、UID、占领进度和奖励资产。 */
 test('overview summary: merchant ship keeps reward count and current target', () => {
   const view = summarize({ ok: {
-    TreasureLootStatsRequest: { todayRewardTimes: 2 },
+    TreasureLootStatsRequest: { todayRewardTimes: 2, totalRewardTimes: 3 },
     TreasureLootListRequest: {
       treasure: [
         { uid: 7, color: 4, reward: { asset: [{ type: 0, id: '普通宝箱', num: 1 }] } },
-        { uid: 8, color: 5, reward: { asset: [{ type: 0, id: '高级宝箱', num: 3 }] } },
+        { uid: 8, color: 5, progress: 45, reward: { asset: [{ type: 0, id: '高级宝箱', num: 3 }] } },
       ],
     },
   } });
   assert.deepEqual(view.merchantShip, {
-    remainingRewardTimes: 2,
+    todayRewardTimes: 2,
+    totalRewardTimes: 3,
     uid: 8,
+    progress: 45,
     reward: [{ type: 0, id: '高级宝箱', num: 3 }],
   });
 });
@@ -547,10 +629,10 @@ test('overview summary: merchant ship keeps reward count and current target', ()
 /** 没有 color=5 目标时，总览仍保留次数并明确为空目标。 */
 test('overview summary: merchant ship is absent without color five target', () => {
   const view = summarize({ ok: {
-    TreasureLootStatsRequest: { todayRewardTimes: 1 },
+    TreasureLootStatsRequest: { todayRewardTimes: 1, totalRewardTimes: 3 },
     TreasureLootListRequest: { treasure: [{ uid: 9, color: 4 }] },
   } });
-  assert.deepEqual(view.merchantShip, { remainingRewardTimes: 1, uid: null, reward: [] });
+  assert.deepEqual(view.merchantShip, { todayRewardTimes: 1, totalRewardTimes: 3, uid: null, progress: null, reward: [] });
 });
 
 /** 开关实际允许钻石消费，说明需明确分钟取整和完整额度护栏，不能仍宣称只使用道具。 */
@@ -581,6 +663,68 @@ test('trade: profit remains the minimum required for acceleration', async () => 
   }
 });
 
+/** 特产的 stock 字段恒为 0 但始终可购买：太阳岛淡水全天 stock=0 仍被客户端整船买入（2026-11-10 实测）。 */
+test('trade: specialty goods ignore the stock field and buy up to coins and capacity', async () => {
+  const f = await moduleRun('world', {
+    trade: { enabled: true, claim: false, upgrade: false, speedUp: false, speedUpDailyLimit: 0, profitLimit: 0 },
+  }, ({ client, ctx }) => {
+    client.states.TradeInfoRequest = { period: 1, cargo: { cargoLv: 3, cityId: 1 }, player: { coins: 283531, maxCoins: 283531, profit: 0, goods: [] } };
+    client.states.TradeCityRequest = { specGoodsId: 1002, isReport: true, goods: [
+      { goodsId: 1002, stock: 0, price: 44 },
+      { goodsId: 4002, stock: 7000, price: 724 },
+    ] };
+    client.states.TradeGuildRadarRequest = { radar: [{ cityId: 37, specGoodsId: 3003, rareGoodsId: 1002, reportName: '啵啵萝卜' }] };
+    client.states.TradeMoveRequest = { cargo: { cargoLv: 3, cityId: 1, moveStartTime: fixedNow / 1000, moveEndTime: fixedNow / 1000 + 600, moveToCityId: 37 } };
+    client.handlers.TradeBuyRequest = (body) => {
+      assert.deepEqual(body, { cityId: 1, goodsId: 1002, buyNum: 6443 });
+      client.states.TradeInfoRequest.player.goods = [{ pid: 1, goodsId: 1002, num: 6443, buyPrice: 44, cityId: 1 }];
+      return { player: { coins: 39, maxCoins: 283531, profit: 0, goods: client.states.TradeInfoRequest.player.goods } };
+    };
+    table(ctx, 'TradeShipCfg', [{ lv: 3, capacity: 9000, upMoney: 50000 }]);
+    table(ctx, 'TradeGoodsCfg', [{ goodsId: 1002, lv: 1, capacity: 1 }, { goodsId: 4002, lv: 4, capacity: 10 }, { goodsId: 3003, lv: 3, capacity: 4 }]);
+  });
+  const buys = f.ctx.results.filter(result => result.request === 'TradeBuyRequest');
+  assert.equal(buys.length, 1);
+  assert.equal(buys[0].status, 'success');
+  assert.equal(f.ctx.results.filter(result => result.request === 'TradeMoveRequest').length, 1);
+});
+
+/** 舱等高于当前贸易船的商品即使显示有库存也会被服务端拒绝（lv3 船买 lv4 珍珠报 stock not enough）。 */
+test('trade: goods above the ship level are never bought', async () => {
+  const f = await moduleRun('world', {
+    trade: { enabled: true, claim: false, upgrade: false, speedUp: false, speedUpDailyLimit: 0, profitLimit: 0 },
+  }, ({ client, ctx }) => {
+    client.states.TradeInfoRequest = { period: 1, cargo: { cargoLv: 3, cityId: 1 }, player: { coins: 283531, maxCoins: 283531, profit: 0, goods: [] } };
+    client.states.TradeCityRequest = { specGoodsId: 0, isReport: true, goods: [{ goodsId: 4002, stock: 7000, price: 724 }] };
+    table(ctx, 'TradeShipCfg', [{ lv: 3, capacity: 9000, upMoney: 50000 }]);
+    table(ctx, 'TradeGoodsCfg', [{ goodsId: 4002, lv: 4, capacity: 10 }]);
+  });
+  assert.equal(f.ctx.results.filter(result => result.request === 'TradeBuyRequest').length, 0);
+  assert.ok(f.ctx.results.some(result => result.status === 'skipped' && result.reason === '贸易城市没有当前船等级可购买的商品'));
+});
+
+/** 低于船等级的非特产商品不受舱等限制（lv3 船实测可买 lv1 淡水），仍按显示库存封顶。 */
+test('trade: lower level goods buy up to the shown stock', async () => {
+  const f = await moduleRun('world', {
+    trade: { enabled: true, claim: false, upgrade: false, speedUp: false, speedUpDailyLimit: 0, profitLimit: 0 },
+  }, ({ client, ctx }) => {
+    client.states.TradeInfoRequest = { period: 1, cargo: { cargoLv: 3, cityId: 1 }, player: { coins: 283531, maxCoins: 283531, profit: 0, goods: [] } };
+    client.states.TradeCityRequest = { specGoodsId: 0, isReport: true, goods: [{ goodsId: 1002, stock: 5, price: 44 }] };
+    client.states.TradeGuildRadarRequest = { radar: [{ cityId: 37, specGoodsId: 3003, rareGoodsId: 1002, reportName: '啵啵萝卜' }] };
+    client.states.TradeMoveRequest = { cargo: { cargoLv: 3, cityId: 1, moveStartTime: fixedNow / 1000, moveEndTime: fixedNow / 1000 + 600, moveToCityId: 37 } };
+    client.handlers.TradeBuyRequest = (body) => {
+      assert.deepEqual(body, { cityId: 1, goodsId: 1002, buyNum: 5 });
+      client.states.TradeInfoRequest.player.goods = [{ pid: 1, goodsId: 1002, num: 5, buyPrice: 44, cityId: 1 }];
+      return { player: { coins: 283311, maxCoins: 283531, profit: 0, goods: client.states.TradeInfoRequest.player.goods } };
+    };
+    table(ctx, 'TradeShipCfg', [{ lv: 3, capacity: 9000, upMoney: 50000 }]);
+    table(ctx, 'TradeGoodsCfg', [{ goodsId: 1002, lv: 1, capacity: 1 }, { goodsId: 3003, lv: 3, capacity: 4 }]);
+  });
+  const buys = f.ctx.results.filter(result => result.request === 'TradeBuyRequest');
+  assert.equal(buys.length, 1);
+  assert.equal(buys[0].status, 'success');
+});
+
 test('overview: trade radar keeps readable city, goods and shared-player names', () => {
   const view = summarize({ ok: { TradeGuildRadarRequest: { radar: [{ cityId: 64, specGoodsId: 4005, rareGoodsId: 3004, reportName: '共享人' }] } } }, {
     config: { tables: { CityCfg: { data: [{ id: 64, name: '要塞G3' }] }, TradeGoodsCfg: { data: [{ goodsId: 4005, itemName: '维生素补剂' }, { goodsId: 3004, itemName: '睡袋' }] } } },
@@ -597,7 +741,27 @@ test('overview: trade panel hides when the trade activity is unavailable', () =>
   assert.match(PAGE, /function renderOverviewTrade\(data\)/);
   assert.match(PAGE, /const tradeOpen = Number\(trade\.period\) > 0;/);
   assert.match(PAGE, /card\.hidden = !tradeOpen;/);
+  assert.match(PAGE, /panel\.hidden = !tradeOpen;/);
   assert.match(PAGE, /if \(!tradeOpen\) \{\s*clear\(card\);\s*return;\s*\}/);
+});
+
+/** 总览生产卡按农田编号排序，作物与工厂队列默认只显示图标，名字收进悬停提示。 */
+test('overview: production presentation sorts farms and compacts factory products', () => {
+  assert.match(PAGE, /const sortedFarms = \[\.\.\.farms\]\.sort/);
+  assert.match(PAGE, /localeCompare\(String\(b\.buildingId \?\? ''\), 'zh-CN', \{ numeric: true \}\)/);
+  assert.match(PAGE, /tip: job\.name \|\| job\.productId \|\| ''/);
+  assert.match(PAGE, /\.who-cell \{ display:inline-flex/);
+});
+
+/** 万吨货轮状态行显示占领总进度，今日已领奖品沿用只显示图标的悬停提示设计。 */
+test('overview: merchant ship shows occupation progress and per-claim claimed rows', () => {
+  assert.match(PAGE, /占领 ' \+ merchant\.progress \+ '%'/);
+  assert.match(PAGE, /今日已领/);
+  // 今日已领按艘分组，每次领取单独一行（行首领取时间），不再把全部奖品拼在一行。
+  assert.match(PAGE, /const claimedValue = claimGroups\.length \? \(\) => merchantClaimList\(claimGroups\) : null;/);
+  assert.match(PAGE, /function merchantClaimList\(groups\)/);
+  // 当前奖品与已领列表的数量直接显示在图标正下方（x8），不再依赖悬停提示。
+  assert.match(PAGE, /'x' \+ fmt\(reward\.num \?\? 0\)/);
 });
 
 test('overview: raw material inventory is separated from top item inventory', () => {
@@ -793,7 +957,7 @@ test('automation form options: material selectors use only their configured sour
 // 下架活动只能改变控制台归类，原模块设置路径必须继续存在，才能读取和保存玩家已有配置。
 test('automation UI: off-sale activity entries are grouped as historical without changing settings paths', () => {
   assert.match(PAGE, /HISTORICAL_ACTIVITY_KEYS = \['midAutumn', 'blindBox', 'catcher', 'workshop', 'blessing'\]/);
-  assert.match(PAGE, /CURRENT_ACTIVITY_KEYS = \['enabled', 'edict', 'weekOrder', 'weekLottery'\]/);
+  assert.match(PAGE, /CURRENT_ACTIVITY_KEYS = \['enabled', 'edict', 'weekOrder', 'weekLottery', 'snowball'\]/);
   assert.match(PAGE, /抓捕（海底捞月）/);
   assert.match(PAGE, /历史活动（已下架）/);
   assert.match(PAGE, /settingFields\(data\.settings\.modules\.activity\[key\],\['modules','activity',key\],group\)/);
@@ -1093,6 +1257,22 @@ test('farm: pending plant for a different crop blocks the same field without sto
   } finally { f.ctx.dispose(); }
 });
 
+/** 跨业务日的种植记录不可能还在途中；地块空着或已换作物时必须解除，否则这块田永远不能自动种植。 */
+test('farm: a cross-day pending plant for an empty field is released and replanted', async () => {
+  const key = 'FarmPlantRequest:{"args":[{"buildingId":"1农田","productId":"玉米"}]}';
+  const f = await moduleRun('farm', { plant: true, cropPriorities: { 小麦: 1 }, cropKeepStock: { 小麦: 5 } }, ({ ctx, client }) => {
+    table(ctx, 'FarmlandPlantCfg', [{ id: '小麦', material: ['小麦种子', 1], produceNum: 5 }]);
+    client.items.set('小麦种子', 1);
+    ctx.ledger.pending[key] = { token: 'pending-corn', ruby: 0, module: 'farm', date: '2026-10-28' };
+  }, { states: { OnWaterRequest: { building: [{ buildingId: '1农田', farm: {} }] } }, handlers: {
+    FarmPlantRequest: async (_body, _response, client) => { client.states.OnWaterRequest.building[0].farm = { productId: '小麦' }; },
+  } });
+  assert.equal(f.ctx.ledger.pending[key], undefined);
+  assert.deepEqual(f.client.calls.filter(call => call.name === 'FarmPlantRequest').map(call => call.body),
+    [{ args: [{ buildingId: '1农田', productId: '小麦' }] }]);
+  assert.ok(f.ctx.results.some(row => /解除跨日未确认种植 玉米/.test(row.label ?? '')));
+});
+
 // 收益达标的缺料订单保留；经验或金币不达标时，无论是否缺料都必须重刷。
 test('resident: shortages skip, while low experience or gold rerolls orders', async () => {
   const f = await moduleRun('resident', { blockedMaterials: ['木材'], orderReward: false }, ({ client }) => client.items.set('木材', 100), { dryRun: true, states: { OnWaterRequest: { workerOrder: [{ index: 1, requirements: [{ type: 0, id: '木材', num: 1 }] }] } } });
@@ -1143,6 +1323,32 @@ test('resident: special order thresholds use WorkerSpecOrderCfg before rerolling
   assert.equal(f.ctx.results.filter(r => r.request === 'FinishWorkerOrderRequest').length, 0);
 });
 
+// 档位赛季按 worldId 推导（客户端规则），设置里的“当前赛季”是地图场景编号，两者不能混用：
+// 场景填 1 时赛季 2 世界开服满 5 天的 45 档也必须能领，否则会像线上一样卡在 40 档之后。
+test('resident: order tier reward derives its season from worldId, not the season setting', async () => {
+  const rows = [
+    { season: 1, worldOpenDays: 1, reqNum: 6 }, { season: 1, worldOpenDays: 1, reqNum: 40 },
+    { season: 2, worldOpenDays: 1, reqNum: 6 }, { season: 2, worldOpenDays: 1, reqNum: 40 },
+    { season: 2, worldOpenDays: 5, reqNum: 6 }, { season: 2, worldOpenDays: 5, reqNum: 45 },
+  ];
+  const player = { worldId: 2002000001, worldOpenTime: fixedNow / 1000 - 5 * 86400 };
+  const claimed = await moduleRun('resident', { orderReward: true }, ({ ctx }) => table(ctx, 'OrderDailyRewardCfg', rows), { player, states: { OnWaterRequest: { workerOrder: [], orderOfTheDay: { orderNum: 45, rewardedNum: 40 } } }, handlers: {
+    // 静默领奖没有回包，读回确认依赖服务端推进 rewardedNum；这里模拟推进到 45。
+    GetNextOrderOTDRewardRequest: async (_, _response, client) => { client.states.OnWaterRequest.orderOfTheDay.rewardedNum = 45; },
+  } });
+  assert.equal(claimed.client.calls.filter(r => r.name === 'GetNextOrderOTDRewardRequest').length, 1);
+  assert.equal(claimed.ctx.results.find(r => r.request === 'GetNextOrderOTDRewardRequest')?.status, 'success');
+
+  // 还差 1 单到 45 档时不能提前发请求；已领到表内最高档后也不再发。
+  for (const [orderNum, rewardedNum, expected] of [[44, 40, 0], [45, 45, 0], [40, 0, 1]]) {
+    const state = { workerOrder: [], orderOfTheDay: { orderNum, rewardedNum } };
+    const f = await moduleRun('resident', { orderReward: true }, ({ ctx }) => table(ctx, 'OrderDailyRewardCfg', rows), { player, states: { OnWaterRequest: state }, handlers: {
+      GetNextOrderOTDRewardRequest: async (_, _response, client) => { client.states.OnWaterRequest.orderOfTheDay.rewardedNum = orderNum; },
+    } });
+    assert.equal(f.client.calls.filter(r => r.name === 'GetNextOrderOTDRewardRequest').length, expected, `${orderNum} orders with ${rewardedNum} claimed sends ${expected} claim request(s)`);
+  }
+});
+
 test('cargo: enum status and 1-based cargo indices, inventory shortage skips', async () => {
   const f = await moduleRun('cargo', {}, ({ client }) => client.items.set('木材', 2), { dryRun: true, states: { CargoShipsRequest: { ship: [{ index: 1, status: protocol.CargoShipStatus.IN_ORDER, orderItem: [{ asset: { type: 0, id: '木材', num: 1 } }, { asset: { type: 0, id: '玻璃', num: 1 } }] }] } } });
   const rows = f.ctx.results.filter(r => r.request === 'FillCargoShipRequest'); assert.equal(rows.length, 1); assert.deepEqual(rows[0].body.cargoIndex, [1]);
@@ -1151,6 +1357,95 @@ test('cargo: enum status and 1-based cargo indices, inventory shortage skips', a
 test('gather: full warehouse excludes raw floaters; chest requires existing key', async () => {
   const f = await moduleRun('gather', { floater: true, openChests: true }, ({ ctx, client }) => { client.items.set('木材', 100); table(ctx, 'ItemCfg', [{ id: '保险箱钥匙' }]); }, { dryRun: true, states: { OnWaterRequest: { floater: [{ floaterId: '木材' }] }, GameEffectRequest: { effects: [{ id: protocol.GameEffectId.RAW_MATERIAL_UPPER_BOUND, value: 100 }] } } });
   assert.equal(f.ctx.results.filter(r => r.request).length, 0);
+});
+
+test('gather: legacy unconfirmed fishing cast is released instead of disabling fishing', async () => {
+  const settings = defaultSettings();
+  Object.assign(settings.modules.gather, { enabled: true, fishing: true, maxFishCasts: 1 });
+  const f = fixture({ settings, states: { OnWaterRequest: {} }, handlers: { StartFishingRequest: () => ({ fishId: 0, reward: { asset: [{ type: 0, id: '鱼', num: 1 }] } }) } });
+  try {
+    // 抛竿没有消耗，也没有可读回的状态字段，历史记录无法证明服务端是否执行过这一竿。
+    const saved = loadLedger(f.args.accountId, f.args.player.playerId);
+    saved.ledger.pending['StartFishingRequest:{}'] = { token: 'pending-fishing', ruby: 0, module: 'gather', date: businessDate(fixedNow) };
+    writeJson(saved.file, saved.ledger);
+
+    const stop = { aborted: false };
+    const result = await runAutomation({ ...f.args, selector: ['gather'], stop });
+    assert.equal(result.error, null, '解除旧记录不得把自动化标为错误');
+    assert.equal(stop.aborted, false, '解除旧记录不能终止持续挂机');
+    assert.ok(result.results.some(row => row.label === '解除上次未确认的抛竿'), '解除旧记录要写运行日志');
+    assert.equal(loadLedger(f.args.accountId, f.args.player.playerId).ledger.pending['StartFishingRequest:{}'], undefined, '旧记录必须从账本移除');
+    assert.equal(f.client.calls.filter(call => call.name === 'StartFishingRequest').length, 1, '解除旧记录后本轮必须重新抛竿');
+  } finally { f.ctx.dispose(); }
+});
+
+test('gather: unknown fishing cast is not persisted and is retried next round', async () => {
+  const settings = defaultSettings();
+  Object.assign(settings.modules.gather, { enabled: true, fishing: true, maxFishCasts: 1 });
+  let casts = 0;
+  const f = fixture({ settings, states: { OnWaterRequest: {} }, handlers: { StartFishingRequest: () => { casts++; throw new Error('timeout waiting for StartFishingResponse'); } } });
+  try {
+    const stop = { aborted: false };
+    const first = await runAutomation({ ...f.args, selector: ['gather'], stop });
+    assert.equal(first.results.find(row => row.request === 'StartFishingRequest')?.status, 'skipped', '抛竿超时只记录本轮跳过');
+    assert.equal(first.ledger.pending['StartFishingRequest:{}'], undefined, '零消耗抛竿超时不能留下跨轮幂等锁');
+    assert.equal(stop.aborted, false, '一次丢包不能终止持续挂机');
+
+    const second = await runAutomation({ ...f.args, selector: ['gather'], stop });
+    assert.equal(second.error, null);
+    assert.equal(casts, 2, '下一轮必须重新抛竿，不能被上一轮的结果未知挡住');
+  } finally { f.ctx.dispose(); }
+});
+
+test('gather: unknown big fish claim only stops the current round', async () => {
+  const settings = defaultSettings();
+  Object.assign(settings.modules.gather, { enabled: true, fishing: true, maxFishCasts: 1 });
+  const f = fixture({ settings, states: { OnWaterRequest: {} }, handlers: {
+    StartFishingRequest: () => ({ fishId: 5, reward: { asset: [{ type: 0, id: '鱼', num: 1 }] } }),
+    GainBigFishRequest: () => { throw new Error('timeout waiting for GainBigResponse'); },
+  } });
+  try {
+    const stop = { aborted: false };
+    const result = await runAutomation({ ...f.args, selector: ['gather'], stop });
+    assert.equal(result.results.find(row => row.request === 'GainBigFishRequest')?.status, 'skipped');
+    assert.equal(stop.aborted, false, '收线超时只放弃本轮，不能结束持续挂机');
+    assert.equal(result.ledger.pending['GainBigFishRequest:{}'], undefined, '零消耗收线超时不能留下跨轮幂等锁');
+  } finally { f.ctx.dispose(); }
+});
+
+test('context: dropping an uncertain lock is limited to zero-cost actions', async () => {
+  const f = fixture();
+  try {
+    await assert.rejects(f.ctx.action('StartFishingRequest', {}, { ruby: 1, lockOnUncertain: false }), /零消耗/, '有消耗的动作不能关闭未确认锁');
+    f.ctx.ledger.pending['DiscountShopBuyRequest:{"id":4}'] = { token: 'pending-buy', ruby: 6, module: 'dailies', date: businessDate(fixedNow) };
+    assert.throws(() => f.ctx.discardPending('DiscountShopBuyRequest:{"id":4}'), /钻石预留/, '带预留的记录只能结算，不能直接丢弃');
+  } finally { f.ctx.dispose(); }
+});
+
+/** 跨业务日的锁（含押钻记录）必须在模块执行前解除；今天的记录保留，押钻金额在解除记录中标注。 */
+test('automation: cross-day locks including paid reservations are released before modules run', async () => {
+  const f = fixture();
+  const oldAsk = 'GuildAidAskRequest:{"reqItemId":"橡胶圈","type":0}';
+  const oldBoss = 'WorldBossGetDamageRewardRequest:{}';
+  const oldPaid = 'ClickGoldRequest:{"times":1,"free":false}';
+  const todayChoice = 'SelectChoiceRequest:123';
+  Object.assign(f.ctx.ledger.pending, {
+    [oldAsk]: { token: 'old-ask', ruby: 0, module: 'guild', date: '2026-10-25' },
+    [oldBoss]: { token: 'old-boss', ruby: 0, module: 'world', date: '2026-10-25' },
+    [oldPaid]: { token: 'old-paid', ruby: 50, module: 'afk', date: '2026-10-25' },
+    [todayChoice]: { token: 'today', ruby: 0, module: 'choiceEvent', date: businessDate(fixedNow) },
+  });
+  writeJson(loadLedger(f.args.accountId, f.args.player.playerId).file, f.ctx.ledger);
+  f.ctx.dispose();
+  const result = await runAutomation({ ...f.args, selector: ['gather'], stop: { aborted: false } });
+  assert.deepEqual(Object.keys(result.ledger.pending), [todayChoice], '只有今天的记录保留，押钻旧记录不再永久占押');
+  const releases = result.results.filter(row => row.label === '解除跨日未确认记录');
+  assert.equal(releases.length, 3, '按原模块汇总解除记录');
+  assert.ok(releases.every(row => row.status === 'skipped'));
+  assert.ok(releases.some(row => row.module === 'guild' && /GuildAidAskRequest 1/.test(row.reason)));
+  const paidRelease = releases.find(row => row.module === 'afk');
+  assert.ok(/押 50 钻/.test(paidRelease.reason), '押钻解除必须标注金额并提示以游戏内流水为准');
+  assert.ok(/不计成功或消费/.test(paidRelease.reason), '无法回读扣费真伪的解除不能计入消费');
 });
 
 test('afk: accumulated threshold and zero elapsed avoid repeated claims', async () => {
@@ -1227,6 +1522,19 @@ test('antique: activate only when exact fragment cost available', async () => {
   assert.equal(f.ctx.results[0].request, 'ActivateAntiqueRequest');
 });
 
+/** 藏品累计档位必须使用角色世界赛季，不能被高级自动化设置中的历史赛季覆盖。 */
+test('antique: recruit points use the role world season instead of the manual setting', async () => {
+  const settings = defaultSettings(); settings.season = 1;
+  const f = await moduleRun('antique', {
+    activate: 'off', upgrade: 'off', suit: { activate: 'off', levelUp: false },
+    recruit: { free: false, tickets: false, points: true, watchVideo: false, maxDraws: 1 },
+  }, ({ ctx, client }) => {
+    table(ctx, 'AntiqueRecruitTaskCfg', [{ season: 1, id: 3, times: 200 }, { season: 2, id: 3, times: 600 }]);
+    client.states.RecruitInfoRequest = { antique: { task: { gotId: 2, times: 580 } } };
+  }, { settings, player: { worldId: 2002006318 } });
+  assert.equal(f.client.calls.filter(call => call.name === 'GotAntiqueRecruitTaskRequest').length, 0);
+});
+
 test('pet: release requires quality threshold, protects assigned and configured UID', async () => {
   const f = await moduleRun('pet', { claim: false, decompose: true, decomposeBelowQuality: 'PURPLE', protectedUids: ['3'] }, ({ ctx }) => table(ctx, 'PetBreedCfg', [{ petId: '蓝鱼', quality: 'BLUE', qualityIndex: 1 }, { petId: '紫鱼', quality: 'PURPLE', qualityIndex: 2 }]), { dryRun: true, states: { AllPetRequest: { pets: [1, 2, 3].map(uid => ({ uid: String(uid), petId: '蓝鱼' })) }, GetFormationRequest: { formation: { presetId: 1, petUid: '1' } } } });
   const row = f.ctx.results.find(r => r.request === 'FreePetRequest'); assert.deepEqual(row.body.petUid, ['2']);
@@ -1259,6 +1567,39 @@ test('pet: full queue ignores default petBreed states on non-pet buildings', asy
   });
   assert.equal(f.client.calls.filter(call => call.name === 'PetBreedRequest').length, 0);
   assert.ok(f.ctx.results.some(result => result.status === 'skipped' && result.reason === '宠物培育队列已满'));
+});
+
+/** 抓包中真实培育队列挂在「宠物培育室」上，其他建筑只有默认空 petBreed；按建筑名筛选不能漏掉它。 */
+test('pet: breeds in the cultivation room that actually carries the queue', async () => {
+  const settings = defaultSettings(); settings.season = 1;
+  const f = await moduleRun('pet', { claim: false, breed: true, breedSpecies: ['声波海豚'], breedMinQuality: '' }, ({ ctx, client }) => {
+    table(ctx, 'BuildingCfg', [{ buildingType: '宠物', name: '宠物' }, { buildingType: '宠物培育室', name: '海兽培育室' }]);
+    table(ctx, 'BuildingUnlockCfg', [{ buildingId: '1宠物培育室', buildingType: '宠物培育室', playerLevel: 23 }]);
+    table(ctx, 'PetSpeciesCfg', [{ name: '声波海豚', spId: 1, season: 1 }]);
+    table(ctx, 'PetBreedCfg', [{ petId: '蓝宠物1', spId: 1, season: 1, quality: 'BLUE', qualityIndex: 1, cost: [['宠物1蓝基因', 80], ['GOLD', 4000]] }]);
+    client.items.set('宠物1蓝基因', 80);
+    client.handlers.AllResourceRequest = async () => ({ list: [{ res: protocol.Resource.GOLD, amount: 100000 }, { res: protocol.Resource.RUBY, amount: 1000 }] });
+  }, {
+    settings,
+    states: {
+      OnWaterRequest: {
+        building: [
+          { buildingId: '1农田', petBreed: { breedQ: [], maturePets: [], maxQLength: 3 } },
+          { buildingId: '1宠物培育室', petBreed: { breedQ: [], maturePets: [], maxQLength: 3 } },
+        ],
+      },
+    },
+    handlers: {
+      PetBreedRequest: async (body, _response, gateway) => {
+        gateway.items.set('宠物1蓝基因', (gateway.items.get('宠物1蓝基因') ?? 0) - 80);
+        gateway.states.OnWaterRequest.building
+          .find(building => building.buildingId === '1宠物培育室').petBreed.breedQ
+          .push({ idx: 1, petId: body.petId, startTime: fixedNow / 1000, finishTime: fixedNow / 1000 + 43200 });
+      },
+    },
+  });
+  assert.equal(f.client.calls.filter(call => call.name === 'PetBreedRequest').length, 1);
+  assert.equal(f.client.calls.find(call => call.name === 'PetBreedRequest').body.petId, '蓝宠物1');
 });
 
 test('equip: worn and protected equipment excluded; valid idle equipment decomposes', async () => {
@@ -1343,6 +1684,86 @@ test('service: unresolved pass reward leaves later modules running', async () =>
   assert.ok(result.ledger.pending['PassStageGotRewardRequest:{"stage":1}']);
 });
 
+/** 未确认派舰必须锁住世界模块，既不能重复占用舰队，也不能终止持续挂机。 */
+test('service: unresolved treasure dispatch blocks world writes without stopping automation', async () => {
+  const f = fixture({ states: {
+    MyFleetsRequest: { fleets: [{ buildingId: '1舰队', state: protocol.FleetState.IDLE }] },
+    TreasureLootListRequest: { treasure: [{ uid: 49, color: 5, ownerFleetNum: 0, ownerGuildIdx: 0 }] },
+    TradeInfoRequest: { worldCargo: [] },
+  } });
+  f.settings.modules.world.enabled = true;
+  f.settings.modules.world.merchantShip = { enabled: true, retryMinutes: 0, rewardMaterials: [], fleets: [{ enabled: true, buildingId: '1舰队' }] };
+  f.settings.modules.world.treasureLoot = { enabled: true, hours: [], fleets: [{ enabled: true, buildingId: '1舰队', levels: 5, emptyOnly: true, helpAlly: false }] };
+  f.ctx.dispose();
+
+  const stop = { aborted: false };
+  const result = await runAutomation({ ...f.args, selector: ['world'], stop });
+  const dispatches = f.client.calls.filter(call => call.name === 'TreasureLootSendFleetsRequest');
+  assert.equal(result.error, null, '结果待确认不能让自动化返回错误');
+  assert.equal(stop.aborted, false, '结果待确认只能阻断世界模块，不能停止持续挂机');
+  assert.equal(dispatches.length, 1, '同轮后续宝藏派遣必须被模块锁阻止');
+  assert.equal(result.results.find(row => row.request === 'TreasureLootSendFleetsRequest')?.status, 'uncertain');
+  assert.ok(result.results.some(row => row.status === 'blocked'));
+  assert.ok(result.ledger.pending['TreasureLootSendFleetsRequest:{"uid":49,"fleetBuildingIds":["1舰队"]}']);
+});
+
+/** 未确认的付费试炼扫荡保留钻石预留并跳过本动作，但不阻断战斗模块，也不停止整轮挂机。 */
+test('battle: pending paid trial sweep skips the sweep without blocking battle or automation', async () => {
+  const f = fixture({ states: { TrialRaidInfoRequest: { raid: { raidId: 1, passedStage: 1001, buySweepTimes: 0 } } } });
+  Object.assign(f.settings.modules.battle, {
+    enabled: true,
+    stage: { enabled: false, claimReward: false },
+    arena: { challenge: false, sweep: false },
+    trial: { heroExp: { challenge: false, rubySweep: true }, forge: { challenge: false, rubySweep: false }, petExp: { challenge: false, rubySweep: false } },
+  });
+  table(f.ctx, 'TrialRaidParamCfg', [{ paramName: '试炼副本扫荡次数', paramValue: 3 }]);
+  table(f.ctx, 'TrialRaidBuySweepCfg', [{ buyTimes: 1, costRuby: 50 }]);
+  const key = 'TrialRaidBuySweepRequest:{"raidId":1,"useAdvCard":false}';
+  f.ctx.ledger.pending[key] = { token: 'pending-paid-trial-sweep', ruby: 50, module: 'battle', date: businessDate(fixedNow) };
+  // 持久化账本，确保重新创建上下文时走真实的待确认恢复分支。
+  f.ctx.memory('test.pending-paid-trial-sweep', true);
+  f.ctx.dispose();
+
+  const stop = { aborted: false };
+  const result = await runAutomation({ ...f.args, selector: ['battle'], stop });
+  assert.equal(result.error, null, '未确认的付费扫荡不能伪装成自动化异常');
+  assert.equal(stop.aborted, false, '必须保留预留但不能停止整轮挂机');
+  assert.equal(f.client.calls.filter(call => call.name === 'TrialRaidBuySweepRequest').length, 0, '未确认请求不能重复提交');
+  assert.equal(result.results.find(row => row.request === 'TrialRaidBuySweepRequest')?.status, 'uncertain');
+  assert.equal(result.results.filter(row => row.status === 'blocked').length, 0, '押钻动作未确认只跳过本动作，不阻断战斗模块的其余玩法');
+  assert.ok(result.ledger.pending[key], '钻石预留必须继续保留，等待只读确认');
+});
+
+/** 跨轮回放的押钻扫荡按落盘写前快照结算：旧写入已生效时记成功并释放预留，绝不重发请求。 */
+test('battle: replayed paid sweep settles against the stored pre-write snapshot', async () => {
+  const f = fixture({ states: { TrialRaidInfoRequest: { raid: { raidId: 1, passedStage: 1001, buySweepTimes: 1 } } } });
+  Object.assign(f.settings.modules.battle, {
+    enabled: true,
+    stage: { enabled: false, claimReward: false },
+    arena: { challenge: false, sweep: false },
+    trial: { heroExp: { challenge: false, rubySweep: true }, forge: { challenge: false, rubySweep: false }, petExp: { challenge: false, rubySweep: false } },
+  });
+  table(f.ctx, 'TrialRaidParamCfg', [{ paramName: '试炼副本扫荡次数', paramValue: 3 }]);
+  table(f.ctx, 'TrialRaidBuySweepCfg', [{ buyTimes: 1, costRuby: 50 }]);
+  const key = 'TrialRaidBuySweepRequest:{"raidId":1,"useAdvCard":false}';
+  // 服务端已计到 1 而写前快照是 0：现场前后对比永远相等，只有落盘写前快照能证明旧写入已生效。
+  f.ctx.ledger.pending[key] = { token: 'replay-paid-sweep', ruby: 50, module: 'battle', date: businessDate(fixedNow), beforeState: '0' };
+  f.ctx.memory('test.replay-paid-sweep', true);
+  f.ctx.dispose();
+
+  const result = await runAutomation({ ...f.args, selector: ['battle'], stop: { aborted: false } });
+  assert.equal(result.error, null);
+  assert.equal(f.client.calls.filter(call => call.name === 'TrialRaidBuySweepRequest').length, 0, '回放结算只读核验，不能重发请求');
+  const settled = result.results.find(row => row.request === 'TrialRaidBuySweepRequest');
+  assert.equal(settled?.status, 'success');
+  assert.equal(settled?.verifiedByRead, true, '按落盘写前快照读回核验');
+  assert.equal(settled?.ruby, 50, '结算计入原预留的 50 钻');
+  assert.equal(result.ledger.pending[key], undefined, '预留已释放');
+  const day = result.ledger.days[businessDate(fixedNow)];
+  assert.equal(day.spent, 50, '结算计入原预留所属业务日');
+  assert.equal(day.modules.battle, 50);
+});
+
 /** 服务端频控拒绝主线后，战斗模块不得继续进入竞技场或试炼。 */
 test('battle: rejected mainline challenge stops later battle branches', async () => {
   const f = await moduleRun('battle', {
@@ -1359,6 +1780,55 @@ test('battle: rejected mainline challenge stops later battle branches', async ()
   assert.equal(f.client.calls.filter(c => c.name === 'ChallengeStageRequest').length, 1);
   assert.equal(f.client.calls.filter(c => c.name === 'TrialRaidChallengeRequest').length, 0);
   assert.equal(f.ctx.results[0].status, 'rejected');
+});
+
+/** 主线挑战回包丢失后没有可读回的胜负：只跳过本轮，不能落盘跨轮锁，也不能停掉整轮挂机。 */
+test('battle: uncertain mainline challenge neither aborts nor persists a lock', async () => {
+  const f = await moduleRun('battle', {
+    maxActions: 1,
+    // 同战力重试次数大于 0 也不能在结果未知时继续发同一关。
+    stage: { enabled: true, samePowerRetryCount: 2, claimReward: false },
+    arena: { challenge: false, sweep: false },
+    trial: { heroExp: { challenge: false, rubySweep: false }, forge: { challenge: false, rubySweep: false }, petExp: { challenge: false, rubySweep: false } },
+  }, null, { handlers: { ChallengeStageRequest: async () => { throw new Error('请求超时：未收到 ChallengeStageResponse'); } } });
+
+  assert.equal(f.client.calls.filter(c => c.name === 'ChallengeStageRequest').length, 1, '结果未知时本轮不能重发同一关');
+  assert.equal(f.ctx.stop.aborted, false, '主线回包丢失只能阻断战斗模块，不能停止持续挂机');
+  assert.deepEqual(f.ctx.ledger.pending, {}, '零消耗挑战不能留下跨轮未确认锁');
+  assert.equal(f.ctx.results.find(row => row.request === 'ChallengeStageRequest')?.status, 'skipped');
+  assert.ok(f.ctx.consumeModuleBlock(), '同批剩余战斗写入仍要被模块锁挡住');
+});
+
+/** 旧版本留下的同关未确认锁没有读回证据，解除后本轮重新挑战，不能整天挡住推关。 */
+test('battle: stale mainline lock is released and the stage is challenged again', async () => {
+  const f = await moduleRun('battle', {
+    maxActions: 1,
+    stage: { enabled: true, samePowerRetryCount: 0, claimReward: false },
+    arena: { challenge: false, sweep: false },
+    trial: { heroExp: { challenge: false, rubySweep: false }, forge: { challenge: false, rubySweep: false }, petExp: { challenge: false, rubySweep: false } },
+  }, ({ ctx }) => {
+    ctx.ledger.pending['ChallengeStageRequest:{"stage":10}'] = { token: 'stale-stage-lock', ruby: 0, module: 'battle', date: businessDate(fixedNow) };
+  }, { handlers: { ChallengeStageRequest: async () => ({ initialData: { mainlineStage: 10 }, stats: { isLeftWin: true } }) } });
+
+  assert.equal(f.client.calls.filter(c => c.name === 'ChallengeStageRequest').length, 1, '旧锁不能把同一关挡到下一业务日');
+  assert.deepEqual(f.ctx.ledger.pending, {});
+  assert.equal(f.ctx.player.mainlineStage, 11);
+  assert.ok(f.ctx.results.some(row => row.label === '解除主线第 10 关未确认记录'));
+  assert.equal(f.ctx.stop.aborted, false);
+});
+
+/** 停止信号只是中断模块，具体原因由触发方记录，不能再补一条没有标题的「检查任务失败」。 */
+test('service: interrupted module does not record a title-less error', async () => {
+  const f = fixture({});
+  f.settings.modules.battle.enabled = true;
+  f.ctx.dispose();
+  const original = HANDLERS.battle;
+  HANDLERS.battle = async ctx => { ctx.stop.aborted = true; ctx.assertReady(); };
+  try {
+    const result = await runAutomation({ ...f.args, selector: ['battle'] });
+    assert.equal(result.error, '自动化已停止');
+    assert.equal(result.results.filter(row => row.status === 'error').length, 0, '停止信号不能伪装成模块检查失败');
+  } finally { HANDLERS.battle = original; }
 });
 
 /** 服务端频控拒绝一个试炼后，不能立刻切换其他试炼继续发送挑战请求。 */
@@ -1581,8 +2051,20 @@ test('battle: league skips a server score-match lock without stopping automation
 });
 
 test('world: next trade ship uses lv/upCost; default spending prevents ruby upgrade', async () => {
-  const f = await moduleRun('world', { trade: { enabled: true, claim: false, upgrade: true, speedUp: false } }, ({ ctx }) => table(ctx, 'TradeShipCfg', [{ lv: 2, upMoney: 100, upCost: ['RUBY', 30] }]), { dryRun: true, states: { TradeInfoRequest: { period: 1, cargo: { cargoLv: 1 }, player: { coins: 500 } } } });
+  const f = await moduleRun('world', { trade: { enabled: true, claim: false, upgrade: true, speedUp: false } }, ({ ctx }) => table(ctx, 'TradeShipCfg', [{ lv: 2, upMoney: 100, upCost: ['RUBY', 30] }]), { dryRun: true, states: { TradeInfoRequest: { period: 1, cargo: { cargoLv: 1 }, player: { coins: 500, profit: 100 } } } });
   assert.ok(f.ctx.results.some(r => r.request === 'TradeCargoUpgradeRequest' && r.status === 'skipped' && /钻石/.test(r.reason)));
+});
+
+/** 货船升级的配置金额是服务端校验的累计利润；余额充足而利润不足时不能发升级请求。 */
+test('world: trade upgrade checks cumulative profit before requesting', async () => {
+  for (const [profit, sent] of [[99, false], [100, true]]) {
+    const f = await moduleRun('world', { trade: { enabled: true, claim: false, upgrade: true, speedUp: false } },
+      ({ ctx }) => table(ctx, 'TradeShipCfg', [{ lv: 2, upMoney: 100, upCost: [] }]),
+      { dryRun: true, states: { TradeInfoRequest: { period: 1, cargo: { cargoLv: 1 }, player: { coins: 10000, profit } } } });
+    const upgrade = f.ctx.results.find(row => row.request === 'TradeCargoUpgradeRequest');
+    assert.equal(Boolean(upgrade), sent, `profit=${profit}`);
+    if (!sent) assert.ok(f.ctx.results.some(row => row.reason === '贸易累计利润不足以升级下一等级船只'));
+  }
 });
 
 /** 海商王在窗口外必须在查询船只状态前跳过，避免服务端的 not trade time 拒绝。 */
@@ -1612,8 +2094,8 @@ test('trade: inactive or missing period stops before rewards, upgrades and trans
   }
 });
 
-/** 海盗首杀必须同时满足个人下一等级和赛季阶段上限，不能把未开放等级交给服务器。 */
-test('world: pirate attack respects the current season stage cap', async () => {
+/** 海盗首杀已达到当前赛季阶段上限时必须跳过，不能重发同级挑战请求。 */
+test('world: pirate attack skips when the current season stage cap is already reached', async () => {
   const f = await moduleRun('world', {
     pirate: { attack: true, sweep: false, attackTypes: [1], sweepTypes: [], dailySweepLimit: 0, attackTime: { start: '00:00', end: '00:00' } },
   }, ({ ctx }) => {
@@ -1626,15 +2108,9 @@ test('world: pirate attack respects the current season stage cap', async () => {
       AllPirateRequest: { pirates: [{ uid: 390, type: 1, level: 39, cityId: 1 }, { uid: 380, type: 1, level: 38, cityId: 1 }] },
       MyFleetsRequest: { fleets: [{ buildingId: '1远征船', state: 1, durability: 100, maxDura: 100 }] },
     },
-    handlers: {
-      ChallengePirateRequest: async ({ uid }, _response, client) => {
-        assert.equal(uid, 380);
-        client.states.MyFleetsRequest.fleets[0].state = 2;
-      },
-    },
   });
-  assert.equal(f.client.calls.filter(call => call.name === 'ChallengePirateRequest').length, 1);
-  assert.equal(f.client.calls.find(call => call.name === 'ChallengePirateRequest').body.uid, 380);
+  assert.equal(f.client.calls.filter(call => call.name === 'ChallengePirateRequest').length, 0);
+  assert.ok(f.ctx.results.some(row => row.reason === '海盗类型 1 已达到当前赛季阶段开放上限 38 级'));
 });
 
 test('world: pirate sweep treats the server count as used times and honors the configured daily target', async () => {
@@ -2137,6 +2613,28 @@ test('API: settings confirmation, plan/run/status and busy exclusion with fake a
     for (let attempts = 0; session.loop.running && attempts < 50; attempts++) await new Promise(resolve => setTimeout(resolve, 20));
     assert.equal(session.loop.running, false);
     assert.equal((await api('/api/automation/status')).value.running, false);
+    // 保持真实高级自动化锁处于运行中，验证日报这个本地读取不会再被它拦截。
+    const lockedSettings = defaultSettings(); lockedSettings.modules.cargo.enabled = true;
+    let releaseCargoRead;
+    let markCargoRead;
+    const cargoReadStarted = new Promise(resolve => { markCargoRead = resolve; });
+    session.client.handlers.CargoShipsRequest = async () => {
+      markCargoRead();
+      return new Promise(resolve => { releaseCargoRead = () => resolve({ ship: [] }); });
+    };
+    const lockedRun = runAutomation({
+      client: session.client, protocol, config: { tables: {} }, player: session.player,
+      accountId: 'api-fixture', settings: lockedSettings, selector: ['cargo'],
+    });
+    try {
+      await cargoReadStarted;
+      assert.equal(automationStatus('api-fixture', '7').running, true);
+      assert.equal((await api('/api/income')).status, 200, '收益日报只读取本地持久化数据，应在高级自动化期间可用');
+    } finally {
+      releaseCargoRead?.();
+      await lockedRun;
+      delete session.client.handlers.CargoShipsRequest;
+    }
     assert.equal((await api('/api/loop/start', { confirm: true, modules: ['snap'], automationOnly: true, rounds: 1, everySeconds: 1 })).status, 400);
 
     // 删除仅限本机凭证，但必须先让持有该账号 client 的后台链停止，不能遗留写请求。
@@ -2176,10 +2674,11 @@ test('paid legacy: ClickGold and Discount use shared disabled, module and total 
   } finally { f.ctx.dispose(); }
 });
 
-/** 折扣商品已购时只结算同幂等键的待确认记录，不能重发购买或把外部购买误认成本次结果。 */
+/** 折扣商品已购时只结算同一天同一商品的待确认记录，不能重发购买或把外部购买误认成本次结果。 */
 test('paid legacy: purchased discount item settles a pending buy through a read-only check', async () => {
-  const f = fixture({ states: { DiscountShopRequest: { shopItem: [{ id: 1, price: 100, discount: 0.5, isBuy: true }] } } });
-  const key = 'DiscountShopBuyRequest:{"id":1}';
+  const item = { id: 1, price: 100, discount: 0.5, isBuy: true };
+  const f = fixture({ states: { DiscountShopRequest: { shopItem: [item] } } });
+  const key = discountPurchaseKey(item, businessDate(fixedNow));
   f.ctx.setModule('dailies');
   f.ctx.ledger.pending[key] = { token: 'pending-discount', ruby: 50, module: 'dailies', date: businessDate(fixedNow) };
   writeJson(loadLedger(f.args.accountId, f.args.player.playerId).file, f.ctx.ledger);
@@ -2189,6 +2688,26 @@ test('paid legacy: purchased discount item settles a pending buy through a read-
     assert.equal(f.ctx.stop.aborted, false);
     assert.equal(f.client.calls.filter(call => call.name === 'DiscountShopBuyRequest').length, 0);
     assert.equal(f.ctx.ledger.days[businessDate(fixedNow)].spent, 50);
+  } finally { f.ctx.dispose(); }
+});
+
+/** 每日任务 1007 已完成时，使用服务端任务进度结算最近一批折扣购买待确认记录。 */
+test('paid legacy: completed discount daily task settles the latest pending purchase', async () => {
+  const f = fixture();
+  const key = 'DiscountShopBuyRequest:{"id":2}';
+  f.ctx.setModule('dailies');
+  f.ctx.ledger.pending[key] = { token: 'pending-daily-task', ruby: 80, module: 'dailies', date: businessDate(fixedNow) };
+  writeJson(loadLedger(f.args.accountId, f.args.player.playerId).file, f.ctx.ledger);
+  const { runDailies } = await import('../src/dailies.mjs');
+  const entries = [];
+  try {
+    await runDailies(f.client, protocol, { config: f.ctx.config, tasks: [{ task: { id: 1007, title: '折扣商店购买', progress: 1, targetProgress: 1 }, status: 'done', actions: [] }] }, {
+      allowMutate: true, claimRewards: false, actionExecutor: step => legacyAction(f.ctx, step), context: f.ctx, onStep: entry => entries.push(entry),
+    });
+    assert.equal(f.client.calls.filter(call => call.name === 'DiscountShopBuyRequest').length, 0);
+    assert.equal(f.ctx.ledger.pending[key], undefined);
+    assert.equal(f.ctx.ledger.days[businessDate(fixedNow)].spent, 80);
+    assert.ok(entries.some(entry => entry.verifiedByRead && /每日任务已完成/.test(entry.note)));
   } finally { f.ctx.dispose(); }
 });
 
@@ -2282,6 +2801,100 @@ test('discount tickets: forced target still skips when the live diamond balance 
   } finally { f.ctx.dispose(); }
 });
 
+/** 折扣购买必须用带奖励的专用回包确认，不能像无回包写入那样留下跨轮锁。 */
+test('discount buy: the DiscountShopBuyResponse confirms the purchase without a pending record', async () => {
+  const shop = { refreshCount: 0, shopItem: [discountItem(1, '藏品券', 400, 0.2)] };
+  const f = fixture({ handlers: {
+    DiscountShopRequest: async () => structuredClone(shop),
+    DiscountShopBuyRequest: async ({ id }, response, client) => {
+      assert.equal(response, 'DiscountShopBuyResponse');
+      const item = shop.shopItem.find(row => row.id === id);
+      // 买走的槽位立刻换成下一件商品，isBuy 读回不会变成 true。
+      shop.shopItem = [discountItem(1, '英雄经验', 100, 0.8)];
+      client.ruby -= Math.floor(item.price * item.discount);
+      return { shopItem: shop.shopItem[0], reward: item.reward };
+    },
+  } });
+  f.ctx.setModule('dailies');
+  Object.assign(f.settings.spending, { enabled: true, dailyLimit: 100, minRubyStock: 0 }); f.settings.spending.modules.dailies = 100;
+  try {
+    await guardedDailyAction(f.ctx, { request: 'DiscountShopBuyRequest', body: { id: 1 }, response: null, note: '购买折扣商品' });
+    assert.deepEqual(f.ctx.ledger.pending, {});
+    assert.equal(f.ctx.ledger.days[businessDate(fixedNow)].spent, 80);
+    assert.equal(f.ctx.results.at(-1).status, 'success');
+  } finally { f.ctx.dispose(); }
+});
+
+/** 购买回包迟到时，槽位已换成别的商品同样能证明下单生效，不能把成功的购买留成未确认。 */
+test('discount buy: a replaced shop slot confirms a purchase whose reply timed out', async () => {
+  const shop = { refreshCount: 0, shopItem: [discountItem(1, '藏品券', 400, 0.2)] };
+  const f = fixture({ handlers: {
+    DiscountShopRequest: async () => structuredClone(shop),
+    DiscountShopBuyRequest: async () => {
+      // 服务端已扣款并换货，但回包没有到达客户端。
+      shop.shopItem = [discountItem(1, '英雄经验', 100, 0.8)];
+      f.client.ruby -= 80;
+      throw new Error('timeout waiting for DiscountShopBuyResponse');
+    },
+  } });
+  f.ctx.setModule('dailies');
+  Object.assign(f.settings.spending, { enabled: true, dailyLimit: 100, minRubyStock: 0 }); f.settings.spending.modules.dailies = 100;
+  try {
+    await guardedDailyAction(f.ctx, { request: 'DiscountShopBuyRequest', body: { id: 1 }, response: 'DiscountShopBuyResponse', note: '购买折扣商品' });
+    assert.deepEqual(f.ctx.ledger.pending, {});
+    assert.equal(f.ctx.ledger.days[businessDate(fixedNow)].spent, 80);
+    assert.equal(f.ctx.results.at(-1).verifiedByRead, true);
+    assert.equal(f.ctx.stop.aborted, false);
+  } finally { f.ctx.dispose(); }
+});
+
+/** 同一槽位换成别的商品或换日不再沿用旧锁；跨日无法读回的记录按已花费结算并释放预留。 */
+test('discount daily: expired unconfirmed purchase is settled and today can buy again', async () => {
+  const shop = { refreshCount: 0, shopItem: [discountItem(1, '土豆', 40, 0.7)] };
+  const f = fixture({ handlers: { DiscountShopRequest: async () => structuredClone(shop), DiscountShopBuyRequest: async ({ id }, _response, client) => {
+    const item = shop.shopItem.find(row => row.id === id);
+    shop.shopItem = [discountItem(1, '加速器', 60, 0.8)];
+    client.ruby -= Math.floor(item.price * item.discount);
+    return { reward: item.reward };
+  } } });
+  f.ctx.setModule('dailies');
+  Object.assign(f.settings.spending, { enabled: true, dailyLimit: 100, minRubyStock: 0 }); f.settings.spending.modules.dailies = 100;
+  const yesterday = '2026-10-28', stale = 'DiscountShopBuyRequest:2026-10-28:2||160|0.5';
+  f.ctx.ledger.pending[stale] = { token: 'pending-old', ruby: 80, module: 'dailies', date: yesterday };
+  const { runDailies } = await import('../src/dailies.mjs');
+  const entries = [];
+  try {
+    await runDailies(f.client, protocol, { config: f.ctx.config, tasks: [{ task: { id: 1007, title: '折扣商店购买', progress: 0, targetProgress: 1 }, status: 'ready', actions: [{ request: 'DiscountShopBuyRequest', body: { id: 1 }, response: 'DiscountShopBuyResponse', note: '购买折扣商品' }] }] }, {
+      allowMutate: true, allowPaid: true, claimRewards: false, actionExecutor: step => legacyAction(f.ctx, step), context: f.ctx, onStep: entry => entries.push(entry),
+    });
+    assert.equal(f.ctx.ledger.pending[stale], undefined);
+    assert.equal(f.ctx.ledger.days[yesterday].spent, 80);
+    assert.equal(f.client.calls.filter(call => call.name === 'DiscountShopBuyRequest').length, 1);
+    assert.deepEqual(f.ctx.ledger.pending, {});
+    assert.equal(f.ctx.stop.aborted, false);
+    assert.ok(entries.some(entry => /跨日结果无法读回/.test(entry.note ?? '')));
+  } finally { f.ctx.dispose(); }
+});
+
+/** 当天结果未确认时只跳过本日的再次购买，不能再用旧余额下单，也不能中止整轮挂机。 */
+test('discount daily: an unconfirmed purchase today skips a second buy without aborting the loop', async () => {
+  const shop = { refreshCount: 0, shopItem: [discountItem(1, '土豆', 40, 0.7)] };
+  const f = fixture({ states: { DiscountShopRequest: shop }, handlers: { DiscountShopBuyRequest: async () => ({}) } });
+  f.ctx.setModule('dailies');
+  Object.assign(f.settings.spending, { enabled: true, dailyLimit: 100, minRubyStock: 0 }); f.settings.spending.modules.dailies = 100;
+  f.ctx.ledger.pending[discountPurchaseKey(shop.shopItem[0], businessDate(fixedNow))] = { token: 'pending-today', ruby: 28, module: 'dailies', date: businessDate(fixedNow) };
+  const { runDailies } = await import('../src/dailies.mjs');
+  const entries = [];
+  try {
+    await runDailies(f.client, protocol, { config: f.ctx.config, tasks: [{ task: { id: 1007, title: '折扣商店购买', progress: 0, targetProgress: 1 }, status: 'ready', actions: [{ request: 'DiscountShopBuyRequest', body: { id: 1 }, response: 'DiscountShopBuyResponse', note: '购买折扣商品' }] }] }, {
+      allowMutate: true, allowPaid: true, claimRewards: false, actionExecutor: step => legacyAction(f.ctx, step), context: f.ctx, onStep: entry => entries.push(entry),
+    });
+    assert.equal(f.client.calls.filter(call => call.name === 'DiscountShopBuyRequest').length, 0);
+    assert.equal(f.ctx.stop.aborted, false);
+    assert.ok(entries.some(entry => entry.skipped && /结果未确认/.test(entry.reason)));
+  } finally { f.ctx.dispose(); }
+});
+
 /** 挂机付费点金只补足服务端当天 paidTimes 的差额，并以读回后的次数确认一次批量写入。 */
 test('afk: paid click-gold reaches the configured target once and charges the AFK budget', async () => {
   const f = await moduleRun('afk', { claim: false, levelUp: false, levelReward: false }, ({ ctx, settings }) => {
@@ -2299,9 +2912,32 @@ test('afk: paid click-gold reaches the configured target once and charges the AF
       return {};
     },
   } });
-  assert.deepEqual(f.client.calls.filter(call => call.name === 'ClickGoldRequest').map(call => call.body), [{ times: 3, free: false }]);
+  assert.deepEqual(f.client.calls.filter(call => call.name === 'ClickGoldRequest').map(call => call.body),
+    [{ times: 1, free: false }, { times: 1, free: false }, { times: 1, free: false }]);
   assert.equal(f.ctx.ledger.days[businessDate(fixedNow)].spent, 150);
   assert.equal(f.ctx.ledger.days[businessDate(fixedNow)].modules.afk, 150);
+});
+
+/** 单次点金最多十连；目标超过十次时按 10 次批量加剩余单次补足，避免整批被服务端拒绝。 */
+test('afk: paid click-gold is split into ten-click batches', async () => {
+  const f = await moduleRun('afk', { claim: false, levelUp: false, levelReward: false }, ({ ctx, settings }) => {
+    settings.spending.clickGoldTimes = 17;
+    Object.assign(settings.spending, { enabled: true, dailyLimit: 3000, minRubyStock: 0 }); settings.spending.modules.afk = 1017;
+    table(ctx, 'OfflineParamCfg', [{ paramName: '点金价格', paramValue: 50 }]);
+  }, { states: {
+    AfkInfoRequest: { afkInfo: {} },
+    ClickGoldInfoRequest: { info: { freeTimes: 0, paidTimes: 0, maxPaidTimes: 17 } },
+  }, handlers: {
+    ClickGoldRequest: async ({ times, free }, _response, client) => {
+      const info = client.states.ClickGoldInfoRequest.info;
+      if (free) info.freeTimes += times; else info.paidTimes += times;
+      return {};
+    },
+  } });
+  assert.deepEqual(f.client.calls.filter(call => call.name === 'ClickGoldRequest').map(call => call.body),
+    [{ times: 10, free: false }, ...Array(7).fill({ times: 1, free: false })]);
+  assert.equal(f.client.states.ClickGoldInfoRequest.info.paidTimes, 17);
+  assert.equal(f.ctx.ledger.days[businessDate(fixedNow)].spent, 850);
 });
 
 /** 已到目标、服务端上限和所有钻石护栏都必须在发包前阻止挂机付费点金。 */
@@ -2386,6 +3022,68 @@ test('afk: paid click-gold preview and uncertain result do not permit a duplicat
     assert.equal(f.client.calls.filter(call => call.name === 'ClickGoldRequest').length, 1);
     assert.equal(retry.results.find(row => row.request === 'ClickGoldRequest')?.status, 'uncertain');
   } finally { retry.dispose(); }
+});
+
+/** 挂机收益模块接管点金后，免费次数也必须先用完，再按付费目标消耗钻石。 */
+test('afk: free click-gold is used before the paid target', async () => {
+  const f = await moduleRun('afk', { claim: false, levelUp: false, levelReward: false }, ({ ctx, settings }) => {
+    settings.spending.clickGoldTimes = 5;
+    Object.assign(settings.spending, { enabled: true, dailyLimit: 200, minRubyStock: 0 }); settings.spending.modules.afk = 200;
+    table(ctx, 'OfflineParamCfg', [{ paramName: '免费点金次数', paramValue: 3 }, { paramName: '点金价格', paramValue: 50 }]);
+  }, { states: {
+    AfkInfoRequest: { afkInfo: {} },
+    ClickGoldInfoRequest: { info: { freeTimes: 1, paidTimes: 2, maxPaidTimes: 17 } },
+  }, handlers: {
+    ClickGoldRequest: async ({ times, free }, response, client) => {
+      assert.equal(response, 'ClickGoldResponse');
+      const info = client.states.ClickGoldInfoRequest.info;
+      if (free) info.freeTimes += times; else info.paidTimes += times;
+      return {};
+    },
+  } });
+  assert.deepEqual(f.client.calls.filter(call => call.name === 'ClickGoldRequest').map(call => call.body),
+    [{ times: 1, free: true }, { times: 1, free: true }, { times: 1, free: false }, { times: 1, free: false }, { times: 1, free: false }]);
+  assert.equal(f.ctx.ledger.days[businessDate(fixedNow)].spent, 150);
+  assert.equal(f.ctx.ledger.days[businessDate(fixedNow)].modules.afk, 150);
+});
+
+/** 付费目标已经达成时免费次数仍然要领取；免费点金不占用钻石额度。 */
+test('afk: free click-gold still runs after the paid target is reached', async () => {
+  const f = await moduleRun('afk', { claim: false, levelUp: false, levelReward: false }, ({ ctx, settings }) => {
+    settings.spending.clickGoldTimes = 5;
+    table(ctx, 'OfflineParamCfg', [{ paramName: '免费点金次数', paramValue: 3 }, { paramName: '点金价格', paramValue: 50 }]);
+  }, { states: {
+    AfkInfoRequest: { afkInfo: {} },
+    ClickGoldInfoRequest: { info: { freeTimes: 0, paidTimes: 5, maxPaidTimes: 17 } },
+  }, handlers: {
+    ClickGoldRequest: async ({ times, free }, _response, client) => { client.states.ClickGoldInfoRequest.info.freeTimes += times; return {}; },
+  } });
+  assert.deepEqual(f.client.calls.filter(call => call.name === 'ClickGoldRequest').map(call => call.body),
+    [{ times: 1, free: true }, { times: 1, free: true }, { times: 1, free: true }]);
+  assert.equal(f.ctx.ledger.days[businessDate(fixedNow)]?.spent ?? 0, 0);
+});
+
+/** 免费点金没有钻石消耗：一次超时只放弃本轮免费部分，不留预留锁，也不阻塞随后的付费目标。 */
+test('afk: an uncertain free click does not lock diamonds or stop the paid target', async () => {
+  const f = await moduleRun('afk', { claim: false, levelUp: false, levelReward: false }, ({ ctx, settings }) => {
+    settings.spending.clickGoldTimes = 5;
+    Object.assign(settings.spending, { enabled: true, dailyLimit: 300, minRubyStock: 0 }); settings.spending.modules.afk = 300;
+    table(ctx, 'OfflineParamCfg', [{ paramName: '免费点金次数', paramValue: 1 }, { paramName: '点金价格', paramValue: 50 }]);
+  }, { states: {
+    AfkInfoRequest: { afkInfo: {} },
+    ClickGoldInfoRequest: { info: { freeTimes: 0, paidTimes: 0, maxPaidTimes: 17 } },
+  }, handlers: {
+    ClickGoldRequest: async ({ times, free }, _response, client) => {
+      if (free) throw new Error('timeout waiting for ClickGoldResponse');
+      client.states.ClickGoldInfoRequest.info.paidTimes += times;
+      return {};
+    },
+  } });
+  assert.deepEqual(f.client.calls.filter(call => call.name === 'ClickGoldRequest').map(call => call.body),
+    [{ times: 1, free: true }, ...Array(5).fill({ times: 1, free: false })]);
+  assert.equal(f.ctx.ledger.pending['ClickGoldRequest:{"times":1,"free":true}'], undefined);
+  assert.equal(f.ctx.ledger.days[businessDate(fixedNow)].spent, 250);
+  assert.equal(f.ctx.stop.aborted, false);
 });
 
 test('manual writes: --yes alone cannot bypass shared account executor', async () => {
@@ -2728,6 +3426,23 @@ test('trial VIP: persisted registration uncertainty skips only its raid', async 
   } finally { f.ctx.dispose(); }
 });
 
+/** 跨日后零消耗广告登记不再受昨天的未知结果永久阻塞，但当天仍只允许一次尝试。 */
+test('trial VIP: stale registration uncertainty is released after the business day changes', async () => {
+  const tomorrow = fixedNow + 24 * 60 * 60 * 1000;
+  const f = vipTrialFixture({ now: () => tomorrow });
+  const key = 'WatchAdvRequest:{"type":1,"id":4}';
+  f.ctx.ledger.pending[key] = { token: 'stale-vip-registration', ruby: 0, module: 'battle', date: businessDate(fixedNow) };
+  writeJson(loadLedger(f.args.accountId, f.args.player.playerId).file, f.ctx.ledger);
+  f.ctx.dispose();
+  try {
+    const result = await runAutomation({ ...f.args, selector: 'battle' });
+    assert.equal(result.error, null);
+    assert.equal(f.client.calls.filter(call => call.name === 'WatchAdvRequest' && call.body.id === 4).length, 1);
+    assert.equal(f.client.calls.filter(call => call.name === 'TrialRaidBuySweepRequest' && call.body.raidId === 1).length, 1);
+    assert.equal(result.ledger.pending[key], undefined, '昨天的零消耗登记锁必须被释放并由本次成功结算');
+  } finally { f.ctx.dispose(); }
+});
+
 /** 新发生的 VIP 登记超时也只保留当前组的锁，后续试炼仍可领取。 */
 test('trial VIP: registration timeout preserves the run for later raids', async () => {
   const f = vipTrialFixture();
@@ -2771,6 +3486,88 @@ for (const mode of ['registration rejected', 'registration timeout', 'sweep time
     assert.equal(f.client.calls.filter(call => call.name === 'TrialRaidBuySweepRequest').length, mode.startsWith('registration') ? 0 : 1);
   });
 }
+
+/**
+ * 重现 2026-11-11 抓包：挂机广告奖励先登记 WatchAdvRequest{type:1,id:1}，
+ * 再用 DrawAfkRewardRequest{useAdvCard:true} 领取带徽章的额外奖励。
+ */
+function vipAfkAdFixture({ player, adv = [{ id: 1, gotTimes: 0 }], drawReward } = {}) {
+  // player 整体替换默认值：资格边界用例必须能删掉 vip 字段本身。
+  const f = fixture({ player: player ?? { level: 10, vip: { vipLevel: 3 } }, states: {
+    AfkInfoRequest: { afkInfo: {} },
+    OnWaterRequest: { adv },
+  } });
+  f.settings.vipFreeAd = true;
+  Object.assign(f.settings.modules.afk, { enabled: true, claim: false, levelUp: false, levelReward: false });
+  table(f.ctx, 'AdvEffectCfg', [{ id: 1, dailyLimit: 1 }]);
+  f.ctx.setModule('afk');
+  f.client.handlers.WatchAdvRequest = async (_, response) => { assert.equal(response, 'OkResponse'); return {}; };
+  f.client.handlers.DrawAfkRewardRequest = async ({ useAdvCard }, response) => {
+    assert.equal(response, 'DrawAfkRewardResponse');
+    // 奖励结构来自抓包帧 265：普通资产外还可能附带 2 星橙射手徽章。
+    if (useAdvCard !== true) return { reward: { assetPackage: { asset: [{ type: 1, id: 'GOLD', num: 8000 }] } } };
+    return drawReward ?? { reward: { assetPackage: { asset: [{ type: 1, id: 'GOLD', num: 16090 }, { type: 0, id: '英雄经验', num: 5000 }] }, badge: [{ badgeId: '橙射手徽章', star: 2 }] } };
+  };
+  return f;
+}
+
+/** VIP 免广告按抓包顺序领取挂机额外奖励，且同一角色重启后不得重复领取。 */
+test('afk VIP: captured registration and reward sequence claims once per day', async () => {
+  const f = vipAfkAdFixture();
+  try {
+    await f.ctx.refreshStock(); await HANDLERS.afk(f.ctx, f.settings.modules.afk);
+    assert.deepEqual(f.client.calls.filter(call => ['WatchAdvRequest', 'DrawAfkRewardRequest'].includes(call.name))
+      .map(({ name, body }) => ({ name, body })), [
+      { name: 'WatchAdvRequest', body: { type: 1, id: 1 } },
+      { name: 'DrawAfkRewardRequest', body: { useAdvCard: true } },
+    ]);
+    assert.equal(f.ctx.results.filter(row => row.status === 'success').length, 2);
+    assert.equal(f.ctx.ledger.days[businessDate(fixedNow)].spent, 0);
+    // 同一角色重建上下文后，即使 OnWater 尚未反映次数变化，也不能再次领取。
+    const restarted = createContext(f.args);
+    try { await HANDLERS.afk(restarted, f.settings.modules.afk); }
+    finally { restarted.dispose(); }
+    assert.equal(f.client.calls.filter(call => call.name === 'WatchAdvRequest').length, 1);
+    assert.equal(f.client.calls.filter(call => call.name === 'DrawAfkRewardRequest').length, 1);
+  } finally { f.ctx.dispose(); }
+});
+
+/** 服务端广告次数已经用掉当日额度时，本地不再登记或领取。 */
+test('afk VIP: server-side gotTimes already at the limit skips the claim', async () => {
+  const f = vipAfkAdFixture({ adv: [{ id: 1, gotTimes: 1 }] });
+  try {
+    await f.ctx.refreshStock(); await HANDLERS.afk(f.ctx, f.settings.modules.afk);
+    assert.equal(f.client.calls.filter(call => ['WatchAdvRequest', 'DrawAfkRewardRequest'].includes(call.name)).length, 0);
+  } finally { f.ctx.dispose(); }
+});
+
+/** 空奖励回包不能证明权益生效；重启后同一组请求不得重发。 */
+test('afk VIP: empty reward stops the day without a retry after restart', async () => {
+  const f = vipAfkAdFixture({ drawReward: { reward: { assetPackage: { asset: [] } } } });
+  f.ctx.dispose();
+  const first = await runAutomation({ ...f.args, selector: 'afk' });
+  assert.ok(first.results.some(row => row.request === 'DrawAfkRewardRequest' && row.status === 'failed'));
+  const second = await runAutomation({ ...f.args, selector: 'afk' });
+  assert.equal(second.error, null);
+  assert.equal(f.client.calls.filter(call => call.name === 'WatchAdvRequest').length, 1);
+  assert.equal(f.client.calls.filter(call => call.name === 'DrawAfkRewardRequest').length, 1);
+});
+
+/** 资格边界与试炼扫荡同一条线；隐藏开关后即使保存值仍开启，也不得登记广告权益。 */
+for (const [name, player, enabled] of [
+  ['VIP2', { level: 41, vip: { vipLevel: 2 } }, true],
+  ['role9', { level: 9, vip: { vipLevel: 3 } }, true],
+  ['missing VIP', { level: 41 }, true],
+  ['string VIP', { level: 41, vip: { vipLevel: '3' } }, true],
+  ['switch off', { level: 41, vip: { vipLevel: 3 } }, false],
+]) test(`afk VIP: ${name} does not register or claim the ad reward`, async () => {
+  const f = vipAfkAdFixture({ player });
+  f.settings.vipFreeAd = enabled;
+  try {
+    await f.ctx.refreshStock(); await HANDLERS.afk(f.ctx, f.settings.modules.afk);
+    assert.equal(f.client.calls.filter(call => ['WatchAdvRequest', 'DrawAfkRewardRequest'].includes(call.name)).length, 0);
+  } finally { f.ctx.dispose(); }
+});
 
 // 配置表按目标等级取消耗，但服务端字段是本次升级幅度，160 级升一次必须发送 1 而非 161。
 test('afk: upgrade sends a one-level increment while pricing the next level', async () => {
@@ -3181,6 +3978,24 @@ test('factory scheduler: timed-out harvest remains protected from resubmission',
   } finally { f.ctx.dispose(); }
 });
 
+/** 未确认的开工会锁住当前排产计划，但持续挂机仍须保留其他独立模块的执行机会。 */
+test('factory scheduler: unconfirmed start keeps its lock without aborting the continuous loop', async () => {
+  const f = productionFixture({ queue: [], slots: 1 });
+  f.client.handlers.StartFactoryProduceRequest = async () => {
+    // 模拟网关没有给出可读回的状态；不能假装已开工或再次发送同一请求。
+    throw new Error('模拟开工状态确认超时');
+  };
+  try {
+    await runProduction(f, [{ id: '快料', need: 1, source: 'resident' }]);
+    const key = 'factory:start:1食品厂:快料';
+    assert.equal(f.ctx.stop.aborted, false, '排产待确认只能隔离当前模块');
+    assert.equal(f.ctx.results.find(row => row.request === 'StartFactoryProduceRequest')?.status, 'uncertain');
+    assert.ok(f.ctx.ledger.pending[key], '待确认开工必须保留跨轮幂等锁');
+    await runProduction(f, [{ id: '快料', need: 1, source: 'resident' }]);
+    assert.equal(f.client.calls.filter(call => call.name === 'StartFactoryProduceRequest').length, 1, '未确认期间不得重复开工');
+  } finally { f.ctx.dispose(); }
+});
+
 test('factory scheduler: preview does not cancel or persist simulated deferred jobs', async () => {
   const f = productionFixture({ dryRun: true, queue: [{ idx: 1, productId: '长货', finishTime: fixedNow / 1000 + 7200 }, { idx: 2, productId: '长货', finishTime: 0 }], slots: 2 });
   try {
@@ -3246,6 +4061,42 @@ test('factory scheduler: restart confirms deferred start without duplicating it 
     assert.equal(f.client.calls.filter(call => call.name === 'CancelFactoryProduceRequest').length, 0);
     assert.equal(f.ctx.memory('factory.production').protectedJobs['1食品厂'].idx, 101);
     assert.deepEqual(f.ctx.memory('factory.production').deferred, []);
+  } finally { f.ctx.dispose(); }
+});
+
+/** 产品被另一座工厂同时消耗时，库存与队列总量会一起变化，新增制造位仍应证明开工已生效。 */
+test('factory scheduler: concurrent consumption of the product does not turn a confirmed start into uncertain', async () => {
+  const f = productionFixture({ queue: [], slots: 2, stock: [['木材', 20], ['快料', 8]] });
+  f.client.handlers.StartFactoryProduceRequest = async body => {
+    // 另一座工厂在同一时刻吃掉产品库存，只有队列新增的生产位能作为开工证据。
+    f.client.items.set('快料', 0);
+    f.client.items.set('木材', f.client.items.get('木材') - 1);
+    f.client.states.OnWaterRequest.building[0].factory.factoryQ.push({ idx: 99 + f.client.calls.filter(call => call.name === 'StartFactoryProduceRequest').length, productId: body.productId, finishTime: 0 });
+  };
+  try {
+    await runProduction(f, [{ id: '快料', need: 10, source: 'resident' }]);
+    const starts = f.ctx.results.filter(row => row.request === 'StartFactoryProduceRequest');
+    assert.equal(starts.length, 2);
+    assert.ok(starts.every(row => row.status === 'success'), '库存被并发消耗不能把已生效的开工记成待确认');
+    assert.equal(f.ctx.stop.aborted, false);
+    assert.equal(f.ctx.memory('factory.production').intent, undefined);
+  } finally { f.ctx.dispose(); }
+});
+
+/** 重启后产品库存已被别处消耗时，仍用新出现的制造位结算未确认开工，避免排产永久停摆。 */
+test('factory scheduler: restart settles an unconfirmed start from its new queue slot', async () => {
+  const queue = [33, 34, 35, 36, 37, 38].map(idx => ({ idx, productId: '快料', finishTime: 0 }));
+  const f = productionFixture({ queue, slots: 6, stock: [['木材', 20], ['快料', 0]] });
+  const key = 'factory:start:1食品厂:快料';
+  f.ctx.ledger.pending[key] = { token: 'pending', ruby: 0, module: 'island', date: businessDate(fixedNow) };
+  f.ctx.memory('factory.production', { restocking: [], streaks: {}, deferred: [], protectedJobs: {},
+    intent: { kind: 'start', buildingId: '1食品厂', productId: '快料', tier: 1, key, longDue: false, beforeIndexes: [33, 34, 35, 36, 37], before: 11 } });
+  try {
+    await runProduction(f);
+    assert.equal(f.ctx.ledger.pending[key], undefined);
+    assert.equal(f.ctx.memory('factory.production').intent, undefined);
+    assert.equal(f.ctx.stop.aborted, false);
+    assert.equal(f.client.calls.filter(call => call.name === 'StartFactoryProduceRequest').length, 0);
   } finally { f.ctx.dispose(); }
 });
 
@@ -3402,6 +4253,107 @@ test('factory demand: current hero raid order joins scheduling, while an expired
   assert.equal(expired.client.calls.filter(call => call.name === 'HeroRaidFinishOrderRequest').length, 0);
 });
 
+test('island ad speedup: only tasks strictly over 30 minutes use the daily free ads', async () => {
+  const short = adSpeedUpFixture({ buildingRemaining: 29 * 60, factoryRemaining: 29 * 60 });
+  try {
+    await runIsland(short);
+    assert.equal(adSpeedUpCalls(short).length, 0, '29 分钟不加速');
+  } finally { short.ctx.dispose(); }
+
+  const long = adSpeedUpFixture({ buildingRemaining: 31 * 60, factoryRemaining: 31 * 60 });
+  try {
+    await runIsland(long);
+    const calls = adSpeedUpCalls(long);
+    assert.deepEqual(calls.map(call => call.name), [
+      'WatchAdvRequest', 'SpeedUpUpgradeBuildingRequest',
+      'WatchAdvRequest', 'SpeedUpFactoryProduceRequest',
+    ]);
+    assert.deepEqual(calls[0].body, { type: 1, id: 8 });
+    assert.deepEqual(calls[1].body, { buildingId: '1宠物训练营', speedUp: { type: 3, useNum: 0 } });
+    assert.deepEqual(calls[2].body, { type: 1, id: 6 });
+    assert.deepEqual(calls[3].body, { buildingId: '1玩具厂', index: 18, speedUp: { type: 3, useNum: 0 } });
+    assert.equal(long.ctx.count('island.adSpeedUp.building'), 1);
+    assert.equal(long.ctx.count('island.adSpeedUp.factory'), 1);
+  } finally { long.ctx.dispose(); }
+});
+
+test('island ad speedup: uses each category up to the daily limit and then skips locally', async () => {
+  const f = adSpeedUpFixture({ buildingRemaining: 120 * 60, factoryRemaining: 120 * 60 });
+  try {
+    await runIsland(f);
+    assert.equal(adSpeedUpCalls(f).filter(call => call.name === 'SpeedUpUpgradeBuildingRequest').length, 3);
+    assert.equal(adSpeedUpCalls(f).filter(call => call.name === 'SpeedUpFactoryProduceRequest').length, 3);
+    assert.equal(f.ctx.count('island.adSpeedUp.building'), 3);
+    assert.equal(f.ctx.count('island.adSpeedUp.factory'), 3);
+    const before = adSpeedUpCalls(f).length;
+    // 当天第二次执行只读本地计数，不再发广告登记或加速请求。
+    await runIsland(f);
+    assert.equal(adSpeedUpCalls(f).length, before);
+    // 重启上下文后仍从账本读取当天次数，不能因为新进程再次用满。
+    const restarted = createContext(f.args); restarted.setModule('island');
+    try { await restarted.refreshStock(); await HANDLERS.island(restarted, f.settings.modules.island); }
+    finally { restarted.dispose(); }
+    assert.equal(adSpeedUpCalls(f).length, before);
+  } finally { f.ctx.dispose(); }
+});
+
+test('island ad speedup: manual server usage reduces the remaining free ads', async () => {
+  const f = adSpeedUpFixture({ buildingRemaining: 120 * 60, factoryRemaining: 120 * 60,
+    adv: [{ id: 8, gotTimes: 2 }, { id: 6, gotTimes: 0 }] });
+  try {
+    await runIsland(f);
+    assert.equal(adSpeedUpCalls(f).filter(call => call.name === 'SpeedUpUpgradeBuildingRequest').length, 1);
+    assert.equal(adSpeedUpCalls(f).filter(call => call.name === 'SpeedUpFactoryProduceRequest').length, 3);
+    assert.equal(f.ctx.count('island.adSpeedUp.building'), 3);
+    assert.equal(f.ctx.count('island.adSpeedUp.factory'), 3);
+  } finally { f.ctx.dispose(); }
+});
+
+test('island ad speedup: next Beijing business day restores both daily counts', async () => {
+  let clock = fixedNow;
+  const f = adSpeedUpFixture({ buildingRemaining: 120 * 60, factoryRemaining: 120 * 60, now: () => clock });
+  try {
+    await runIsland(f);
+    const first = adSpeedUpCalls(f).length;
+    assert.equal(first, 12);
+    clock += 24 * 3600_000;
+    const water = f.client.states.OnWaterRequest;
+    water.building[0].buildFinishTime = clock / 1000 + 120 * 60;
+    water.building[1].factory.factoryQ[0].finishTime = clock / 1000 + 120 * 60;
+    water.adv = [{ id: 6, gotTimes: 0 }, { id: 8, gotTimes: 0 }];
+    await runIsland(f);
+    assert.equal(adSpeedUpCalls(f).length, first * 2, '跨天后重新获得三次建造和三次生产额度');
+    assert.equal(f.ctx.count('island.adSpeedUp.building'), 3);
+    assert.equal(f.ctx.count('island.adSpeedUp.factory'), 3);
+  } finally { f.ctx.dispose(); }
+});
+
+test('island ad speedup: dry run plans without sending or consuming daily counts', async () => {
+  const f = adSpeedUpFixture({ buildingRemaining: 120 * 60, factoryRemaining: 120 * 60, dryRun: true });
+  try {
+    await runIsland(f);
+    assert.equal(adSpeedUpCalls(f).length, 0);
+    assert.equal(f.ctx.count('island.adSpeedUp.building'), 0);
+    assert.equal(f.ctx.count('island.adSpeedUp.factory'), 0);
+    assert.ok(f.ctx.results.some(row => row.status === 'planned' && row.request === 'SpeedUpUpgradeBuildingRequest'));
+  } finally { f.ctx.dispose(); }
+});
+
+test('island ad speedup: VIP 3 gates all ad requests while role level is not a separate gate', async () => {
+  const lowLevel = adSpeedUpFixture({ player: { level: 9, vip: { vipLevel: 3 } } });
+  try {
+    await runIsland(lowLevel);
+    assert.ok(adSpeedUpCalls(lowLevel).length > 0, 'VIP 3 的低等级角色仍可使用建造/生产广告加速');
+  } finally { lowLevel.ctx.dispose(); }
+
+  const vip2 = adSpeedUpFixture({ player: { level: 100, vip: { vipLevel: 2 } } });
+  try {
+    await runIsland(vip2);
+    assert.equal(adSpeedUpCalls(vip2).length, 0);
+    assert.ok(vip2.ctx.results.some(row => /VIP 3 级/.test(row.reason ?? '')));
+  } finally { vip2.ctx.dispose(); }
+});
+
 test('hero raid: priority production finishes the order and claims only the newly reached order reward', async () => {
   const f = await moduleRun('island', { collect: false, finish: false }, ({ ctx, client, settings }) => {
     Object.assign(settings.modules.island.factory, { gain: false, priorityProduce: true });
@@ -3544,6 +4496,8 @@ test('world repair: rejected accelerator retries with the full rounded-minute ru
   assert.deepEqual(f.client.calls.filter(call => call.name === 'SpeedUpRepairRequest').map(call => call.body.speedUp.type), [2, 1]);
   assert.equal(f.client.ruby, 980);
   assert.equal(f.ctx.ledger.days[businessDate(fixedNow)]?.spent, 20);
+  // 钻石维修加速成功后进入面板统计口径，道具路径失败不算次数。
+  assert.equal(f.ctx.ledger.days[businessDate(fixedNow)]?.counts?.['cityWar.rubyRepairSpeedUp'], 1);
   assert.equal(f.ctx.results.find(result => result.request === 'SpeedUpRepairRequest' && result.status === 'success')?.ruby, 20);
   assert.deepEqual(f.ctx.ledger.pending, {});
   assert.match(f.ctx.results.find(result => result.label === '维修加速回退 1舰队')?.reason ?? '', /服务器拒绝/);
@@ -3895,11 +4849,11 @@ test('merchant ship: Shanghai city-war hour reserves fleets for city-war dispatc
     cityWar: { enabled: true, online: false, reattack: true, fleets: [{ enabled: true, buildingId: '1舰队', roles: ['attack'] }] },
   }, null, {
     now,
-    states: {
+    states: cityWarGuildStates({
       TreasureLootListRequest: { treasure: [{ uid: 49, color: 5 }] },
-      WarDeclarationRequest: { startTime: now() / 1000 - 1, endTime: now() / 1000 + 60, assembleCityId: 3, declarations: [{ cityId: 9 }] },
+      WarDeclarationRequest: { startTime: now() / 1000 - 1, endTime: now() / 1000 + 60, assembleCityId: 3, declarations: [{ cityId: 9, attackGuildIdx: 7 }] },
       MyFleetsRequest: { fleets: [{ buildingId: '1舰队', state: protocol.FleetState.IDLE }] },
-    },
+    }),
     handlers: {
       SetAssembleCityRequest: async ({ cityId }, _response, client) => { client.emit('message', { name: 'SCAssembleCity', body: { cityId } }); },
       MoveFleetsToCityRequest: async (_, _response, client) => { client.states.MyFleetsRequest.fleets[0].state = protocol.FleetState.MOVING; },
@@ -3914,9 +4868,9 @@ test('merchant ship: Shanghai city-war hour reserves fleets for city-war dispatc
 
 test('city war: assembly precedes movement; an attacked city is not attacked again after restart', async () => {
   const now = () => Date.parse('2026-10-29T20:45:00+08:00');
-  const f = await moduleRun('world', { cityWar: { enabled: true, online: false, reattack: false, fleets: [{ enabled: true, buildingId: '1舰队', roles: ['attack'] }] } }, null, { states: {
-    WarDeclarationRequest: { startTime: now() / 1000 - 1, endTime: now() / 1000 + 60, assembleCityId: 3, declarations: [{ cityId: 9 }] }, MyFleetsRequest: { fleets: [{ buildingId: '1舰队', state: protocol.FleetState.IDLE }] },
-  }, handlers: {
+  const f = await moduleRun('world', { cityWar: { enabled: true, online: false, reattack: false, fleets: [{ enabled: true, buildingId: '1舰队', roles: ['attack'] }] } }, null, { states: cityWarGuildStates({
+    WarDeclarationRequest: { startTime: now() / 1000 - 1, endTime: now() / 1000 + 60, assembleCityId: 3, declarations: [{ cityId: 9, attackGuildIdx: 7 }] }, MyFleetsRequest: { fleets: [{ buildingId: '1舰队', state: protocol.FleetState.IDLE }] },
+  }), handlers: {
     SetAssembleCityRequest: async ({ cityId }, response, client) => { client.emit('message', { name: 'SCAssembleCity', body: { cityId } }); return { cityId }; },
     MoveFleetsToCityRequest: async (_, response, client) => { client.states.MyFleetsRequest.fleets[0].state = protocol.FleetState.MOVING; },
   }, now });
@@ -3927,6 +4881,38 @@ test('city war: assembly precedes movement; an attacked city is not attacked aga
   try { await ctx.refreshStock(); await HANDLERS.world(ctx, f.settings.modules.world); }
   finally { ctx.dispose(); }
   assert.equal(f.client.calls.filter(c => c.name === 'MoveFleetsToCityRequest').length, 1);
+});
+
+test('city war: attack dispatch ignores declarations from other guilds', async () => {
+  const now = () => Date.parse('2026-10-29T20:45:00+08:00');
+  const f = await moduleRun('world', { cityWar: { enabled: true, online: false, reattack: false, fleets: [{ enabled: true, buildingId: '1舰队', roles: ['attack'] }] } }, null, {
+    now,
+    states: cityWarGuildStates({
+      // 第一条是其他联盟的宣战；当前联盟序号为 7，只能进攻第二条目标。
+      WarDeclarationRequest: { startTime: now() / 1000 - 1, endTime: now() / 1000 + 60, declarations: [{ cityId: 81, attackGuildIdx: 9 }, { cityId: 82, attackGuildIdx: 7 }] },
+      MyFleetsRequest: { fleets: [{ buildingId: '1舰队', state: protocol.FleetState.IDLE }] },
+    }),
+    handlers: {
+      MoveFleetsToCityRequest: async (_, _response, client) => { client.states.MyFleetsRequest.fleets[0].state = protocol.FleetState.MOVING; },
+    },
+  });
+  assert.deepEqual(f.client.calls.filter(call => call.name === 'MoveFleetsToCityRequest').map(call => call.body), [{ buildingId: ['1舰队'], cityId: 82 }]);
+});
+
+test('city war: attack skips movement when own guild index is ambiguous', async () => {
+  const now = () => Date.parse('2026-10-29T20:45:00+08:00');
+  const f = await moduleRun('world', { cityWar: { enabled: true, online: false, reattack: false, fleets: [{ enabled: true, buildingId: '1舰队', roles: ['attack'] }] } }, null, {
+    now,
+    states: {
+      // 两座本联盟城市被地图回报为不同联盟，归属不可信时必须安全跳过写请求。
+      GuildCityInfoRequest: { cities: [{ cityId: 1 }, { cityId: 2 }] },
+      WorldInfoRequest: { cities: [{ id: 1, guildIdx: 7 }, { id: 2, guildIdx: 8 }] },
+      WarDeclarationRequest: { startTime: now() / 1000 - 1, endTime: now() / 1000 + 60, declarations: [{ cityId: 82, attackGuildIdx: 7 }] },
+      MyFleetsRequest: { fleets: [{ buildingId: '1舰队', state: protocol.FleetState.IDLE }] },
+    },
+  });
+  assert.equal(f.client.calls.filter(call => call.name === 'MoveFleetsToCityRequest').length, 0);
+  assert.match(f.ctx.results.find(result => result.status === 'skipped')?.reason ?? '', /无法确认己方联盟序号/);
 });
 
 test('city war: a busy preceding fleet does not block a later configured fleet', async () => {
@@ -3943,11 +4929,11 @@ test('city war: a busy preceding fleet does not block a later configured fleet',
     },
   }, null, {
     now,
-    states: {
-      WarDeclarationRequest: { startTime: now() / 1000 - 1, endTime: now() / 1000 + 60, assembleCityId: 3, declarations: [{ cityId: 9 }] },
+    states: cityWarGuildStates({
+      WarDeclarationRequest: { startTime: now() / 1000 - 1, endTime: now() / 1000 + 60, assembleCityId: 3, declarations: [{ cityId: 9, attackGuildIdx: 7 }] },
       // 第一舰队正行军，回归用例应验证它不会阻断配置中的第二舰队出征。
       MyFleetsRequest: { fleets: [{ buildingId: '1舰队', state: protocol.FleetState.MOVING }, { buildingId: '2舰队', state: protocol.FleetState.IDLE }] },
-    },
+    }),
     handlers: {
       SetAssembleCityRequest: async ({ cityId }, _response, client) => { client.emit('message', { name: 'SCAssembleCity', body: { cityId } }); },
       MoveFleetsToCityRequest: async ({ buildingId }, _response, client) => { client.states.MyFleetsRequest.fleets.find(fleet => fleet.buildingId === buildingId[0]).state = protocol.FleetState.MOVING; },
@@ -3995,10 +4981,10 @@ test('city war: captured march speedup sends only buildingId after movement conf
     settings.spending.modules.world = 100;
   }, {
     now,
-    states: {
-      WarDeclarationRequest: { startTime: now() / 1000 - 1, endTime: now() / 1000 + 60, assembleCityId: 3, declarations: [{ cityId: 9 }] },
+    states: cityWarGuildStates({
+      WarDeclarationRequest: { startTime: now() / 1000 - 1, endTime: now() / 1000 + 60, assembleCityId: 3, declarations: [{ cityId: 9, attackGuildIdx: 7 }] },
       MyFleetsRequest: { fleets: [{ buildingId: '1舰队', state: protocol.FleetState.IDLE }] },
-    },
+    }),
     handlers: {
       SetAssembleCityRequest: async ({ cityId }, _response, client) => { client.emit('message', { name: 'SCAssembleCity', body: { cityId } }); },
       MoveFleetsToCityRequest: async (_, _response, client) => {
@@ -4037,10 +5023,10 @@ test('city war: only the fleet marked for march speedup uses diamonds', async ()
     settings.spending.modules.world = 100;
   }, {
     now,
-    states: {
-      WarDeclarationRequest: { startTime: now() / 1000 - 1, endTime: now() / 1000 + 60, assembleCityId: 3, declarations: [{ cityId: 9 }] },
+    states: cityWarGuildStates({
+      WarDeclarationRequest: { startTime: now() / 1000 - 1, endTime: now() / 1000 + 60, assembleCityId: 3, declarations: [{ cityId: 9, attackGuildIdx: 7 }] },
       MyFleetsRequest: { fleets: [{ buildingId: '1舰队', state: protocol.FleetState.IDLE }, { buildingId: '2舰队', state: protocol.FleetState.IDLE }] },
-    },
+    }),
     handlers: {
       SetAssembleCityRequest: async ({ cityId }, _response, client) => { client.emit('message', { name: 'SCAssembleCity', body: { cityId } }); },
       MoveFleetsToCityRequest: async ({ buildingId }, _response, client) => {
@@ -4057,6 +5043,35 @@ test('city war: only the fleet marked for march speedup uses diamonds', async ()
   assert.match(f.ctx.results.find(result => result.label === '行军加速判定 2舰队')?.reason ?? '', /未开启/);
 });
 
+/** 抓包证实委托与自动化监管冲突：城战时段开始时把仍挂着委托的舰队统一关闭。 */
+test('city war: delegated auto-fight fleets are switched off when the war window opens', async () => {
+  const now = () => Date.parse('2026-10-29T20:10:00+08:00');
+  const f = await moduleRun('world', {
+    cityWar: { enabled: true, online: false, reattack: false, fleets: [] },
+  }, null, {
+    now,
+    states: {
+      WarDeclarationRequest: { declarations: [], startTime: now() / 1000 - 600, endTime: now() / 1000 + 600, assembleCityId: 0 },
+      MyFleetsRequest: { fleets: [
+        { buildingId: '1舰队', state: protocol.FleetState.MOVING, durability: 2000, maxDura: 2000, autoFight: { isOn: true, todayTimes: 1 } },
+        { buildingId: '2舰队', state: protocol.FleetState.IDLE, durability: 2000, maxDura: 2000, autoFight: { isOn: false, todayTimes: 0 } },
+      ] },
+    },
+    handlers: {
+      SetFleetAutoFightRequest: async ({ buildingIds, isOn }, _response, client) => {
+        assert.equal(isOn, false);
+        for (const id of buildingIds) {
+          const fleet = client.states.MyFleetsRequest.fleets.find(row => row.buildingId === id);
+          fleet.autoFight = { isOn: false, todayTimes: 1 };
+        }
+      },
+    },
+  });
+  // 只有挂着委托的舰队进入关闭请求，且确认读回全部为 isOn=false。
+  assert.deepEqual(f.client.calls.filter(call => call.name === 'SetFleetAutoFightRequest').map(call => call.body.buildingIds), [['1舰队']]);
+  assert.equal(f.ctx.results.find(result => result.label === '取消城战委托')?.status, 'success');
+});
+
 test('city war: online reward does not query or request outside Shanghai 20:00–21:00', async () => {
   const f = await moduleRun('world', { cityWar: { enabled: true, online: true, reattack: false, fleets: [] } }, null, { now: () => Date.parse('2026-10-29T19:59:00+08:00') });
   assert.equal(f.client.calls.filter(c => c.name === 'WarDeclarationRequest').length, 0);
@@ -4066,7 +5081,10 @@ test('city war: online reward does not query or request outside Shanghai 20:00�
 
 test('city war: online reward reads the server claim count before requesting the next tier', async () => {
   const now = () => Date.parse('2026-10-29T20:45:00+08:00');
-  const f = await moduleRun('world', { cityWar: { enabled: true, online: true, reattack: false, fleets: [] } }, null, {
+  const f = await moduleRun('world', { cityWar: { enabled: true, online: true, reattack: false, fleets: [] } }, ({ ctx }) => {
+    // 所有档位已到时，循环可在每次读回确认后连续领取至服务端上限。
+    table(ctx, 'WorldOnlineRwdCfg', Array.from({ length: 7 }, (_, index) => ({ stage: index + 1, seconds: 0 })));
+  }, {
     now,
     states: {
       WarDeclarationRequest: { startTime: now() / 1000 - 1, endTime: now() / 1000 + 60, declarations: [] },
@@ -4083,6 +5101,55 @@ test('city war: online reward reads the server claim count before requesting the
   assert.equal(f.client.calls.filter(call => call.name === 'CounterInfoRequest').length, 7);
   assert.equal(f.client.calls.filter(call => call.name === 'GotWorldOnlineRwdRequest').length, 6);
   assert.equal(f.client.states.CounterInfoRequest.counters[0].num, 7);
+});
+
+test('city war: online reward waits for the current tier timer before sending a request', async () => {
+  const now = () => Date.parse('2026-10-29T20:45:00+08:00');
+  const f = await moduleRun('world', { cityWar: { enabled: true, online: true, reattack: false, fleets: [] } }, ({ ctx }) => {
+    // 第 2 档需要在第 1 档领取后等待 10 分钟，不能依赖固定城战时段直接发包。
+    table(ctx, 'WorldOnlineRwdCfg', [{ stage: 1, seconds: 0 }, { stage: 2, seconds: 600 }]);
+  }, {
+    now,
+    states: {
+      WarDeclarationRequest: { startTime: now() / 1000 - 1, endTime: now() / 1000 + 60, declarations: [] },
+      CounterInfoRequest: { counters: [{ type: 'DAILY_WORLD_ONLINE_RWD', num: 1, updateTime: now() / 1000 - 599 }] },
+    },
+  });
+  assert.equal(f.client.calls.filter(call => call.name === 'GotWorldOnlineRwdRequest').length, 0);
+  assert.match(f.ctx.results.find(result => result.status === 'skipped')?.reason ?? '', /第 2 档计时中/);
+});
+
+test('city war: assembly permission denial is persisted and skipped after restart', async () => {
+  const now = () => Date.parse('2026-10-29T20:45:00+08:00');
+  const f = await moduleRun('world', { cityWar: { enabled: true, online: false, reattack: false, fleets: [{ enabled: true, buildingId: '1舰队', roles: [] }] } }, null, {
+    now,
+    states: {
+      WarDeclarationRequest: { startTime: now() / 1000 - 1, endTime: now() / 1000 + 60, assembleCityId: 3, declarations: [] },
+      MyFleetsRequest: { fleets: [{ buildingId: '1舰队', state: protocol.FleetState.IDLE }] },
+    },
+    handlers: {
+      SetAssembleCityRequest: async () => {
+        // PromptResponse 已明确本账号没有该权限，重试不会改变服务端状态。
+        const error = new Error('server prompt: no permission');
+        error.prompt = { args: ['no permission'] };
+        throw error;
+      },
+    },
+  });
+  assert.equal(f.client.calls.filter(call => call.name === 'SetAssembleCityRequest').length, 1);
+  assert.equal(f.ctx.count('cityWar.assemblePermissionDenied'), 1);
+  assert.match(f.ctx.results.find(result => result.request === 'SetAssembleCityRequest')?.reason ?? '', /今日不再重试/);
+
+  const restarted = createContext(f.args);
+  restarted.setModule('world');
+  try {
+    await restarted.refreshStock();
+    await HANDLERS.world(restarted, f.settings.modules.world);
+  } finally {
+    restarted.dispose();
+  }
+  assert.equal(f.client.calls.filter(call => call.name === 'SetAssembleCityRequest').length, 1);
+  assert.match(restarted.results.find(result => result.status === 'skipped')?.reason ?? '', /今日已确认无设置集结城市权限/);
 });
 
 test('battle pass: item id marks a free reward as already claimed', () => {
@@ -4105,7 +5172,7 @@ test('trade pass: only the current trade period may trigger a reward request', a
 });
 
 test('trade: shares an unreported city, fills the cheapest cargo, and prioritizes the highest-margin scarcity city', async () => {
-  const f = await moduleRun('world', { trade: { enabled: true, claim: false, upgrade: false, speedUp: false } }, ({ ctx }) => { table(ctx, 'TradeShipCfg', [{ lv: 1, capacity: 1000 }]); table(ctx, 'TradeGoodsCfg', [{ goodsId: 14, capacity: 1 }]); }, { states: {
+  const f = await moduleRun('world', { trade: { enabled: true, claim: false, upgrade: false, speedUp: false } }, ({ ctx }) => { table(ctx, 'TradeShipCfg', [{ lv: 1, capacity: 1000 }]); table(ctx, 'TradeGoodsCfg', [{ goodsId: 14, lv: 1, capacity: 1 }]); }, { states: {
     TradeInfoRequest: { period: 1, cargo: { cargoLv: 1, cityId: 7 }, player: { coins: 0, goods: [{ pid: 11, goodsId: 12, num: 2, buyPrice: 1 }] } },
     TradeCityRequest: { isReport: false, goods: [{ goodsId: 12, stock: 0, price: 20 }, { goodsId: 13, stock: 0, price: 20 }, { goodsId: 14, stock: 1, price: 10 }] },
     TradeGuildRadarRequest: { radar: [{ cityId: 9, specGoodsId: 12, rareGoodsId: 13 }, { cityId: 10, specGoodsId: 13, rareGoodsId: 14 }] },
@@ -4122,7 +5189,7 @@ test('trade: shares an unreported city, fills the cheapest cargo, and prioritize
 });
 
 test('trade: fallback movement excludes cities whose specialty is already in the cargo', async () => {
-  const f = await moduleRun('world', { trade: { enabled: true, claim: false, upgrade: false, speedUp: false } }, ({ ctx }) => { table(ctx, 'TradeShipCfg', [{ lv: 1, capacity: 1000 }]); table(ctx, 'TradeGoodsCfg', [{ goodsId: 14, capacity: 1 }]); }, { states: {
+  const f = await moduleRun('world', { trade: { enabled: true, claim: false, upgrade: false, speedUp: false } }, ({ ctx }) => { table(ctx, 'TradeShipCfg', [{ lv: 1, capacity: 1000 }]); table(ctx, 'TradeGoodsCfg', [{ goodsId: 14, lv: 1, capacity: 1 }]); }, { states: {
     TradeInfoRequest: { period: 1, cargo: { cargoLv: 1, cityId: 7 }, player: { coins: 0, goods: [{ pid: 1, goodsId: 12, num: 1, buyPrice: 50 }] } },
     TradeCityRequest: { isReport: true, goods: [{ goodsId: 14, stock: 1, price: 10 }] },
     TradeGuildRadarRequest: { radar: [{ cityId: 8, specGoodsId: 14, rareGoodsId: 15 }, { cityId: 9, specGoodsId: 12, rareGoodsId: 16 }, { cityId: 10, specGoodsId: 13, rareGoodsId: 17 }] },
@@ -4135,6 +5202,23 @@ test('trade: fallback movement excludes cities whose specialty is already in the
   assert.ok([9, 10].includes(move.body.mvToCityId));
 });
 
+/** 当前城市买入的货物尚未离港，不能提交同城卖货，必须直接迁往商情目的地。 */
+test('trade: cargo bought in the current city leaves directly without a same-city sale', async () => {
+  const f = await moduleRun('world', { trade: { enabled: true, claim: false, upgrade: false, speedUp: false } }, null, { states: {
+    TradeInfoRequest: {
+      period: 1,
+      cargo: { cityId: 7 },
+      player: { coins: 25, goods: [{ pid: 1, goodsId: 12, num: 95, buyPrice: 105, cityId: 7 }] },
+    },
+    TradeGuildRadarRequest: { radar: [{ cityId: 9, specGoodsId: 13, rareGoodsId: 12 }] },
+  }, handlers: {
+    TradeMoveRequest: async ({ cityId, mvToCityId }) => ({ cargo: { cityId, moveToCityId: mvToCityId, moveEndTime: fixedNow / 1000 + 3600 } }),
+  } });
+  assert.equal(f.client.calls.filter(call => call.name === 'TradeSellRequest').length, 0);
+  assert.equal(f.client.calls.filter(call => call.name === 'TradeBuyRequest').length, 0);
+  assert.deepEqual(f.client.calls.find(call => call.name === 'TradeMoveRequest')?.body, { cityId: 7, mvToCityId: 9 });
+});
+
 /** 服务器声明库存为 0 时，跳过购买而不是让 TradeBuyRequest 触发 stock not enough。 */
 test('trade: empty city stock skips buying without sending TradeBuyRequest', async () => {
   const f = await moduleRun('world', { trade: { enabled: true, claim: false, upgrade: false, speedUp: false } }, null, { states: {
@@ -4145,6 +5229,23 @@ test('trade: empty city stock skips buying without sending TradeBuyRequest', asy
   } });
   assert.equal(f.client.calls.filter(call => call.name === 'TradeBuyRequest').length, 0);
   assert.match(f.ctx.results.find(result => result.status === 'skipped')?.reason ?? '', /贸易城市没有库存商品/);
+});
+
+/** 城市会同时展示多个贸易等级；服务端只拒绝等级高于贸易船的商品，低等级库存按最低价正常买入。 */
+test('trade: buys cheaper lower level stock; only higher levels are blocked', async () => {
+  const f = await moduleRun('world', { trade: { enabled: true, claim: false, upgrade: false, speedUp: false } }, ({ ctx }) => {
+    table(ctx, 'TradeShipCfg', [{ lv: 4, capacity: 100 }]);
+    table(ctx, 'TradeGoodsCfg', [{ goodsId: 1002, lv: 1, capacity: 1 }, { goodsId: 4002, lv: 4, capacity: 10 }]);
+  }, { states: {
+    TradeInfoRequest: { period: 1, cargo: { cargoLv: 4, cityId: 7 }, player: { coins: 0, goods: [{ pid: 11, goodsId: 12, num: 2, buyPrice: 1 }] } },
+    TradeCityRequest: { isReport: true, goods: [{ goodsId: 1002, stock: 60000, price: 45 }, { goodsId: 4002, stock: 7000, price: 724 }] },
+    TradeGuildRadarRequest: { radar: [{ cityId: 9, specGoodsId: 13, rareGoodsId: 4002 }] },
+  }, handlers: {
+    TradeSellRequest: async (_, response, client) => { client.states.TradeInfoRequest.player.coins = 724; client.states.TradeInfoRequest.player.goods = []; return {}; },
+    TradeBuyRequest: async ({ goodsId, buyNum }, response, client) => { client.states.TradeInfoRequest.player.goods = [{ pid: 1, goodsId, num: buyNum, buyPrice: 724 }]; return {}; },
+    TradeMoveRequest: async ({ cityId, mvToCityId }) => ({ cargo: { cityId, moveToCityId: mvToCityId, moveEndTime: fixedNow / 1000 + 3600 } }),
+  } });
+  assert.deepEqual(f.client.calls.find(call => call.name === 'TradeBuyRequest')?.body, { cityId: 7, goodsId: 1002, buyNum: 16 });
 });
 
 test('guild order and tech: daily cap stops recruitment, technology uses remaining current points', async () => {
@@ -4624,4 +5725,105 @@ test('special orders: missing actual reward config does not borrow ordinary rewa
   }, { dryRun: true, states: { OnWaterRequest: { workerOrder: [{ index: 1, isSpecial: true, textId: '7', requirements: [{ id: '木材', type: 0, num: 1 }] }] } } });
   assert.equal(f.ctx.results.filter(row => row.status === 'planned').length, 0);
   assert.ok(f.ctx.results.some(row => /缺少特殊订单/.test(row.reason)));
+});
+
+/** 走江踏浪夹具：真实协议名、内存库存和最小快照，不连接游戏。 */
+function snowballFixture({ energy = 150, autoStart = false, minEnergy = 100 } = {}) {
+  const f = fixture();
+  f.ctx.setModule('activity');
+  f.client.items.set('打雪仗体力', energy);
+  f.client.items.set('打雪仗火焰符', 4);
+  f.client.items.set('打雪仗冰冻符', 4);
+  const counts = { starts: 0, ops: 0, claims: 0 };
+  let claimed = false;
+  let finished = false;
+  f.client.handlers.SnowballDetailRequest = async () => ({
+    totalScore: finished ? 100 : 0, todayScore: finished ? 100 : 0, bestScore: finished ? 100 : 0, todayBoughtStamina: 0,
+    claimedTier: claimed ? 100 : 0, giftBuy: [], session: null,
+  });
+  f.client.handlers.SnowballStartRequest = async () => {
+    counts.starts += 1;
+    return { session: { multiplier: 1, snapshot: {
+      round: 1, score: 0, frozen: false, itemUse: [],
+      battlefield: [{ index: 0, name: '小怪', hp: 1, maxHp: 1 }],
+      partner: [], rest: [{ index: 0, name: '男伙伴', level: 1 }],
+    } } };
+  };
+  f.client.handlers.SnowballOpRequest = async () => {
+    counts.ops += 1;
+    finished = true;
+    const left = Number(f.client.items.get('打雪仗体力') ?? 0) - 1;
+    f.client.items.set('打雪仗体力', left);
+    return { snapshot: { round: 2, score: 10, frozen: false, itemUse: [], battlefield: [], partner: [], rest: [] }, scoreGain: 10, failed: true };
+  };
+  f.client.handlers.SnowballClaimRewardRequest = async () => {
+    counts.claims += 1; claimed = true;
+    return { reward: { asset: [] }, claimedTier: 100 };
+  };
+  return { f, counts, options: { enabled: true, minEnergy, autoStart } };
+}
+
+test('snowball: default off, minimum energy gate and one session without autoStart', async () => {
+  const settings = defaultSettings();
+  assert.deepEqual(settings.modules.activity.snowball, { enabled: false, minEnergy: 100, autoStart: false });
+  assert.throws(() => {
+    const bad = defaultSettings(); bad.modules.activity.snowball.minEnergy = 0; validateSettings(bad);
+  }, /至少为 1/);
+
+  const off = snowballFixture({ energy: 150 });
+  await snowball(off.f.ctx, { ...off.options, enabled: false });
+  assert.equal(off.counts.starts, 0);
+
+  const low = snowballFixture({ energy: 50 });
+  await low.f.ctx.refreshStock();
+  await snowball(low.f.ctx, low.options);
+  assert.equal(low.counts.starts, 0, '低于启动能量不能开局');
+
+  const one = snowballFixture({ energy: 150 });
+  await one.f.ctx.refreshStock();
+  await snowball(one.f.ctx, one.options);
+  assert.equal(one.counts.starts, 1, '默认只开一局');
+  assert.equal(one.counts.ops, 1);
+  assert.equal(one.counts.claims, 1, '一局结束后领取累计积分奖励');
+});
+
+test('snowball: autoStart keeps opening while energy remains, and stops at zero', async () => {
+  const f = snowballFixture({ energy: 2, autoStart: true, minEnergy: 100 });
+  await f.f.ctx.refreshStock();
+  await snowball(f.f.ctx, f.options);
+  assert.equal(f.counts.starts, 2, '有能量就继续开局，不再受 100 瓶门槛限制');
+  assert.equal(f.counts.ops, 2);
+  assert.equal(f.counts.claims, 1);
+});
+
+test('snowball algorithm: opening places a rest partner into an empty cell and never onto an occupied cell', () => {
+  const state = {
+    partners: Array(10).fill(null),
+    rest: [{ name: '男伙伴', level: 1 }, null],
+    enemies: Array(30).fill(null),
+    frozen: false,
+  };
+  state.enemies[0] = { index: 0, name: '小怪', hp: 1, max: 1 };
+  const action = chooseAction(state, [], new Map([['打雪仗体力', 100], ['打雪仗火焰符', 0], ['打雪仗冰冻符', 0]]));
+  assert.equal(action.kind, 'move');
+  assert.equal(action.zone, 1);
+  assert.equal(state.partners[action.to], null, '休息区伙伴只能放到空位');
+
+  const empty = { partners: Array(10).fill(null), rest: [null, null], enemies: Array(30).fill(null), frozen: false };
+  assert.equal(chooseAction(empty, [], new Map()), null);
+});
+
+test('login rejection: 采集凭证时间戳已过且结果码为 2 时，运行日志提示重新登录', () => {
+  // 时间戳取自 2026-10-29 真实采集的凭证（Long 编码），现已成过去时。
+  const stale = { eworldParams: { timestamp: { low: -2060204137, high: 417, unsigned: false } } };
+  assert.equal(isCredentialExpired(stale), true);
+  assert.equal(isCredentialExpired({ eworldParams: { timestamp: Date.now() + 60000 } }), false);
+  assert.equal(isCredentialExpired({}), false);
+
+  const original = '连接游戏失败：login rejected: result=2 timestamp expired (credential expired)';
+  const described = describeLogError(original);
+  assert.equal(described.message, '连接游戏失败：当前登录凭证失效，请重新登录');
+  assert.equal(described.detail, original);
+  // 无过期标记的结果码 2 仍走通用翻译，避免把其他拒绝原因误报成凭证失效。
+  assert.equal(describeLogError('login rejected: result=2 timestamp expired').message, '游戏服务器拒绝登录（结果码 2）');
 });
