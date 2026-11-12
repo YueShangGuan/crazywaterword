@@ -35,7 +35,8 @@ export function toNumber(value) {
 // 旧采集凭证被服务器判过期；时间戳缺失或异常时返回 false，避免误报。
 export function isCredentialExpired(login) {
   const timestamp = toNumber(login?.eworldParams?.timestamp);
-  return Number.isFinite(timestamp) && Date.now() > timestamp;
+  // protobuf int64 的零值 Long 解码后是 0：缺失的时间戳必须与真正过期区分开。
+  return Number.isFinite(timestamp) && timestamp > 0 && Date.now() > timestamp;
 }
 
 export function isSeqNoInRange(seq, right) {

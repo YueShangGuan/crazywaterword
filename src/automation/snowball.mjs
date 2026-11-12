@@ -16,12 +16,6 @@ function power(level) {
   return POWER[Math.min(10, Math.max(1, Number(level) || 1))] ?? 0;
 }
 
-function bullets(partner) {
-  if (partner?.name !== '男伙伴') return 1;
-  const level = Number(partner.level) || 1;
-  return level <= 1 ? 1 : level <= 3 ? 2 : 4;
-}
-
 function column(index) {
   return Number(index) % 5;
 }
@@ -85,8 +79,7 @@ function applyMove(state, zone, from, to) {
     next.rest[from] = null;
     const target = next.partners[to];
     if (!target) next.partners[to] = mover;
-    else if (target.name === mover.name && target.level === mover.level) {
-      if (target.level >= 10) return null;
+    else if (target.name === mover.name && target.level === mover.level && target.level < 10) {
       next.partners[to] = { name: target.name, level: target.level + 1 };
     } else {
       next.partners[to] = mover;
@@ -98,18 +91,17 @@ function applyMove(state, zone, from, to) {
   if (!mover) return null;
   next.partners[from] = null;
   const target = next.partners[to];
-  if (!target) next.partners[to] = mover;
-  else if (target.name === mover.name && target.level === mover.level) {
-    if (target.level >= 10) return null;
-    next.partners[to] = { name: target.name, level: target.level + 1 };
-  } else {
-    next.partners[to] = mover;
-    next.partners[from] = target;
-  }
+    if (!target) next.partners[to] = mover;
+    else if (target.name === mover.name && target.level === mover.level && target.level < 10) {
+      next.partners[to] = { name: target.name, level: target.level + 1 };
+    } else {
+      next.partners[to] = mover;
+      next.partners[from] = target;
+    }
   return next;
 }
 
-/** 模拟一次伙伴攻击：女伙伴打整列，男伙伴按符纸数逐个打最前方目标，令牌生成伙伴。 */
+/** 模拟一次伙伴攻击：女伙伴打整列，男伙伴单发打最前方目标，令牌生成伙伴。 */
 function simulateAttack(state) {
   let gain = 10;
   const females = [];
@@ -133,14 +125,15 @@ function simulateAttack(state) {
       }
       continue;
     }
-    for (let shot = 0; shot < bullets(partner); shot += 1) {
-      let target = -1;
-      for (let i = 0; i < 30; i += 1) {
-        const enemy = state.enemies[i];
-        if (!enemy || !occupiedColumns(enemy).includes(col)) continue;
-        if (target < 0 || frontIndex(enemy) > frontIndex(state.enemies[target])) target = i;
-      }
-      if (target < 0) break;
+    // 男伙伴：对本列最前目标单发 2^(等级-1)。引擎 A 模型（男伙伴单发）是
+    // capture-fksj-20261109 共 92 回合抓包的校验结论，不存在按等级增发的模型。
+    let target = -1;
+    for (let i = 0; i < 30; i += 1) {
+      const enemy = state.enemies[i];
+      if (!enemy || !occupiedColumns(enemy).includes(col)) continue;
+      if (target < 0 || frontIndex(enemy) > frontIndex(state.enemies[target])) target = i;
+    }
+    if (target >= 0) {
       const enemy = state.enemies[target];
       if (isToken(enemy)) {
         state.enemies[target] = null;
@@ -269,6 +262,10 @@ async function claimReward(ctx, detail) {
     response: 'SnowballClaimRewardResponse',
     label: '走江踏浪 · 领取累计积分奖励',
     key: `snowball:claim:${total}`,
+    // 回包丢失时无法安全重发（服务端可能已入账），未确认只跳过本次领取、等跨日
+    // 释放作废；这个稳定键每轮入口都会命中，绝不能按默认语义中止整个自动化。
+    continueAfterUncertain: true,
+    blockModuleOnUncertain: false,
   });
   if (succeeded(result)) {
     ctx.record({ label: '走江踏浪 · 领取累计积分奖励', status: 'success', reason: `累计 ${total}，已领至 ${amount(result.value?.claimedTier)}` });

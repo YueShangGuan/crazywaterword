@@ -762,6 +762,27 @@ async function vipAfkAdDraw(ctx) {
   const countKey = 'afk.vipAdDraw';
   const registrationKey = `WatchAdvRequest:${JSON.stringify({ type, id: AFK_AD_ID })}`;
   discardExpiredVipRegistration(ctx, registrationKey);
+  // 领取键带业务日：未确认记录只在当天回放（写前快照已落盘，回放绝不重发），
+  // 跨天换成新键、旧记录由跨日释放逻辑作废，不会永久封死每天的领取。
+  const drawKey = `DrawAfkRewardRequest:${ctx.businessDate()}:${JSON.stringify({ useAdvCard: true })}`;
+  const drawOptions = {
+    response: 'DrawAfkRewardResponse', label: '挂机 VIP免广告额外奖励',
+    accept: value => value?.reward?.assetPackage?.asset?.some(asset => amount(asset.num) > 0) === true
+      || (value?.reward?.badge?.length ?? 0) > 0,
+    // 回包丢失时按写前后的 gotTimes 证明领取已生效；服务端重置归零后旧记录不可回放，
+    // 所以回放核验只在当天有效，这正是业务日键的目的。
+    beforeState: JSON.stringify(state.gotTimes),
+    replayConfirm: async stored => {
+      const after = (await ctx.query('OnWaterRequest')).adv?.find(row => row.id === AFK_AD_ID);
+      return Number.isSafeInteger(after?.gotTimes) && JSON.stringify(after.gotTimes) !== stored;
+    },
+    continueAfterUncertain: true, blockModuleOnUncertain: false,
+  };
+  if (ctx.hasPending(drawKey)) {
+    // 登记已在创建该记录的一轮成功，这里只回放领取，不再重发登记。
+    await ctx.action('DrawAfkRewardRequest', { useAdvCard: true }, drawOptions);
+    return;
+  }
   if (state.gotTimes >= rule.dailyLimit || ctx.count(countKey) >= rule.dailyLimit) return;
   // 只读查询期间也可能收到 VIP 更新，写入前再次核对当前资格。
   if (!vipAfkAdEnabled(ctx)) return;
@@ -776,12 +797,7 @@ async function vipAfkAdDraw(ctx) {
   if (!succeeded(registered)) return;
   if (!vipAfkAdEnabled(ctx)) return;
   // VIP 免去播放，仍须登记广告权益；抓包的实际成功证据是带奖励内容的回包。
-  await ctx.action('DrawAfkRewardRequest', { useAdvCard: true }, {
-    response: 'DrawAfkRewardResponse', label: '挂机 VIP免广告额外奖励',
-    accept: value => value?.reward?.assetPackage?.asset?.some(asset => amount(asset.num) > 0) === true
-      || (value?.reward?.badge?.length ?? 0) > 0,
-    continueAfterUncertain: true, blockModuleOnUncertain: false,
-  });
+  await ctx.action('DrawAfkRewardRequest', { useAdvCard: true }, drawOptions);
 }
 
 /** 挂机领取使用累计时长，等级上限和等级奖励来自当前配置。 */

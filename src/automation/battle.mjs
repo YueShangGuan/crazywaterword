@@ -252,7 +252,12 @@ async function arena(ctx, options) {
     if (!options.arena.challenge) return false;
     const enemy = state.challenges?.filter(c => c.rankNo < mine.rankNo && amount(c.power) < amount(mine.power)).sort((a, b) => a.rankNo - b.rankNo)[0];
     if (!enemy) return false;
-    return succeeded(await ctx.action('ArenaChallengeRequest', { rank: enemy.rankNo, challengeId: idString(enemy.id) }, { accept: r => r.isWin === true }));
+    return succeeded(await ctx.action('ArenaChallengeRequest', { rank: enemy.rankNo, challengeId: idString(enemy.id) }, {
+      accept: r => r.isWin === true,
+      // 挑战零消耗：回包丢失只跳过本轮，下一轮按最新榜单重新选择，不落盘跨轮锁。
+      continueAfterUncertain: true,
+      lockOnUncertain: false,
+    }));
   });
 }
 
@@ -268,6 +273,10 @@ async function trial(ctx, raidId, options, limit, pacing) {
     const result = await ctx.action('TrialRaidChallengeRequest', { raidId, stageId: next.stageId }, {
       label: `${trialName(raidId)}第 ${next.stageId} 关`,
       accept: async () => (await ctx.query('TrialRaidInfoRequest', { raidId })).raid?.passedStage >= next.stageId,
+      // 挑战零消耗且回包丢失后只能靠 accept 在响应期读回：只在本轮阻止重发，下一轮
+      // 重新挑战，不落盘跨轮锁，也不能因一次超时中止整个战斗模块（与主线挑战一致）。
+      continueAfterUncertain: true,
+      lockOnUncertain: false,
     });
     if (result.status === 'rejected') {
       // 频控拒绝通常是当前连接的全局冷却，继续切换副本仍会重复触发同一限制。
@@ -279,14 +288,16 @@ async function trial(ctx, raidId, options, limit, pacing) {
   if (challengeRejected) return true;
   await repeat(ctx, limit, async () => {
     const raid = (await ctx.query('TrialRaidInfoRequest', { raidId })).raid;
-    const cap = ctx.rows('TrialRaidParamCfg').find(r => r.paramName === '试炼副本扫荡次数')?.paramValue;
-    if (!raid?.passedStage || !cap || raid.buySweepTimes >= cap) return false;
+    if (!raid) return false;
     const body = { raidId, useAdvCard: false };
-    // 上一轮押钻结果未确认时写前快照已随预留落盘；即使对应价格行已被旧写入买走，也要先只读回放结算。
+    // 上一轮押钻结果未确认时写前快照已随预留落盘；回放只核验不重发，必须先于
+    // 满额/价格/开关守卫执行，否则「生效即满额」会让 50 钻预留占压到跨日才解除。
     const sweepPending = ctx.hasPending(`TrialRaidBuySweepRequest:${JSON.stringify(body)}`);
+    const cap = ctx.rows('TrialRaidParamCfg').find(r => r.paramName === '试炼副本扫荡次数')?.paramValue;
+    if (!sweepPending && (!raid.passedStage || !cap || raid.buySweepTimes >= cap)) return false;
     const price = ctx.rows('TrialRaidBuySweepCfg').find(r => r.buyTimes === raid.buySweepTimes + 1)?.costRuby;
     if (!sweepPending && price === undefined) { skip(ctx, '当前扫荡次数缺少价格，停止'); return false; }
-    if (price > 0 && !options.rubySweep) return false;
+    if (!sweepPending && price > 0 && !options.rubySweep) return false;
     return succeeded(await mutate(ctx, 'TrialRaidBuySweepRequest', body, 'TrialRaidInfoRequest', s => s.raid?.buySweepTimes, {
       stateBody: { raidId }, ruby: price ?? 0,
       // 押钻请求未确认时保留预留和幂等锁，下一轮回放结算；本轮只跳过本动作，

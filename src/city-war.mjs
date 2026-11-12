@@ -46,7 +46,6 @@ export async function dispatchCityWarFleet(client, protocol, {
   }
 
   const action = role === 'defend' ? '驻防' : '进攻';
-  const before = JSON.stringify(fleet);
   await client.sendWatch('MoveFleetsToCityRequest', { buildingId: [fleetId], cityId: target }, { window: 800 });
 
   const deadline = Date.now() + Math.max(1000, Math.min(15000, Number(timeout) || 8000));
@@ -66,9 +65,7 @@ export async function dispatchCityWarFleet(client, protocol, {
     if (Number(current.cityId) === target && Number(current.state) !== 1) {
       return { ok: true, confirmed: true, message: `${fleetId} 已抵达目标城市` };
     }
-    if (JSON.stringify(current) !== before) {
-      return { ok: true, confirmed: true, message: `${fleetId} 已提交${action}派遣` };
-    }
+    // 只认目标变化这类派遣专属证据；整包 JSON 对比会把耐久衰减等无关变化误判成派遣成功。
   }
   return { ok: false, confirmed: false, message: `${fleetId} 派遣结果未确认，请刷新舰队状态后核对` };
 }

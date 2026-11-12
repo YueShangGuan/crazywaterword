@@ -61,6 +61,9 @@ export function releaseExpiredLocks(ctx) {
   const released = new Map();
   for (const [key, record] of Object.entries(ctx.ledger.pending)) {
     if (!record || record.date === today) continue;
+    // 折扣购买由 dailies 的跨日结算器按「已花费」结算并释放预留；在这里作废会让
+    // 可能已扣款的购买在账面漏记，与两边的文档语义直接矛盾。
+    if (key.startsWith('DiscountShopBuyRequest:')) continue;
     if (!ctx.discardPending(key, { allowRuby: true })) continue;
     const group = record.module || '';
     if (!released.has(group)) released.set(group, new Map());
@@ -73,7 +76,6 @@ export function releaseExpiredLocks(ctx) {
   }
   for (const [module, counts] of released) {
     const detail = [...counts].map(([name, entry]) => entry.ruby > 0 ? `${name} ${entry.count} 条（押 ${entry.ruby} 钻）` : `${name} ${entry.count}`).join('、');
-    const total = [...counts.values()].reduce((sum, entry) => sum + entry.count, 0);
     const held = [...counts.values()].reduce((sum, entry) => sum + entry.ruby, 0);
     ctx.record({
       module,

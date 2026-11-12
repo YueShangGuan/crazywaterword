@@ -1271,6 +1271,21 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
   // ---- 路由 -----------------------------------------------------------------
 
   async function handle(req, res, body) {
+    // 浏览器跨站请求（包括 no-cors POST）都会携带 Origin；存在且与本服务 Host 不同源
+    // 即拒绝，阻断恶意网页以玩家名义驱动写操作（发聊天、派舰队）。curl 等脚本没有
+    // Origin，不受影响。
+    const origin = req.headers.origin;
+    if (origin) {
+      let sameOrigin = false;
+      try {
+        sameOrigin = new URL(origin).host === req.headers.host;
+      } catch { /* 非法 Origin 一律按跨站拒绝 */ }
+      if (!sameOrigin) {
+        res.writeHead(403, { 'content-type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: `已拒绝跨站请求（Origin ${origin} 与本服务不同源）` }));
+        return;
+      }
+    }
     const parsed = new URL(req.url, 'http://localhost');
     const route = `${req.method} ${parsed.pathname}`;
     const json = (value, code = 200) => {

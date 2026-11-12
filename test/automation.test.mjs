@@ -14,7 +14,7 @@ const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-automation-'));
 process.env.CW_DATA_DIR = directory;
 const { defaultSettings, saveSettings, loadSettings, businessDate, loadLedger, validateSettings, accountDirectory, writeJson } = await import('../src/automation/settings.mjs');
 const { createContext, idString, validateMessage, withRoleLock } = await import('../src/automation/context.mjs');
-const { runAutomation, HANDLERS, handledDailyIds, guardedDailyAction, legacyAction, runPriorityDiscountShop, discountPurchaseKey, automationStatus } = await import('../src/automation/service.mjs');
+const { runAutomation, HANDLERS, handledDailyIds, guardedDailyAction, legacyAction, runPriorityDiscountShop, discountPurchaseKey, automationStatus, releaseExpiredLocks } = await import('../src/automation/service.mjs');
 const { resetRepairSpeedUpFallbackState } = await import('../src/automation/world.mjs');
 const { pirateDailySweepLimit, pirateSweepProgress } = await import('../src/pirates.mjs');
 const { inWindows } = await import('../src/automation/common.mjs');
@@ -1764,6 +1764,33 @@ test('battle: replayed paid sweep settles against the stored pre-write snapshot'
   assert.equal(day.modules.battle, 50);
 });
 
+/** 旧写入把次数推到 cap 时回放也不能被满额守卫短路，否则 50 钻预留要占压到跨日。 */
+test('battle: replayed paid sweep settles even when the write reached the daily cap', async () => {
+  const f = fixture({ states: { TrialRaidInfoRequest: { raid: { raidId: 1, passedStage: 1001, buySweepTimes: 3 } } } });
+  Object.assign(f.settings.modules.battle, {
+    enabled: true,
+    stage: { enabled: false, claimReward: false },
+    arena: { challenge: false, sweep: false },
+    trial: { heroExp: { challenge: false, rubySweep: true }, forge: { challenge: false, rubySweep: false }, petExp: { challenge: false, rubySweep: false } },
+  });
+  table(f.ctx, 'TrialRaidParamCfg', [{ paramName: '试炼副本扫荡次数', paramValue: 3 }]);
+  table(f.ctx, 'TrialRaidBuySweepCfg', [{ buyTimes: 1, costRuby: 50 }, { buyTimes: 2, costRuby: 50 }, { buyTimes: 3, costRuby: 50 }]);
+  const key = 'TrialRaidBuySweepRequest:{"raidId":1,"useAdvCard":false}';
+  // 写前快照是 2、服务端已是 3（=cap）：满额守卫不能挡在回放结算之前。
+  f.ctx.ledger.pending[key] = { token: 'replay-paid-sweep-cap', ruby: 50, module: 'battle', date: businessDate(fixedNow), beforeState: '2' };
+  f.ctx.memory('test.replay-paid-sweep-cap', true);
+  f.ctx.dispose();
+
+  const result = await runAutomation({ ...f.args, selector: ['battle'], stop: { aborted: false } });
+  assert.equal(result.error, null);
+  assert.equal(f.client.calls.filter(call => call.name === 'TrialRaidBuySweepRequest').length, 0, '回放结算只读核验，不能重发请求');
+  const settled = result.results.find(row => row.request === 'TrialRaidBuySweepRequest');
+  assert.equal(settled?.status, 'success');
+  assert.equal(settled?.verifiedByRead, true, '按落盘写前快照读回核验');
+  assert.equal(settled?.ruby, 50, '结算计入原预留的 50 钻');
+  assert.equal(result.ledger.pending[key], undefined, '满额也必须回放结算并释放预留');
+});
+
 /** 服务端频控拒绝主线后，战斗模块不得继续进入竞技场或试炼。 */
 test('battle: rejected mainline challenge stops later battle branches', async () => {
   const f = await moduleRun('battle', {
@@ -1796,6 +1823,25 @@ test('battle: uncertain mainline challenge neither aborts nor persists a lock', 
   assert.equal(f.ctx.stop.aborted, false, '主线回包丢失只能阻断战斗模块，不能停止持续挂机');
   assert.deepEqual(f.ctx.ledger.pending, {}, '零消耗挑战不能留下跨轮未确认锁');
   assert.equal(f.ctx.results.find(row => row.request === 'ChallengeStageRequest')?.status, 'skipped');
+  assert.ok(f.ctx.consumeModuleBlock(), '同批剩余战斗写入仍要被模块锁挡住');
+});
+
+/** 试炼挑战零消耗且回包丢失后无更多读回证据：只跳过本轮，不落盘跨轮锁，也不停整轮挂机。 */
+test('battle: uncertain trial challenge neither aborts nor persists a lock', async () => {
+  const f = await moduleRun('battle', {
+    maxActions: 3,
+    stage: { enabled: false, claimReward: false },
+    arena: { challenge: false, sweep: false },
+    trial: { heroExp: { challenge: true, rubySweep: false }, forge: { challenge: false, rubySweep: false }, petExp: { challenge: false, rubySweep: false } },
+  }, ({ ctx, client }) => {
+    table(ctx, 'TrialRaidStageCfg', [{ raidId: 1, stageId: 1002, openLevel: 1 }]);
+    client.handlers.TrialRaidInfoRequest = async body => ({ raid: { raidId: body.raidId, passedStage: 1001 } });
+    client.handlers.TrialRaidChallengeRequest = async () => { throw new Error('请求超时：未收到 TrialRaidChallengeResponse'); };
+  });
+
+  assert.equal(f.client.calls.filter(c => c.name === 'TrialRaidChallengeRequest').length, 1, '结果未知时本轮不能重发同一关');
+  assert.equal(f.ctx.stop.aborted, false, '试炼挑战超时只能跳过本动作，不能停止持续挂机');
+  assert.deepEqual(f.ctx.ledger.pending, {}, '零消耗挑战不能留下跨轮未确认锁');
   assert.ok(f.ctx.consumeModuleBlock(), '同批剩余战斗写入仍要被模块锁挡住');
 });
 
@@ -5813,10 +5859,35 @@ test('snowball algorithm: opening places a rest partner into an empty cell and n
   assert.equal(chooseAction(empty, [], new Map()), null);
 });
 
+/** 走江踏浪领奖回包丢失只能跳过本次领取：稳定幂等键绝不能中止整轮自动化。 */
+test('snowball: uncertain reward claim skips instead of aborting automation', async () => {
+  const f = fixture({});
+  f.ctx.setModule('activity');
+  f.client.handlers.SnowballDetailRequest = async () => ({ totalScore: 150, claimedTier: 100 });
+  f.client.handlers.SnowballClaimRewardRequest = async () => { throw new Error('请求超时：未收到 SnowballClaimRewardResponse'); };
+  const { snowball } = await import('../src/automation/snowball.mjs');
+
+  const stop = f.ctx.stop;
+  await snowball(f.ctx, { enabled: true, minEnergy: 100, autoStart: false });
+  assert.equal(stop.aborted, false, '领奖回包丢失只能跳过本次领取，不能中止整轮自动化');
+  const pendingKey = Object.keys(f.ctx.ledger.pending).find(key => key.startsWith('snowball:claim:'));
+  assert.ok(pendingKey, '超时后保留幂等锁等待跨日处理');
+  assert.equal(f.client.calls.filter(call => call.name === 'SnowballClaimRewardRequest').length, 1, '未确认请求不能重复提交');
+  assert.equal(f.ctx.results.find(row => row.request === 'SnowballClaimRewardRequest')?.status, 'uncertain');
+  assert.ok(f.ctx.results.some(row => row.status === 'skipped' && /能量不足/.test(row.reason ?? '')), '跳过领奖后流程继续走到能量检查');
+
+  await snowball(f.ctx, { enabled: true, minEnergy: 100, autoStart: false });
+  assert.equal(f.client.calls.filter(call => call.name === 'SnowballClaimRewardRequest').length, 1, '下一轮仍不能重发，只重复跳过');
+  assert.equal(stop.aborted, false);
+});
+
 test('login rejection: 采集凭证时间戳已过且结果码为 2 时，运行日志提示重新登录', () => {
   // 时间戳取自 2026-10-29 真实采集的凭证（Long 编码），现已成过去时。
   const stale = { eworldParams: { timestamp: { low: -2060204137, high: 417, unsigned: false } } };
   assert.equal(isCredentialExpired(stale), true);
+  // protobuf int64 的零值 Long 解码后是 0：缺失时间戳不算过期，仍走通用拒绝文案。
+  assert.equal(isCredentialExpired({ eworldParams: { timestamp: 0 } }), false);
+  assert.equal(isCredentialExpired({ eworldParams: { timestamp: { low: 0, high: 0 } } }), false);
   assert.equal(isCredentialExpired({ eworldParams: { timestamp: Date.now() + 60000 } }), false);
   assert.equal(isCredentialExpired({}), false);
 
@@ -5826,4 +5897,15 @@ test('login rejection: 采集凭证时间戳已过且结果码为 2 时，运行
   assert.equal(described.detail, original);
   // 无过期标记的结果码 2 仍走通用翻译，避免把其他拒绝原因误报成凭证失效。
   assert.equal(describeLogError('login rejected: result=2 timestamp expired').message, '游戏服务器拒绝登录（结果码 2）');
+});
+
+/** 跨日折扣购买记录留给 dailies 专用结算器按已花费处理，不能被通用释放逻辑作废成漏记。 */
+test('service: expired discount purchase locks survive releaseExpiredLocks', () => {
+  const f = fixture({});
+  const yesterday = businessDate(fixedNow - 86400000);
+  f.ctx.ledger.pending['DiscountShopBuyRequest:2026-10-28:{"id":4}'] = { token: 'discount-cross-day', ruby: 6, module: 'dailies', date: yesterday };
+  f.ctx.ledger.pending['FarmPlantRequest:{"landIdx":1}'] = { token: 'farm-cross-day', ruby: 0, module: 'dailies', date: yesterday };
+  releaseExpiredLocks(f.ctx);
+  assert.ok(f.ctx.ledger.pending['DiscountShopBuyRequest:2026-10-28:{"id":4}'], '折扣购买由专用结算器按已花费结算，不作废');
+  assert.equal(f.ctx.ledger.pending['FarmPlantRequest:{"landIdx":1}'], undefined, '其他跨日零消耗记录照常解除');
 });

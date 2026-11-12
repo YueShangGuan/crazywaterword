@@ -479,6 +479,52 @@ test('console: city war settings save and manual dispatch confirm the fleet', as
     [{ buildingId: ['1舰队'], cityId: 2 }]);
 });
 
+/** 读回窗口内只有耐久这类无关字段变化不能证明派遣已提交：确认必须等到目标变化。 */
+test('console: dispatch without a real departure is not reported as confirmed', async t => {
+  const now = Math.floor(Date.now() / 1000);
+  let polls = 0;
+  mockGateway(t, async () => ({ result: 0, initSeqNo: 1, playerInfo: {
+    playerId: '1', nickname: '城战角色', level: 20, scenarioId: 1,
+    guildId: { low: 7, high: 0, unsigned: false },
+  } }), async function (name) {
+    if (name === 'WorldInfoRequest') return { cities: [{ id: 1, guildIdx: 3, state: 1 }, { id: 2, guildIdx: 5, state: 1 }] };
+    if (name === 'WarDeclarationRequest') return {
+      startTime: now - 60, endTime: now + 3600, assembleCityId: 1,
+      declarations: [{ cityId: 2, attackGuildIdx: 3, defenceGuildIdx: 5 }],
+    };
+    if (name === 'GuildCityInfoRequest') return { cities: [{ cityId: 1, recommended: true }] };
+    if (name === 'MyFleetsRequest') {
+      polls += 1;
+      return { fleets: [{
+        buildingId: '1舰队', state: 1, durability: Math.max(1, 2000 - polls), maxDura: 2000,
+        cityId: 1, targetCityId: 0, moveStartTs: 0, moveEndTs: 0,
+      }] };
+    }
+    if (name === 'TradeInfoRequest') return { period: 0 };
+    return {};
+  }, async function () {});
+  const { api } = await consoleFixture(t);
+  assert.equal((await api('/api/connect', {})).status, 200);
+  const dispatch = await api('/api/map/city-war/dispatch', { confirm: true, buildingId: '1舰队', cityId: 2, role: 'attack' });
+  assert.equal(dispatch.status, 200);
+  assert.equal(dispatch.value.ok, false, JSON.stringify(dispatch.value));
+  assert.equal(dispatch.value.confirmed, false, '无关字段变化不能冒充派遣确认');
+});
+
+/** 浏览器跨站请求带外源 Origin：写端点必须拒绝，本源请求不受影响。 */
+test('console: cross-site POST with a foreign Origin is rejected', async t => {
+  mockGateway(t, async () => ({ result: 0, initSeqNo: 1, playerInfo: {
+    playerId: '42', nickname: '跨站角色', level: 20, scenarioId: 1,
+  } }), async function () { return {}; }, async function () {});
+  const { api, base } = await consoleFixture(t);
+  const evil = await fetch(`${base}/api/chat/send?account=connection-a`, {
+    method: 'POST', headers: { 'content-type': 'application/json', origin: 'https://evil.example' }, body: JSON.stringify({ channel: 1, text: '跨站注入' }),
+  });
+  assert.equal(evil.status, 403, '外源 Origin 的写请求必须被拒绝');
+  const ok = await api('/api/chat/send', { channel: 1, text: '   ' });
+  assert.notEqual(ok.status, 403, '无 Origin 的本源请求不受影响');
+});
+
 /** 聊天发送是静默写入：发完读频道记录确认自己的发言入库。 */
 test('console: chat send delivers text and confirms via channel record', async t => {
   const writes = [];
