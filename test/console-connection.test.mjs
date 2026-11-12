@@ -13,8 +13,9 @@ import { loadProtocol } from '../src/proto.mjs';
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-console-connection-'));
 process.env.CW_DATA_DIR = directory;
 const { saveStore, upsertAccount } = await import('../src/accounts.mjs');
-const { defaultSettings } = await import('../src/automation/settings.mjs');
+const { accountDirectory, defaultSettings } = await import('../src/automation/settings.mjs');
 const { automationEntryLogLevel, createConsole, loopEntryLogLevel, parseGiftCodes } = await import('../src/server.mjs');
+const { formatLoopStep } = await import('../src/loop.mjs');
 const protocol = loadProtocol();
 after(() => fs.rmSync(directory, { recursive: true, force: true }));
 
@@ -36,7 +37,8 @@ async function consoleFixture(t) {
 
   /** HTTP 只访问本测试创建的服务；登录及游戏查询由内存方法替代。 */
   async function api(route, body, account = 'connection-a') {
-    const response = await fetch(`${base}${route}?account=${account}`, body === undefined ? {} : { method: 'POST', body: JSON.stringify(body) });
+    const url = `${base}${route}${route.includes('?') ? '&' : '?'}account=${account}`;
+    const response = await fetch(url, body === undefined ? {} : { method: 'POST', body: JSON.stringify(body) });
     return { status: response.status, value: await response.json() };
   }
   await api('/api/accounts');
@@ -51,7 +53,7 @@ async function consoleFixture(t) {
  * @param {(name: string, body?: object, response?: string) => Promise<object>} request 模拟业务请求回包。
  * @returns {object} 登录 Mock 上下文，供调用方断言次数。
  */
-function mockGateway(t, login = async () => ({ result: 0, initSeqNo: 1, playerInfo: { playerId: '1', nickname: '离线角色', level: 1 } }), request = async () => ({})) {
+function mockGateway(t, login = async () => ({ result: 0, initSeqNo: 1, playerInfo: { playerId: '1', nickname: '离线角色', level: 1 } }), request = async () => ({}), sendWatch = async () => ({})) {
   t.mock.getter(GameClient.prototype, 'connected', function () { return this.state === 'READY'; });
   const connecting = t.mock.method(GameClient.prototype, 'connect', async function () {
     this.setState('CONNECTING');
@@ -60,7 +62,7 @@ function mockGateway(t, login = async () => ({ result: 0, initSeqNo: 1, playerIn
     return response;
   });
   // 总览查询只返回空数据，不编码、不发帧、不创建 WebSocket。
-  t.mock.method(GameClient.prototype, 'sendWatch', async () => ({}));
+  t.mock.method(GameClient.prototype, 'sendWatch', sendWatch);
   // 上游登录完成信号同样在内存截断，测试不得创建真实网关帧。
   t.mock.method(GameClient.prototype, 'send', () => 1);
   t.mock.method(GameClient.prototype, 'request', request);
@@ -76,16 +78,22 @@ async function waitFor(predicate, message, attempts = 50) {
   assert.fail(typeof message === 'function' ? message() : message);
 }
 
-/** 已确认的主线战败及业务跳过保持普通日志，其他失败状态仍须以错误样式展示。 */
+/** 已确认战败保持普通日志，待确认写入显示提醒且不伪装为服务异常。 */
 test('console: loop log level keeps confirmed battle losses normal', () => {
   assert.equal(automationEntryLogLevel({ request: 'ChallengeStageRequest', status: 'failed' }), 'info');
   assert.equal(automationEntryLogLevel({ request: 'TrialRaidChallengeRequest', status: 'failed' }), 'info');
   assert.equal(automationEntryLogLevel({ request: 'TrialRaidChallengeRequest', status: 'failed', reason: '试炼进度读回失败' }), 'error');
   assert.equal(automationEntryLogLevel({ request: 'ChallengeStageRequest', status: 'rejected' }), 'error');
+  assert.equal(automationEntryLogLevel({ request: 'StartFishingRequest', status: 'uncertain' }), 'warn');
+  assert.equal(automationEntryLogLevel({ request: 'SetAssembleCityRequest', status: 'reminder' }), 'warn');
   assert.equal(loopEntryLogLevel({ phase: 'automation', request: 'ChallengeStageRequest', status: 'failed' }), 'info');
   assert.equal(loopEntryLogLevel({ phase: 'automation', request: 'TrialRaidChallengeRequest', status: 'failed', reason: '试炼进度读回失败' }), 'error');
   assert.equal(loopEntryLogLevel({ phase: 'world', skipped: true }), 'info');
   assert.equal(loopEntryLogLevel({ phase: 'world', ok: false }), 'error');
+  assert.equal(formatLoopStep({ phase: 'automation', request: 'StartFishingRequest', label: 'StartFishingRequest', status: 'uncertain', reason: '上次结果未确认，禁止重复提交' }),
+    '挂机 · StartFishingRequest待确认，未重复提交：上次结果未确认，禁止重复提交');
+  assert.equal(formatLoopStep({ phase: 'automation', request: 'ChallengeStageRequest', label: '主线第 10 关挑战', status: 'failed', ok: false }),
+    '挂机 · 主线第 10 关挑战已确认战败');
 });
 
 /** 兑换码文本只能去除分隔空白和重复项，不能更改服务端可能区分的大小写。 */
@@ -352,6 +360,155 @@ test('console: disconnect survives polling and queued business requests until ex
   assert.equal(login.mock.callCount(), 3);
 });
 
+/** 世界地图底图只依赖本地地图包与配置，不应为了打开页面而登录游戏。 */
+test('console: world map layout loads without a game login', async t => {
+  const login = mockGateway(t);
+  const { api } = await consoleFixture(t);
+  const layout = await api('/api/map/layout');
+  assert.equal(layout.status, 200);
+  assert.equal(layout.value.scenarioId, 1);
+  assert.ok(layout.value.width > 0 && layout.value.height > 0);
+  assert.ok(layout.value.cities.length > 0, '底图应包含城市');
+  assert.ok(layout.value.fields.length > 0, '底图应包含资源田');
+  assert.ok(layout.value.cities.every(city => Number.isSafeInteger(city.x) && Number.isSafeInteger(city.y)));
+  assert.equal(login.mock.callCount(), 0, '打开地图不能隐式登录游戏');
+});
+
+/** 离线时只返回缓存/空状态，不因轮询而重新登录。 */
+test('console: world map state stays read-only and disconnected without logging in', async t => {
+  const login = mockGateway(t);
+  const { api } = await consoleFixture(t);
+  const response = await api('/api/map/state');
+  assert.equal(response.status, 200);
+  assert.equal(response.value.connected, false);
+  assert.ok(response.value.warnings.some(warning => /请先连接账号/.test(warning)));
+  assert.equal(login.mock.callCount(), 0);
+});
+
+/** fresh=1 只发送四个只读查询，并把手里的响应压成城市归属与航线。 */
+test('console: world map fresh state reads ownership and tracks without writes', async t => {
+  const now = Math.floor(Date.now() / 1000);
+  const requests = [];
+  mockGateway(t, async () => ({ result: 0, initSeqNo: 1, playerInfo: {
+    playerId: '1', nickname: '地图角色', level: 20, scenarioId: 1,
+    guildId: { low: 7, high: 0, unsigned: false },
+  } }), async function (name, body, response) {
+    requests.push({ name, body, response });
+    if (name === 'MyFleetsRequest') return { fleets: [{
+      buildingId: '1舰队', state: 2, durability: 100, maxDura: 200,
+      startGridIdx: 240, targetGridIdx: 480, moveStartTs: now - 60, moveEndTs: now + 60,
+      cityId: 1, targetCityId: 2,
+    }] };
+    if (name === 'WorldInfoRequest') return { cities: [
+      { id: 1, guildIdx: 3, state: 1 },
+      { id: 2, guildIdx: 0, state: 2 },
+    ] };
+    if (name === 'TradeInfoRequest') return { period: 1, cargo: {
+      cityId: 1, moveToCityId: 2, moveStartTime: now - 60, moveEndTime: now + 60,
+    } };
+    if (name === 'GuildCityInfoRequest') return { cities: [{ cityId: 1 }] };
+    return {};
+  });
+  const { api } = await consoleFixture(t);
+  assert.equal((await api('/api/connect', {})).status, 200);
+  const response = await api('/api/map/state?fresh=1');
+  assert.equal(response.status, 200);
+  const value = response.value;
+  assert.equal(value.connected, true);
+  assert.equal(value.stale, false, JSON.stringify(value.warnings));
+  assert.equal(value.cities.length, 2);
+  assert.equal(value.summary.ownCities, 1);
+  assert.equal(value.summary.neutralCities, 1);
+  assert.equal(value.fleets.length, 1);
+  assert.ok(value.fleets[0].track, '舰队应带航线');
+  assert.ok(value.trade.cargo.track, '商船应带航线');
+  const worldInfo = requests.find(request => request.name === 'WorldInfoRequest');
+  assert.ok(worldInfo, '应读取世界信息');
+  assert.ok(Number.isSafeInteger(worldInfo.body.screenCenter.x));
+  assert.ok(Number.isSafeInteger(worldInfo.body.screenCenter.y));
+  const reads = [...new Set(requests
+    .filter(request => ['MyFleetsRequest', 'WorldInfoRequest', 'TradeInfoRequest', 'WarDeclarationRequest', 'GuildCityInfoRequest'].includes(request.name))
+    .map(request => request.name))].sort();
+  assert.deepEqual(reads, ['GuildCityInfoRequest', 'MyFleetsRequest', 'TradeInfoRequest', 'WarDeclarationRequest', 'WorldInfoRequest']);
+});
+
+/** 城战手动派遣只允许当前可进攻目标，并在舰队状态读回后才算确认。 */
+test('console: city war settings save and manual dispatch confirm the fleet', async t => {
+  const now = Math.floor(Date.now() / 1000);
+  let sent = false;
+  const sends = [];
+  mockGateway(t, async () => ({ result: 0, initSeqNo: 1, playerInfo: {
+    playerId: '1', nickname: '城战角色', level: 20, scenarioId: 1,
+    guildId: { low: 7, high: 0, unsigned: false },
+  } }), async function (name) {
+    if (name === 'WorldInfoRequest') return { cities: [{ id: 1, guildIdx: 3, state: 1 }, { id: 2, guildIdx: 5, state: 1 }] };
+    if (name === 'WarDeclarationRequest') return {
+      startTime: now - 60, endTime: now + 3600, assembleCityId: 1,
+      declarations: [{ cityId: 2, attackGuildIdx: 3, defenceGuildIdx: 5 }],
+    };
+    if (name === 'GuildCityInfoRequest') return { cities: [{ cityId: 1, recommended: true }] };
+    if (name === 'MyFleetsRequest') return { fleets: [{
+      buildingId: '1舰队', state: sent ? 2 : 1, durability: 2000, maxDura: 2000,
+      cityId: 1, targetCityId: sent ? 2 : 0,
+      moveStartTs: sent ? now : 0, moveEndTs: sent ? now + 600 : 0,
+    }] };
+    if (name === 'TradeInfoRequest') return { period: 0 };
+    return {};
+  }, async function (name, body) {
+    sends.push({ name, body });
+    if (name === 'MoveFleetsToCityRequest') sent = true;
+  });
+  const { api } = await consoleFixture(t);
+  assert.equal((await api('/api/connect', {})).status, 200);
+  const state = await api('/api/map/state?fresh=1');
+  assert.equal(state.status, 200);
+  assert.equal(state.value.war.active, true);
+  assert.deepEqual(state.value.war.attackTargets.map(target => target.cityId), [2]);
+  assert.deepEqual(state.value.war.defendTargets.map(target => target.cityId), [1]);
+
+  const saved = await api('/api/map/city-war/settings', { enabled: true, online: true, reattack: true });
+  assert.equal(saved.status, 200);
+  assert.equal(saved.value.cityWar.enabled, true);
+  assert.equal(saved.value.cityWar.online, true);
+  assert.equal(saved.value.cityWar.reattack, true);
+
+  const dispatch = await api('/api/map/city-war/dispatch', { confirm: true, buildingId: '1舰队', cityId: 2, role: 'attack' });
+  assert.equal(dispatch.status, 200, JSON.stringify(dispatch.value));
+  assert.equal(dispatch.value.confirmed, true);
+  assert.deepEqual(sends.filter(entry => entry.name === 'MoveFleetsToCityRequest').map(entry => entry.body),
+    [{ buildingId: ['1舰队'], cityId: 2 }]);
+});
+
+/** 聊天发送是静默写入：发完读频道记录确认自己的发言入库。 */
+test('console: chat send delivers text and confirms via channel record', async t => {
+  const writes = [];
+  mockGateway(t, async () => ({ result: 0, initSeqNo: 1, playerInfo: {
+    playerId: '42', nickname: '聊天角色', level: 20, scenarioId: 1,
+  } }), async function (name, body) {
+    if (name === 'ChatRecordRequest') {
+      // ChatRecordRequest 只有 channel；确认文本用同频道已发送的写入回放。
+      const channelText = writes.find(entry => entry.name === 'SendChatRequest' && entry.body.channel === body.channel)?.body.content.text;
+      return channelText
+        ? { message: [{ sender: { playerId: '42', nickname: '聊天角色' }, content: { type: 1, text: channelText }, timestamp: 1 }] }
+        : { message: [] };
+    }
+    return {};
+  }, async function (name, body) { writes.push({ name, body }); });
+  const { api } = await consoleFixture(t);
+  assert.equal((await api('/api/connect', {})).status, 200);
+
+  const blank = await api('/api/chat/send', { channel: 1, text: '   ' });
+  assert.equal(blank.status, 400);
+  assert.match(blank.value.error, /请输入/);
+
+  const sent = await api('/api/chat/send', { channel: 2, text: '打G2了' });
+  assert.equal(sent.status, 200, JSON.stringify(sent.value));
+  assert.equal(sent.value.confirmed, true);
+  assert.equal(sent.value.channel, 2);
+  assert.deepEqual(writes.filter(entry => entry.name === 'SendChatRequest').map(entry => entry.body),
+    [{ channel: 2, content: { type: 1, text: '打G2了' } }]);
+});
+
 /** 断开可能发生在登录回包抵达前，迟到回包也不能恢复被取消的会话。 */
 test('console: disconnect during login prevents a late reply from restoring the session', async t => {
   let releaseLogin;
@@ -443,11 +600,12 @@ test('console: overview includes merchant ship reward and current role rank', as
   mockGateway(t,
     async () => ({ result: 0, initSeqNo: 1, playerInfo: { playerId: '42', nickname: '万吨角色', level: 10 } }),
     async function (name, body) {
-      if (name === 'TreasureLootStatsRequest') return { todayRewardTimes: 3 };
+      // 全局统计故意与当前角色条目不同，确保总览使用角色实时 rewardTimes。
+      if (name === 'TreasureLootStatsRequest') return { todayRewardTimes: 1, totalRewardTimes: 3 };
       if (name === 'TreasureLootListRequest') return { treasure: [{ uid: 77, color: 5, reward: { asset: [{ type: 0, id: '高级宝箱', num: 2 }] } }] };
       if (name === 'TreasureLootRankRequest') {
         assert.deepEqual(body, { uid: 77 });
-        return { items: [{ playerId: '42', rank: 4, rewardTimes: 1 }] };
+        return { items: [{ playerId: '42', rank: 4, rewardTimes: 3 }] };
       }
       return {};
     });
@@ -456,17 +614,102 @@ test('console: overview includes merchant ship reward and current role rank', as
   await waitFor(() => !app.sessions.get('connection-a').cache.syncing, '核心总览缓存没有完成同步');
   const overview = await api('/api/overview');
   assert.equal(overview.status, 200);
-  assert.equal(overview.value.merchantShip.remainingRewardTimes, 3);
+  assert.equal(overview.value.merchantShip.todayRewardTimes, 3);
+  assert.equal(overview.value.merchantShip.totalRewardTimes, 3);
   assert.equal(overview.value.merchantShip.uid, 77);
   assert.equal(overview.value.merchantShip.rank, 4);
   assert.deepEqual(overview.value.merchantShip.reward.map(({ id, num }) => ({ id, num })), [{ id: '高级宝箱', num: 2 }]);
+  const merchantLogs = app.sessions.get('connection-a').log.filter(entry => entry.extra?.merchantShipReward);
+  assert.equal(merchantLogs.length, 1);
+  assert.match(merchantLogs[0].message, /^万吨货轮 #77 · 奖品：.+ ×2$/);
+  assert.deepEqual(merchantLogs[0].extra.merchantShipReward.rewards.map(({ id, num }) => ({ id, num })), [{ id: '高级宝箱', num: 2 }]);
+  // 抢夺中的当前货轮（即使占有榜 rewardTimes>0）奖品还没入库，不能计入今日已领。
+  assert.equal(overview.value.merchantShip.claimedShips, 0);
+  assert.deepEqual(overview.value.merchantShip.claimedToday, []);
+  await api('/api/overview');
+  assert.equal(app.sessions.get('connection-a').log.filter(entry => entry.extra?.merchantShipReward).length, 1);
+});
+
+/** 万吨货轮消失且协议今日计数上涨才计入今日已领；计数未动的消失是别人领走的，不计入。 */
+test('console: overview tracks claimed merchant ship rewards across ship changes', async t => {
+  let treasure = { uid: 81, color: 5, progress: 60, reward: { asset: [{ type: 0, id: '高级宝箱', num: 2 }] } };
+  let statsTimes = 0;
+  let refresh;
+  mockGateway(t, undefined, async function (name) {
+    if (name === 'TreasureLootStatsRequest') return { todayRewardTimes: statsTimes, totalRewardTimes: 3 };
+    if (name === 'TreasureLootListRequest') return { treasure: [treasure] };
+    if (name === 'TreasureLootRankRequest') return { items: [{ playerId: '42', rank: 4, rewardTimes: 0 }] };
+    return {};
+  });
+  t.mock.method(globalThis, 'setInterval', callback => {
+    refresh = callback;
+    return { unref() {} };
+  });
+  t.mock.method(globalThis, 'clearInterval', () => {});
+  const { app, api } = await consoleFixture(t);
+  assert.equal((await api('/api/connect', {})).status, 200);
+  const session = app.sessions.get('connection-a');
+  await waitFor(() => typeof refresh === 'function' && !session.cache.syncing && !session.cache.initialSync, '空闲总览定时器没有启动');
+  const overview = await api('/api/overview');
+  assert.equal(overview.value.merchantShip.claimedShips, 0, 'rewardTimes 为 0 时不能提前计入已领');
+  assert.deepEqual(overview.value.merchantShip.claimedToday, []);
+
+  // 货轮换新：旧船从列表消失且今日计数从 0 涨到 1，下一轮空闲刷新应把旧船奖品计入今日已领。
+  treasure = { uid: 82, color: 5, progress: 10, reward: { asset: [{ type: 0, id: '木材', num: 5 }] } };
+  statsTimes = 1;
+  refresh();
+  await waitFor(() => !session.cache.syncing && session.merchantShipClaims.get('81')?.claimedDay != null, '货轮消失后没有标记为已领');
+  const after = await api('/api/overview');
+  assert.equal(after.value.merchantShip.claimedShips, 1);
+  // 旧船消失后按消失时刻计入今日已领，奖品分组保持一次领取一行。
+  assert.deepEqual(after.value.merchantShip.claimedToday.map(ship => ({ at: ship.at != null, rewards: ship.rewards.map(({ id, num }) => ({ id, num })) })), [{ at: true, rewards: [{ id: '高级宝箱', num: 2 }] }]);
+});
+
+/** 已领记录按账号落盘；会话重建（重启/重连）后总览仍能恢复今天的已领列表。 */
+test('console: merchant ship claimed rewards persist across session restart', async t => {
+  // 同账号目录在本文件的多个用例间共享；先清掉前面用例留下的已领落盘，从零验证恢复。
+  fs.rmSync(path.join(accountDirectory('connection-a'), 'merchant-ship-claims.json'), { force: true });
+  let treasure = { uid: 91, color: 5, reward: { asset: [{ type: 0, id: '高级宝箱', num: 2 }] } };
+  let statsTimes = 0;
+  mockGateway(t, undefined, async function (name) {
+    if (name === 'TreasureLootStatsRequest') return { todayRewardTimes: statsTimes, totalRewardTimes: 3 };
+    if (name === 'TreasureLootListRequest') return { treasure: [treasure] };
+    if (name === 'TreasureLootRankRequest') return { items: [{ playerId: '42', rank: 4, rewardTimes: 0 }] };
+    return {};
+  });
+  let refresh;
+  t.mock.method(globalThis, 'setInterval', callback => {
+    refresh = callback;
+    return { unref() {} };
+  });
+  t.mock.method(globalThis, 'clearInterval', () => {});
+  const { app, api } = await consoleFixture(t);
+  assert.equal((await api('/api/connect', {})).status, 200);
+  const session = app.sessions.get('connection-a');
+  await waitFor(() => typeof refresh === 'function' && !session.cache.syncing && !session.cache.initialSync, '初始缓存没有完成同步');
+
+  // 船 91 消失换成船 92，今日计数同步上涨：旧船按消失计入今日已领并写入账号目录。
+  treasure = { uid: 92, color: 5, reward: { asset: [{ type: 0, id: '木材', num: 5 }] } };
+  statsTimes = 1;
+  refresh();
+  await waitFor(() => !session.cache.syncing && session.merchantShipClaims.get('91')?.claimedDay != null, '货轮消失后没有标记为已领');
+
+  // 模拟重启：丢弃会话后重新连接，新会话应从落盘文件恢复船 91 的今日已领。
+  app.sessions.delete('connection-a');
+  assert.equal((await api('/api/connect', {})).status, 200);
+  const restarted = app.sessions.get('connection-a');
+  assert.notEqual(restarted, session, '重连后应创建全新会话');
+  await waitFor(() => !restarted.cache.syncing && !restarted.cache.initialSync, '重启后的缓存没有完成同步');
+  const overview = await api('/api/overview');
+  assert.equal(overview.value.merchantShip.claimedShips, 1);
+  assert.deepEqual(overview.value.merchantShip.claimedToday.map(ship => ({ at: ship.at != null, rewards: ship.rewards.map(({ id, num }) => ({ id, num })) })), [{ at: true, rewards: [{ id: '高级宝箱', num: 2 }] }]);
 });
 
 /** 没有万吨货轮时总览仍返回次数，且不会发起占有榜查询。 */
 test('console: overview keeps merchant reward count without an active ship', async t => {
   const rankRequests = [];
   mockGateway(t, undefined, async function (name) {
-    if (name === 'TreasureLootStatsRequest') return { todayRewardTimes: 1 };
+    if (name === 'TreasureLootStatsRequest') return { todayRewardTimes: 1, totalRewardTimes: 3 };
     if (name === 'TreasureLootListRequest') return { treasure: [{ uid: 78, color: 4 }] };
     if (name === 'TreasureLootRankRequest') rankRequests.push(name);
     return {};
@@ -475,7 +718,8 @@ test('console: overview keeps merchant reward count without an active ship', asy
   assert.equal((await api('/api/connect', {})).status, 200);
   await waitFor(() => !app.sessions.get('connection-a').cache.syncing, '总览缓存没有完成首次同步');
   const overview = await api('/api/overview');
-  assert.equal(overview.value.merchantShip.remainingRewardTimes, 1);
+  assert.equal(overview.value.merchantShip.todayRewardTimes, 1);
+  assert.equal(overview.value.merchantShip.totalRewardTimes, 3);
   assert.equal(overview.value.merchantShip.uid, null);
   assert.deepEqual(rankRequests, []);
 });
@@ -536,7 +780,7 @@ function pageFixture({ looping = false } = {}) {
       scrollTop: 0,
       classList: {
         // The fixture only opens the overview tab; background page refreshes must stay behind their hidden panels.
-        contains(name) { return name === 'hidden' && ['tab-idle', 'tab-manual', 'tab-stages', 'tab-heroes', 'tab-dailies', 'tab-activities', 'tab-account', 'tab-automation'].includes(value.id); },
+        contains(name) { return name === 'hidden' && ['tab-idle', 'tab-map', 'tab-manual', 'tab-stages', 'tab-heroes', 'tab-dailies', 'tab-activities', 'tab-account', 'tab-automation'].includes(value.id); },
         add: () => {}, remove: () => {}, toggle: () => {},
       },
       appendChild(child) { ownText = ''; this.children.push(child); child.parentNode = this; return child; },

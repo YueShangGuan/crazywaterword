@@ -27,6 +27,8 @@ import { appointments } from './appointments.mjs';
 import { surveyDailies, runDailies, formatSurvey } from './dailies.mjs';
 import { surveyTasks, runTasks, formatTaskPlan } from './tasks.mjs';
 import { makeTypeResolver, weekFactoryInfo, surveyWorld, planWorld, runWorldRound, submitResidentOrder, formatWorldPlan, formatFieldReport, loadMapAsset } from './world.mjs';
+import { buildMapLayout, buildWorldMapState, readWorldMapState, cityNameMap, forceInfoMap } from './world-map.mjs';
+import { dispatchCityWarFleet } from './city-war.mjs';
 import { runLoop, formatLoopRound, formatLoopStep } from './loop.mjs';
 import { describeLogError } from './log-errors.mjs';
 import { operationLabels } from './operation-labels.mjs';
@@ -41,7 +43,7 @@ import { loadStore, saveStore, upsertAccount, removeAccount, setActive, pickAcco
 import { startCapture, stopCapture, captureState, DEFAULT_PROXY_PORT } from './capture.mjs';
 import { iconIndex, atlasFile, itemIcon, resourceIcon, materialIcon, heroIcon, heroCard, buildingIcon, workerIcon } from './art.mjs';
 import { runAutomation, automationStatus, stopAutomation } from './automation/service.mjs';
-import { loadSettings, saveSettings, LABELS, MODULES, selectModules, selectLoopModules } from './automation/settings.mjs';
+import { loadSettings, saveSettings, loadLedger, businessDate, accountDirectory, writeJson, LABELS, MODULES, selectModules, selectLoopModules } from './automation/settings.mjs';
 import { automationFormOptions, guildShipMaterialOptions } from './automation/form-options.mjs';
 import { appendMessage, createMessageStore, loadInitialMessages, messagesFromPush, snapshotMessages } from './messages.mjs';
 
@@ -116,11 +118,20 @@ export function formatGiftCodeRewards(reward, config, protocol) {
   }).join('、');
 }
 
-/** 已确认的闯关失败保留普通日志样式，协议异常和未确认结果仍按错误显示。 */
+/**
+ * 将高级自动化结果映射为控制台日志级别。
+ *
+ * 已确认的战败是正常业务结果；未确认写入已被幂等锁安全隔离，需要提示但不能伪装成服务异常。
+ *
+ * @param {object} entry 高级自动化步骤结果。
+ * @returns {'info'|'warn'|'error'} 控制台运行日志级别。
+ */
 export function automationEntryLogLevel(entry) {
   if (['ChallengeStageRequest', 'TrialRaidChallengeRequest'].includes(entry.request)
     && entry.status === 'failed' && !entry.reason) return 'info';
-  return ['error', 'uncertain', 'failed', 'rejected'].includes(entry.status) ? 'error' : 'info';
+  if (entry.status === 'uncertain') return 'warn';
+  if (entry.status === 'reminder') return 'warn';
+  return ['error', 'failed', 'rejected'].includes(entry.status) ? 'error' : 'info';
 }
 
 /**
@@ -130,7 +141,7 @@ export function automationEntryLogLevel(entry) {
  * 旧版挂机仍以 ok 和 skipped 字段判断，避免改变其原有错误提示。
  *
  * @param {object} entry 循环步骤结果。
- * @returns {'info'|'error'} 右侧运行日志的显示级别。
+ * @returns {'info'|'warn'|'error'} 右侧运行日志的显示级别。
  */
 export function loopEntryLogLevel(entry) {
   if (entry.phase === 'automation') return automationEntryLogLevel(entry);
@@ -238,6 +249,94 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     cache.lastError = error.message || String(error);
   }
 
+  /** Record each newly observed merchant ship reward once so the running log can be used for later statistics. */
+  function logMerchantShipReward(session, target) {
+    if (!target || target.uid == null) return;
+    const uid = String(target.uid);
+    if (session.merchantShipRewardLog.has(uid)) return;
+    const config = loadConfigSafe();
+    const rewards = merchantShipPool(target, config);
+    const rewardText = rewards.length
+      ? rewards.map(reward => reward.name + ' ×' + reward.num).join('、')
+      : '未返回奖品明细';
+    session.merchantShipRewardLog.add(uid);
+    // Keep the de-duplication set bounded because sessions can remain connected for a long time.
+    while (session.merchantShipRewardLog.size > 200) session.merchantShipRewardLog.delete(session.merchantShipRewardLog.values().next().value);
+    emit(session, 'info', `万吨货轮 #${uid} · 奖品：${rewardText}`, {
+      merchantShipReward: { uid: target.uid, rewards },
+    });
+  }
+
+  /** Beijing calendar day key so “今日” follows the game's UTC+8 daily reset. */
+  function beijingDay(ms = Date.now()) {
+    return new Date(ms + 8 * 3600 * 1000).toISOString().slice(0, 10);
+  }
+
+  /** 今日万吨货轮已领记录的落盘文件；按账号隔离，重启后总览据此恢复当天数据。 */
+  function merchantClaimsFile(accountId) {
+    return path.join(accountDirectory(accountId), 'merchant-ship-claims.json');
+  }
+
+  /** 读取落盘的今日已领记录；缺文件、跨天、损坏或未经计数证实的记录按空列表恢复。 */
+  function loadMerchantClaims(accountId) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(merchantClaimsFile(accountId), 'utf8'));
+      return parsed?.day === beijingDay() && Array.isArray(parsed.claims)
+        ? parsed.claims.filter(record => record?.confirmed === true)
+        : [];
+    } catch { return []; }
+  }
+
+  /** 把今天的已领记录原子落盘；失败只影响重启后的展示，不阻断总览。 */
+  function saveMerchantClaims(accountId, claims) {
+    try { writeJson(merchantClaimsFile(accountId), { day: beijingDay(), claims }); }
+    catch { /* 落盘失败时下次新增已领会再次尝试。 */ }
+  }
+
+  /** Map a merchant-ship target's prize pool to displayable assets. */
+  function merchantShipPool(target, config) {
+    return (target?.reward?.asset ?? []).map(asset => ({
+      id: asset?.id,
+      name: displayMaterial(config, asset?.id),
+      num: toNumber(asset?.num),
+    }));
+  }
+
+  /**
+   * Track per-ship pools so the overview can list what this role claimed from the
+   * merchant ship today. A ship vanishing from the list only means somebody claimed
+   * it — often another player — so a disappearance counts as ours only while the
+   * protocol's own daily counter (TreasureLootStats.todayRewardTimes) went up.
+   */
+  function trackMerchantShipClaims(session, target, config, accountId, stats) {
+    const today = beijingDay();
+    const uid = target?.uid != null ? String(target.uid) : null;
+    const mineTimes = Number(stats?.todayRewardTimes);
+    const hasStats = Number.isFinite(mineTimes);
+    // 协议今日计数按天归零；基线取当天的首次观察值，之后只用增量。
+    if (hasStats && session.merchantClaimBase?.day !== today) session.merchantClaimBase = { day: today, times: mineTimes };
+    // 本轮可分配的领取次数：多个目标同帧消失时按剩余额度依次确认。
+    let unusedClaims = hasStats ? mineTimes - session.merchantClaimBase.times : 0;
+    let changed = false;
+    for (const [trackedUid, record] of session.merchantShipClaims) {
+      // 跨天的已领记录不再进入今日列表。
+      if (record.claimedDay != null && record.claimedDay !== today) { session.merchantShipClaims.delete(trackedUid); changed = true; continue; }
+      if (trackedUid === uid || record.claimedDay != null) continue;
+      // 本轮没有计数证据时先不动，等下一轮带统计的刷新再判；计数没涨的消失是别人领走的，直接移除。
+      if (!hasStats) continue;
+      if (unusedClaims > 0) { record.claimedDay = today; record.claimedAt = Date.now(); record.confirmed = true; unusedClaims -= 1; }
+      else session.merchantShipClaims.delete(trackedUid);
+      changed = true;
+    }
+    if (hasStats) session.merchantClaimBase.times = mineTimes;
+    if (uid != null && !session.merchantShipClaims.has(uid)) {
+      session.merchantShipClaims.set(uid, { uid, day: today, claimedDay: null, rewards: merchantShipPool(target, config) });
+    }
+    while (session.merchantShipClaims.size > 200) session.merchantShipClaims.delete(session.merchantShipClaims.keys().next().value);
+    // 新增已领或跨天清理时落盘；只保留当天记录，重启后总览据此恢复今日已领。
+    if (changed && accountId) saveMerchantClaims(accountId, [...session.merchantShipClaims.values()].filter(record => record.claimedDay === today));
+  }
+
   /** Stage reads made inside a write batch until its matching category refresh has completed. */
   function stageCachedQuery(session, name, body) {
     session.cache.stagedQueries.set(name, normalize(body));
@@ -299,6 +398,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         const previous = cache.categories.get(category) ?? { updatedAt: null, stale: true, error: null };
         cache.categories.set(category, { ...previous, stale: true, error: previous.error ?? '分类查询失败' });
       }
+      const merchantShip = ok.TreasureLootListRequest?.treasure?.find(entry => Number(entry.color) === 5);
+      logMerchantShipReward(session, merchantShip);
       // Merchant rank is keyed by the currently visible ship, so it belongs to the same cache refresh.
       if (reason !== 'core' && ok.TreasureLootListRequest?.treasure) {
         const target = ok.TreasureLootListRequest.treasure.find(entry => Number(entry.color) === 5);
@@ -311,6 +412,9 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
           }
         }
       }
+      // 只有本轮真的成功查询了宝藏列表才能判定“消失”；部分刷新没带该分类时不能把在记船只误判成已领。
+      // 统计回包同批返回，是“自己领取”的计数证据（todayRewardTimes 增量）。
+      if (session.cache === cache && ok.TreasureLootListRequest) trackMerchantShipClaims(session, merchantShip, loadConfigSafe(), account.id, ok.TreasureLootStatsRequest);
       return { ok, failed };
     })();
     cache.syncPromise = work;
@@ -487,7 +591,13 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       appointmentJob: null,
       residentJobs: new Map(),
       progressionJobs: new Map(),
+      merchantShipRewardLog: new Set(),
+      // uid -> { uid, day, claimedDay, claimedAt, confirmed, rewards }：追踪每艘万吨货轮的奖品，供总览展示今日已领列表；
+      // 只有协议计数证实是自己领的记录才落盘，重启或重连后恢复当天的已领数据。
+      merchantShipClaims: new Map(loadMerchantClaims(id).map(record => [String(record.uid), record])),
       pushes: new Map(),
+      // 世界地图的世界信息按账号缓存；它只服务地图页，不参与总览查询。
+      worldMap: { info: null, ownCityIds: null, war: null, at: 0, error: null },
       // The overview cache and message history are process-local and always isolated by account session.
       cache: createOverviewCache(),
       messages: createMessageStore(),
@@ -551,8 +661,14 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     instance.on('message', ({ name, body }) => {
       // A replaced connection can still emit delayed pushes; never let it mutate the active role cache.
       if (session.client !== instance) return;
-      if (name.startsWith('SC')) session.pushes.set(name, body);
-      for (const message of messagesFromPush(name, body)) {
+      if (name === 'SCity') {
+        // SCity 每秒交替两种帧：带 state/defenceFleetNum 的战况汇总帧和只带 id+battlePoints 的
+        // 战斗槽位帧。战斗帧没有归属字段（proto 缺省 0），混进同一个缓存会把城市刷成中立。
+        const cities = Array.isArray(body?.cities) ? body.cities : [];
+        if (cities.some((city) => city && 'state' in city)) session.pushes.set('SCity', body);
+        else session.pushes.set('SCityBattle', body);
+      } else if (name.startsWith('SC')) session.pushes.set(name, body);
+      for (const message of messagesFromPush(name, body, messageContext(session))) {
         if (appendMessage(session.messages, message)) emitGameMessage(session, message);
       }
       if (session.client === instance && session.player) {
@@ -601,8 +717,9 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       }
     });
     instance.on('state', ({ state }) => emit(session, 'state', STATE_TEXT[state] ?? state));
-    instance.on('frame', ({ dir, name, seq, bytes }) => trace(session, `${dir === 'out' ? '->' : '<-'} [${name}] seq=${seq} ${bytes.byteLength}B`));
-    instance.on('message', ({ seq, name, body }) => trace(session, `[${name}] seq=${seq} ${JSON.stringify(body).slice(0, 400)}`));
+    instance.on('frame', ({ dir, name, seq, bytes }) => trace(session, `${dir === 'out' ? '->' : '<-'} [${name}] seq=${seq} ${bytes.byteLength}B`
+      + (dir !== 'out' && name === 'TradeCityResponse' ? ' hex=' + Buffer.from(bytes).toString('hex') : '')));
+    instance.on('message', ({ seq, name, body }) => trace(session, `[${name}] seq=${seq} ${JSON.stringify(body).slice(0, name === 'TradeCityResponse' ? 4000 : 400)}`));
     instance.on('pong', ({ latencyMs, offsetMs }) => trace(session, `pong ${latencyMs}ms offset=${offsetMs}ms`));
     instance.on('drop', ({ name, reason }) => emit(session, reason === 'duplicate' ? 'info' : 'warn',
       reason === 'duplicate' ? '已忽略服务器重复发送的消息' : '服务器消息序号不连续，已跳过这条消息',
@@ -620,6 +737,22 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       connectionLost(session, instance);
       emit(session, 'state', '连接已断开');
     });
+  }
+
+  /** 消息转换上下文：城市编号按赛季城市表、联盟编号按世界初始势力表翻成名称，按角色缓存避免每条推送重建。 */
+  function messageContext(session) {
+    const rawScenario = Number(session.player?.scenarioId ?? 0);
+    const scenarioId = rawScenario > 0 ? rawScenario : 1;
+    if (session.messageCtx?.scenarioId !== scenarioId) {
+      const config = loadConfigSafe();
+      const forces = forceInfoMap(config, scenarioId);
+      session.messageCtx = {
+        scenarioId,
+        cityNames: cityNameMap(config, scenarioId),
+        factionNames: Object.fromEntries(Object.entries(forces).map(([id, info]) => [id, info.name])),
+      };
+    }
+    return session.messageCtx;
   }
 
   /** Send a normalized game message only to subscribers watching its owning account. */
@@ -759,6 +892,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     session.client = client;
     session.player = null;
     session.pushes.clear();
+    session.worldMap = { info: null, ownCityIds: null, war: null, at: 0, error: null };
     const response = await client.connect(account.login);
     if (session.manualDisconnect || session.client !== client) {
       client.stop();
@@ -770,7 +904,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     const role = describeRole(session.player);
     emit(session, 'info', `已进入游戏：${role?.nickname ?? '未知角色'}（${role?.level ?? '?'} 级）`);
     // Realtime handlers are already attached; load history after login so the page receives both past and new messages.
-    const initial = await loadInitialMessages(client, protocol);
+    const initial = await loadInitialMessages(client, protocol, messageContext(session));
     if (session.manualDisconnect || session.client !== client) {
       client.stop();
       throw new Error('连接已取消');
@@ -899,11 +1033,29 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     });
     const merchantRankItems = ok.TreasureLootRankRequest?.items ?? [];
     const playerId = describeRole(session.player)?.id;
-    const merchantRank = merchantRankItems.find(item => String(item.playerId) === String(playerId))?.rank ?? null;
+    const merchantRankItem = merchantRankItems.find(item => String(item.playerId) === String(playerId));
+    const merchantRank = merchantRankItem?.rank ?? null;
+    // 有当前万吨货轮时，占有榜条目中的 rewardTimes 才是当前角色已用次数；统计接口的次数不能代表角色条目。
+    const merchantUsedTimes = view.merchantShip?.uid == null
+      ? view.merchantShip?.todayRewardTimes ?? null
+      : merchantRankItem?.rewardTimes ?? null;
+    // 今日成功领取的奖品来自会话内的占领跟踪；每次领取单独成组（含时间），总览按艘换行展示。
+    const claimedToday = [];
+    let claimedShips = 0;
+    for (const record of session.merchantShipClaims.values()) {
+      if (record.claimedDay !== beijingDay()) continue;
+      claimedShips += 1;
+      claimedToday.push({ uid: record.uid ?? null, at: record.claimedAt ?? null, rewards: record.rewards });
+    }
+    claimedToday.sort((a, b) => (a.at ?? 0) - (b.at ?? 0));
     const merchantShip = {
       ...(view.merchantShip ?? {}),
+      todayRewardTimes: merchantUsedTimes,
       rank: merchantRank,
-      reward: (view.merchantShip?.reward ?? []).map(asset => ({ ...asset, name: displayMaterial(config, asset.id) })),
+      claimedShips,
+      claimedToday: claimedToday.map(ship => ({ ...ship, rewards: (ship.rewards ?? []).map(asset => ({ ...asset, icon: materialIcon(asset.id) })) })),
+      // 奖励可能是道具或资源，统一使用可识别两类资产的图标映射供总览直接渲染。
+      reward: (view.merchantShip?.reward ?? []).map(asset => ({ ...asset, name: displayMaterial(config, asset.id), icon: materialIcon(asset.id) })),
     };
     const daily = view.daily;
     const cropKeepStock = loadSettings(account.id).modules?.farm?.cropKeepStock ?? {};
@@ -943,10 +1095,10 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       buildings: view.buildings,
       production: {
         farms: (view.buildings ?? []).filter(building => building.farm).map(building => ({ buildingId: building.buildingId,
-          productId: building.farm.productId, ripeTime: building.farm.ripeTime, icon: itemIcon(building.farm.productId) })),
+          productId: building.farm.productId, ripeTime: building.farm.ripeTime, name: displayMaterial(config, building.farm.productId), icon: itemIcon(building.farm.productId) })),
         factories: (view.buildings ?? []).filter(building => building.factory).map(building => ({ buildingId: building.buildingId,
-          autoProductId: building.factory.autoProductId ?? null, autoIcon: itemIcon(building.factory.autoProductId),
-          queue: (building.factory.queue ?? []).map(job => ({ ...job, icon: itemIcon(job.productId) })),
+          autoProductId: building.factory.autoProductId ?? null, autoName: displayMaterial(config, building.factory.autoProductId), autoIcon: itemIcon(building.factory.autoProductId),
+          queue: (building.factory.queue ?? []).map(job => ({ ...job, name: displayMaterial(config, job.productId), icon: itemIcon(job.productId) })),
           finished: (building.factory.finished ?? []).map(product => ({ ...product, icon: itemIcon(product.id) })),
         })),
       },
@@ -1130,7 +1282,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       if (payload.confirm !== true) throw new Error('这个操作会改动游戏里的状态，需要先确认');
     };
     // These routes only read or adjust local control state, so they must remain usable while a loop owns the game connection.
-    const automationControlRoute = /^\/api\/(automation\/(settings|status|stop)|messages|overview|loop(?:\/(?:stop|reconnect|fishing-reserve|compass-spin-count|task))?$)/.test(parsed.pathname);
+    const automationControlRoute = /^\/api\/(automation\/(settings|status|stop)|map\/(?:layout|state|city-defence)|city-war\/stats|chat\/send|messages|overview|income|loop(?:\/(?:stop|reconnect|fishing-reserve|compass-spin-count|task))?$)/.test(parsed.pathname);
     const longRunning = /^(GET|POST) \/api\/(heroes|dailies|tasks|world|overview|loop|automation)(\/|$)/.test(route);
     let scoped = null;
     let releaseWrite;
@@ -1140,7 +1292,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       const found = resolve(url);
       scoped = found.session;
       const overviewRead = route === 'GET /api/overview';
-      // Status, stop and cached overview reads must remain available to recover from an in-flight operation.
+      // Status, stop, cached overview and persisted income reads must remain available to recover from an in-flight operation.
       const readOrControlRoute = overviewRead || automationControlRoute;
       const advancedAutomationRequest = /^POST \/api\/automation\/(plan|run)$/.test(route);
       // Advanced automation bypasses the ordinary request queue, so it must not begin while a queued console operation owns the account.
@@ -1504,7 +1656,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
           client, protocol, config, player: session.player, accountId: account.id, selector, dryRun, stop,
           onQuery: (name, value) => { if (session.client === client) stageCachedQuery(session, name, value); },
           onModuleComplete: async moduleId => refreshOverviewCategories(session, account, MODULE_CACHE_CATEGORIES[moduleId] ?? []),
-          onStep: row => emit(session, ['error', 'uncertain', 'failed', 'rejected'].includes(row.status) ? 'error' : 'info',
+          onStep: row => emit(session, ['error', 'uncertain', 'failed', 'rejected'].includes(row.status) ? 'error' : row.status === 'reminder' ? 'warn' : 'info',
             '[' + (LABELS[row.module] ?? row.module) + '] ' + (row.label ?? row.request ?? '') + ' ' + row.status + (row.reason ? '：' + row.reason : '')),
         });
         if (dryRun) {
@@ -1691,6 +1843,257 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       if (route === 'GET /api/tasks') {
         const { account, session } = scoped_(parsed);
         json(await tasks(session, account));
+        return;
+      }
+      // 世界地图：布局只读地图包，状态默认只读缓存与推送；fresh=1 才向游戏补一次世界信息。
+      if (route === 'GET /api/map/layout') {
+        const { session } = scoped_(parsed);
+        const rawScenario = Number(session.player?.scenarioId ?? 0);
+        const scenarioId = rawScenario > 0 ? rawScenario : 1;
+        const map = await loadMapAsset(rawScenario);
+        json({ ...buildMapLayout(map, loadConfigSafe(), scenarioId), status: accountStatus(session) });
+        return;
+      }
+      if (route === 'GET /api/map/state') {
+        const { account, session } = scoped_(parsed);
+        const rawScenario = Number(session.player?.scenarioId ?? 0);
+        const scenarioId = rawScenario > 0 ? rawScenario : 1;
+        let map = null;
+        const warnings = [];
+        try {
+          map = await loadMapAsset(rawScenario);
+        } catch (error) {
+          warnings.push('地图数据读取失败：' + error.message);
+        }
+        const connected = Boolean(session.client?.connected) && !session.paused;
+        // 持续挂机期间也允许只读世界信息：GameClient 的业务请求在连接内串行排队，
+        // 地图查询会排在挂机请求之后，不会交叉串包；势力归属不读就永远是中立灰。
+        // 控制台单次操作和高级自动化持有操作级锁，这两种情况仍读缓存。
+        const busyExclusive = Boolean(session.busy)
+          || automationStatus(account.id, session.player?.playerId).running;
+        const wantFresh = parsed.searchParams.get('fresh') === '1';
+        let freshRead = null;
+        if (wantFresh && connected && !busyExclusive) {
+          try {
+            freshRead = await readWorldMapState(session.client, protocol, { player: session.player, map });
+            for (const warning of freshRead.warnings) warnings.push(warning);
+            if (freshRead.worldInfo) session.worldMap.info = freshRead.worldInfo;
+            session.worldMap.war = freshRead.war ?? null;
+            if (freshRead) {
+              session.worldMap.ownCityIds = (freshRead.guildCities?.cities ?? [])
+                .map((city) => Number(city?.cityId)).filter((id) => Number.isSafeInteger(id) && id > 0);
+            }
+            session.worldMap.at = Date.now();
+            session.worldMap.error = null;
+          } catch (error) {
+            session.worldMap.error = error.message;
+            warnings.push('世界信息读取失败：' + error.message);
+          }
+        } else if (wantFresh && connected) {
+          warnings.push('控制台操作进行中，地图使用缓存');
+        }
+        const cachedFleets = session.cache.queries.get('MyFleetsRequest') ?? null;
+        const fleets = Array.isArray(freshRead?.fleets)
+          ? freshRead.fleets
+          : (Array.isArray(cachedFleets?.fleets) ? cachedFleets.fleets : null);
+        const trade = freshRead?.trade ?? session.cache.queries.get('TradeInfoRequest') ?? null;
+        // 万吨货轮位置来自 TreasureLootListRequest；挂机模块查过就有缓存，不必等 fresh。
+        const treasureLoot = freshRead?.treasureLoot ?? session.cache.queries.get('TreasureLootListRequest') ?? null;
+        const pushedCities = session.pushes.get('SCity')?.cities;
+        const cities = freshRead?.worldInfo?.cities
+          ?? session.worldMap.info?.cities
+          ?? (Array.isArray(pushedCities) ? pushedCities : null);
+        if (!cities) warnings.push('尚未取得城市归属数据，城池暂按中立显示');
+        if (!connected) warnings.push(session.paused ? '账号已暂停' : '请先连接账号');
+        // 战斗槽位帧单独缓存；这里是交战中的攻守名单，按城市编号归并给详情面板。
+        const cityBattles = new Map();
+        for (const city of session.pushes.get('SCityBattle')?.cities ?? []) {
+          const id = Number(city?.id);
+          if (Number.isSafeInteger(id) && id > 0) cityBattles.set(id, Array.isArray(city.battlePoints) ? city.battlePoints : []);
+        }
+        const config = loadConfigSafe();
+        let cityWarSettings = { enabled: false, online: false, reattack: false };
+        try {
+          const saved = loadSettings(account.id).modules.world.cityWar;
+          cityWarSettings = {
+            enabled: saved.enabled === true,
+            online: saved.online === true,
+            reattack: saved.reattack === true,
+          };
+        } catch { /* 设置文件损坏时地图仍应可看，城战开关按关闭显示 */ }
+        const state = buildWorldMapState({
+          map, cities, fleets, trade, ownCityIds: session.worldMap.ownCityIds,
+          player: session.player,
+          worldFleets: freshRead?.worldInfo?.fleets ?? session.worldMap.info?.fleets ?? null,
+          war: freshRead?.war ?? session.worldMap.war ?? null,
+          guildCities: freshRead?.guildCities ?? null,
+          cityNames: cityNameMap(config, scenarioId),
+          forceInfo: forceInfoMap(config, scenarioId),
+          treasureLoot,
+          worldBoss: freshRead?.worldBoss ?? session.cache.queries.get('WorldBossInfoRequest')?.info ?? null,
+          cityBattles,
+          now: (Date.now() + (session.client?.serverClockOffsetMs || 0)) / 1000,
+          warnings,
+        });
+        json({
+          connected,
+          paused: session.paused,
+          stale: !session.worldMap.at || Date.now() - session.worldMap.at > 60000,
+          updatedAt: session.worldMap.at ? new Date(session.worldMap.at).toISOString() : null,
+          cacheUpdatedAt: session.cache.updatedAt,
+          scenarioId,
+          cityWarSettings: cityWarSettings,
+          status: accountStatus(session),
+          ...state,
+        });
+        return;
+      }
+      if (route === 'POST /api/map/city-war/settings') {
+        const payload = jsonBody();
+        const { account } = scoped_(parsed);
+        const settings = loadSettings(account.id);
+        const current = settings.modules.world.cityWar;
+        const cityWar = {
+          ...current,
+          enabled: typeof payload.enabled === 'boolean' ? payload.enabled : current.enabled,
+          online: typeof payload.online === 'boolean' ? payload.online : current.online,
+          reattack: typeof payload.reattack === 'boolean' ? payload.reattack : current.reattack,
+        };
+        const saved = saveSettings(account.id, {
+          ...settings,
+          modules: { ...settings.modules, world: { ...settings.modules.world, cityWar } },
+        }).modules.world.cityWar;
+        json({ cityWar: { enabled: saved.enabled, online: saved.online, reattack: saved.reattack } });
+        return;
+      }
+      if (route === 'POST /api/map/city-war/dispatch') {
+        const payload = jsonBody();
+        needConfirm(payload);
+        const { account, session } = scoped_(parsed);
+        const role = payload.role === 'defend' ? 'defend' : 'attack';
+        const cityId = Number(payload.cityId);
+        if (!Number.isSafeInteger(cityId) || cityId <= 0) throw new Error('请选择城战目标城市');
+        if (!session.client?.connected || session.paused) throw new Error('账号未连接，请先连接游戏');
+        const rawScenario = Number(session.player?.scenarioId ?? 0);
+        const scenarioId = rawScenario > 0 ? rawScenario : 1;
+        const result = await enqueue(session, async () => {
+          if (!session.client?.connected || session.paused) throw new Error('账号连接已变化，请刷新后重试');
+          const config = loadConfigSafe();
+          const map = await loadMapAsset(rawScenario).catch(() => null);
+          const fresh = await readWorldMapState(session.client, protocol, { player: session.player, map });
+          const state = buildWorldMapState({
+            map,
+            cities: fresh.worldInfo?.cities ?? null,
+            fleets: fresh.fleets ?? null,
+            trade: fresh.trade ?? null,
+            ownCityIds: (fresh.guildCities?.cities ?? []).map((city) => Number(city?.cityId)),
+            player: session.player,
+            worldFleets: fresh.worldInfo?.fleets ?? null,
+            war: fresh.war ?? null,
+            guildCities: fresh.guildCities ?? null,
+            cityNames: cityNameMap(config, scenarioId),
+            warnings: fresh.warnings,
+          });
+          const targets = role === 'defend' ? state.war.defendTargets : state.war.attackTargets;
+          if (role === 'attack' && !state.war.active) throw new Error('当前不在城战时段');
+          if (!targets.some((target) => target.cityId === cityId)) {
+            throw new Error(role === 'defend' ? '该城市当前不在可防守列表，请刷新目标' : '该城市当前不在可进攻列表，请刷新目标');
+          }
+          return dispatchCityWarFleet(session.client, protocol, {
+            buildingId: payload.buildingId, cityId, role,
+          });
+        });
+        emit(session, result.confirmed ? 'info' : 'warn', result.message, { cityWarDispatch: { cityId, role } });
+        json(result);
+        return;
+      }
+      if (route === 'GET /api/map/city-defence') {
+        const { session } = scoped_(parsed);
+        const cityId = Number(parsed.searchParams.get('cityId'));
+        if (!Number.isSafeInteger(cityId) || cityId <= 0) throw new Error('请指定要查询的城市');
+        if (!session.client?.connected || session.paused) throw new Error('账号未连接，请先连接游戏');
+        // 只读查询仍走会话队列，和派遣、自动化共用同一个游戏连接。
+        const result = await enqueue(session, async () => {
+          if (!session.client?.connected || session.paused) throw new Error('账号连接已变化，请刷新后重试');
+          const response = normalize(await session.client.request('CityDefenceRequest', { cityId }, 'CityDefenceResponse'));
+          return {
+            cityId,
+            fleets: (response?.fleets ?? []).map((fleet) => ({
+              name: fleet?.name ?? '',
+              guildIdx: toNumber(fleet?.guildIdx),
+              power: toNumber(fleet?.power),
+              multiple: toNumber(fleet?.multiple),
+              isNpc: fleet?.isNpc === true,
+            })),
+          };
+        });
+        json(result);
+        return;
+      }
+      if (route === 'GET /api/city-war/stats') {
+        const { account, session } = scoped_(parsed);
+        const roleId = session.player?.playerId;
+        const counts = roleId ? (loadLedger(account.id, roleId).ledger.days[businessDate()]?.counts ?? {}) : {};
+        const config = loadConfigSafe();
+        const rawScenario = Number(session.player?.scenarioId ?? 0);
+        const scenarioId = rawScenario > 0 ? rawScenario : 1;
+        const names = cityNameMap(config, scenarioId);
+        // 派遣计数按城市编号记在账本里，这里换算成城市名再给前端。
+        const dispatchByCity = Object.entries(counts)
+          .filter(([key, value]) => /^cityWar\.\d+$/.test(key) && Number(value) > 0)
+          .map(([key, value]) => {
+            const cityId = Number(key.slice('cityWar.'.length));
+            return { cityId, name: names.get(cityId) ?? `城 #${cityId}`, count: Number(value) };
+          })
+          .sort((a, b) => b.count - a.count || a.cityId - b.cityId);
+        let battles = null;
+        if (session.client?.connected && !session.paused) {
+          battles = await enqueue(session, async () => {
+            if (!session.client?.connected || session.paused) return null;
+            const response = normalize(await session.client.request('CampaignReportsRequest', { pageNo: 0 }, 'CampaignReportsResponse'));
+            const today = businessDate();
+            const shanghaiDate = (seconds) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date(seconds * 1000));
+            const rows = (response?.reports ?? []).filter((report) => report?.cityWar && shanghaiDate(toNumber(report.createTime)) === today);
+            return {
+              count: rows.length,
+              kills: rows.reduce((sum, row) => sum + toNumber(row.cityWar?.kill), 0),
+              feats: rows.reduce((sum, row) => sum + toNumber(row.cityWar?.feats), 0),
+            };
+          });
+        }
+        json({
+          connected: Boolean(session.client?.connected) && !session.paused,
+          dispatchCount: dispatchByCity.reduce((sum, row) => sum + row.count, 0),
+          dispatchByCity,
+          rubyMarchSpeedUp: toNumber(counts['cityWar.rubyMarchSpeedUp']),
+          rubyRepairSpeedUp: toNumber(counts['cityWar.rubyRepairSpeedUp']),
+          battles,
+        });
+        return;
+      }
+      if (route === 'POST /api/chat/send') {
+        const payload = jsonBody();
+        const { session } = scoped_(parsed);
+        const channel = Number(payload.channel) === 2 ? 2 : 1;
+        const text = String(payload.text ?? '').trim();
+        if (!text) throw new Error('请输入要发送的内容');
+        if (text.length > 120) throw new Error('消息过长，请控制在 120 字内');
+        if (!session.client?.connected || session.paused) throw new Error('账号未连接，请先连接游戏');
+        // 聊天是静默写入（成功无回包，被禁言时只推 PromptResponse）；发送后读频道记录确认内容入库。
+        const result = await enqueue(session, async () => {
+          if (!session.client?.connected || session.paused) throw new Error('账号连接已变化，请刷新后重试');
+          await session.client.sendWatch('SendChatRequest', { channel, content: { type: 1, text } }, { window: 800 });
+          const record = normalize(await session.client.request('ChatRecordRequest', { channel }, 'ChatRecordResponse'));
+          const ownId = toNumber(session.player?.playerId);
+          const confirmed = ownId > 0 && (record?.message ?? []).some((row) =>
+            toNumber(row?.sender?.playerId) === ownId && row?.content?.text === text);
+          return { channel, text, confirmed };
+        });
+        const channelName = channel === 2 ? '联盟' : '世界';
+        emit(session, result.confirmed ? 'info' : 'warn',
+          result.confirmed ? `${channelName}频道消息已发送：${text}` : `${channelName}频道消息已提交，但未在频道记录中确认`,
+          { chatSend: { channel } });
+        json(result);
         return;
       }
       if (route === 'GET /api/world') {

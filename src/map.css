@@ -1,0 +1,65 @@
+/* 世界地图：地图画布、图例和图层开关。只作用于 #tab-map，避免影响其他页面。 */
+.world-map-page { display: grid; gap: 16px; }
+/* 地图下方的游戏消息：世界频道战况播报可能很长，限制高度滚动查看。 */
+.world-map-page .message-list { display: grid; gap: 8px; max-height: 320px; overflow: auto; align-content: start; }
+/* 发送行：输入框占满剩余宽度。 */
+.world-map-page .chat-send { margin-top: 4px; }
+.world-map-page .chat-send input { flex: 1; min-width: 0; }
+.world-map-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.world-map-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.world-map-toolbar .world-map-check { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: #415b60; }
+#map-status { font-size: 12px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.world-map-layout { display: grid; grid-template-columns: minmax(0, 1fr) 250px; gap: 16px; align-items: start; }
+.world-map-stage { position: relative; height: clamp(420px, calc(100vh - 250px), 880px); min-width: 0; overflow: hidden; border: 1px solid #24434d; border-radius: 12px; background: #0c2631; }
+#map-canvas { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; }
+#map-canvas:active { cursor: grabbing; }
+.world-map-tooltip { position: absolute; z-index: 3; max-width: 200px; padding: 6px 9px; border: 1px solid #2f5560; border-radius: 8px; background: rgba(8, 22, 28, 0.94); color: #e2f0f2; font-size: 12px; line-height: 1.45; white-space: pre-line; pointer-events: none; box-shadow: 0 4px 14px #00000045; }
+.world-map-empty { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; font-size: 13px; line-height: 1.6; color: #cfe4e7; background: rgba(8, 22, 28, 0.72); }
+.world-map-side { display: grid; gap: 12px; min-width: 0; max-height: clamp(420px, calc(100vh - 250px), 880px); overflow: auto; padding-right: 3px; }
+.world-map-layers { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; padding-bottom: 10px; border-bottom: 1px solid #dde8e7; }
+.world-map-layers .world-map-check { display: flex; align-items: center; gap: 7px; font-size: 13px; color: #33565b; }
+.world-map-check input { accent-color: #146976; width: 14px; height: 14px; margin: 0; }
+.world-map-legend { display: grid; gap: 6px; max-height: 260px; overflow: auto; font-size: 12px; }
+.world-map-legend-row { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.world-map-swatch { flex: none; width: 11px; height: 11px; border-radius: 3px; border: 1px solid #ffffff55; }
+/* 城战标记图例：空心小方块，边框颜色/线型由脚本注入。 */
+.world-map-swatch-ring { flex: none; width: 11px; height: 11px; border-radius: 3px; border-width: 2px; background: transparent; }
+.world-map-legend-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.world-map-legend-row .dim { margin-left: auto; }
+.world-map-detail { padding: 9px 10px; border: 1px solid #dde8e7; border-radius: 10px; background: #f6faf9; font-size: 12px; line-height: 1.6; color: #2c4b51; min-height: 64px; }
+/* 点击城池后追加的守军信息块。 */
+.world-map-defence { margin-top: 7px; padding-top: 6px; border-top: 1px dashed #d7e4e2; display: grid; gap: 3px; }
+.world-map-note { margin: 0; font-size: 12px; line-height: 1.55; }
+.world-map-open { margin-top: 9px; padding: 5px 10px; border: 1px solid #ccd9d9; border-radius: 8px; background: #ffffff; color: #2c5054; font: inherit; font-size: 12px; cursor: pointer; }
+.world-map-open:hover { background: #edf5f3; border-color: #a3bcbb; }
+.world-map-fleets, .world-map-war { display: grid; gap: 8px; padding: 10px; border: 1px solid #dde8e7; border-radius: 10px; background: #f8fbfa; }
+.world-map-section-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.world-map-section-title { font-size: 13px; font-weight: 600; color: #23464d; white-space: nowrap; }
+.world-map-open:disabled { opacity: .45; cursor: not-allowed; }
+.world-map-fleet-row { display: grid; grid-template-columns: 9px minmax(0, 1fr); gap: 8px; padding: 6px 0; border-top: 1px dashed #e2ecea; }
+.world-map-fleet-row:first-child { border-top: 0; }
+.world-map-fleet-dot { width: 9px; height: 9px; margin-top: 5px; border-radius: 50%; background: #8ea4a5; }
+.world-map-fleet-dot[data-state="1"] { background: #2f9e77; }
+.world-map-fleet-dot[data-state="2"] { background: #3f8fbf; }
+.world-map-fleet-dot[data-state="3"] { background: #e2685f; }
+.world-map-fleet-dot[data-state="4"] { background: #d9a34f; }
+.world-map-fleet-dot[data-state="5"] { background: #9aa9ae; }
+.world-map-fleet-name { font-size: 12px; font-weight: 600; color: #23464d; }
+.world-map-fleet-meta { font-size: 11px; line-height: 1.5; color: #52696d; }
+.world-map-war-flags { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 10px; font-size: 12px; color: #33565b; }
+.world-map-war-flags label { display: inline-flex; align-items: center; gap: 4px; }
+.world-map-war-flags input { width: 13px; height: 13px; margin: 0; accent-color: #146976; }
+.world-map-war-flags .world-map-open { margin-top: 0; padding: 3px 8px; }
+.world-map-war-target { display: grid; gap: 5px; padding: 7px 0; border-top: 1px dashed #e2ecea; }
+.world-map-war-target select { min-width: 0; height: 27px; padding: 0 4px; border: 1px solid #ccd9d9; border-radius: 6px; background: #ffffff; color: #2c5054; font: inherit; font-size: 12px; }
+.world-map-war-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.world-map-war-row .world-map-open { margin-top: 0; padding: 3px 8px; }
+.world-map-war-row .dim { font-size: 11px; }
+#map-war-hint { min-height: 14px; font-size: 11px; }
+@media (max-width: 1100px) {
+  .world-map-fleets, .world-map-war { max-height: none; }
+}
+@media (max-width: 1100px) {
+  .world-map-layout { grid-template-columns: minmax(0, 1fr); }
+  .world-map-stage { height: 62vh; }
+}

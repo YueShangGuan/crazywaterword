@@ -171,3 +171,4 @@ export function stagePanel() {
 }
 export * from "./layout"
 export * from "./pages"
+export * from "./map-page"

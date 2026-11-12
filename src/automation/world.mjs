@@ -2,6 +2,8 @@ import { amount, idString } from './context.mjs';
 import { costs, idleFleets, inWindows, mutate, repeat, rewardAction, skip, succeeded } from './common.mjs';
 import { claimPass } from './battle.mjs';
 import { pirateDailySweepLimit, pirateSweepProgress } from '../pirates.mjs';
+import { worldOnlineState } from '../extra-rewards.mjs';
+import { cityNameMap } from '../world-map.mjs';
 
 const SPEED_UP_RUBY_TYPE = 1;
 const SPEED_UP_ITEM_TYPE = 2;
@@ -10,6 +12,8 @@ const SPEED_UP_FLEET_RUBY_COST = 30;
 const REPAIR_SPEED_UP_ITEM_FAILURE_LIMIT = 3;
 // 城战在线礼包按服务端计数逐档解锁，每个城战日最多 7 档。
 const CITY_WAR_ONLINE_REWARD_LIMIT = 7;
+// 服务端明确拒绝集结权限后，当天不再向同一账号重复提交该零收益请求。
+const CITY_WAR_ASSEMBLY_PERMISSION_DENIED = 'cityWar.assemblePermissionDenied';
 // 海商王服务端仅在上海时间 10:00 至 21:59 接受交易及相关操作。
 const TRADE_EXECUTION_HOURS = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21];
 
@@ -104,6 +108,8 @@ async function speedUpRepairWithRuby(ctx, fleet, minRemainSecs) {
     confirm: async () => JSON.stringify((await ctx.query('MyFleetsRequest')).fleets?.find(row => row.buildingId === fleet.buildingId)) !== before,
   });
   logSpeedUpResult(ctx, `维修加速结果 ${fleet.buildingId}`, result, '已确认维修结束时间更新（钻石）');
+  // 面板统计的钻石加速次数只记确认成功且非预览的执行。
+  if (result.status === 'success') ctx.count('cityWar.rubyRepairSpeedUp', 1);
   return result;
 }
 
@@ -166,10 +172,20 @@ async function speedUpFleet(ctx, fleet) {
     });
 }
 
-/** 每个派遣前刷新舰队；未确认派遣会锁定后续动作，避免跨玩法占用同船。 */
+/**
+ * 每个派遣前刷新舰队；未确认派遣会锁定当前世界模块的后续写入，避免跨玩法占用同船。
+ *
+ * @param {import('./context.mjs').AutomationContext} ctx Current execution context.
+ * @param {string} request Dispatch request name.
+ * @param {object} body Validated request body.
+ * @param {Array<{buildingId: string}>} fleets Fleets expected to change state.
+ * @param {object} options Additional action options for this dispatch.
+ * @returns {Promise<object>} Unified write result.
+ */
 async function dispatch(ctx, request, body, fleets, options = {}) {
   const ids = fleets.map(f => f.buildingId);
-  return mutate(ctx, request, body, 'MyFleetsRequest', s => s.fleets?.filter(f => ids.includes(f.buildingId)), options);
+  // Fleet state is the only idempotency confirmation. If it is delayed, block this module but keep unrelated automation running.
+  return mutate(ctx, request, body, 'MyFleetsRequest', s => s.fleets?.filter(f => ids.includes(f.buildingId)), { continueAfterUncertain: true, ...options });
 }
 
 /** 上海小时列表由账号设置决定，不依赖运行电脑时区。 */
@@ -177,7 +193,7 @@ function hourAllowed(ctx, hours) {
   return !hours.length || hours.includes(Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Shanghai', hour: '2-digit', hour12: false }).format(ctx.now())));
 }
 
-/** 世界玩法逐项查询最新舰队，任何派遣的不确定结果均停止本模块。 */
+/** 世界玩法逐项查询最新舰队；派遣结果未确认时阻断本模块后续写入，但不终止独立模块。 */
 export async function world(ctx, options) {
   if (options.report) {
     const reports = await ctx.query('CampaignReportsRequest', { pageNo: 0 });
@@ -365,6 +381,11 @@ async function pirates(ctx, options) {
   for (const type of attackLevelCap === null ? [] : new Set(options.attackTypes)) {
     const killed = records.find(r => r.type === type)?.maxKilledLevel;
     if (killed === undefined) { skip(ctx, `海盗类型 ${type} 缺少击败记录`); continue; }
+    // 当前阶段上限已首杀时，不再重挑战同级海盗；服务端只接受尚未开放的下一等级，重发会被判定为无效请求。
+    if (options.attack && killed >= attackLevelCap) {
+      skip(ctx, `海盗类型 ${type} 已达到当前赛季阶段开放上限 ${attackLevelCap} 级`);
+      continue;
+    }
     const targets = (state.pirates ?? []).filter(p => p.type === type && p.level <= attackLevelCap);
     if (options.attack) {
       const target = targets.filter(p => p.level <= killed + 1).sort((a, b) => b.level - a.level)[0];
@@ -525,18 +546,71 @@ async function treasure(ctx, options) {
   }
 }
 
+/**
+ * 判断服务端是否已明确拒绝当前账号设置城战集结城市的权限。
+ *
+ * 此类拒绝不会因同一业务日内重复提交而自行恢复；记录当天标记可避免挂机每轮产生无效写请求。
+ *
+ * @param {Error} error 服务端 PromptResponse 转换的错误。
+ * @returns {boolean} 是否为已确认的无权限拒绝。
+ */
+function isAssemblyPermissionDenied(error) {
+  return /(?:\bno permission\b|无权限)/i.test(error?.message ?? '');
+}
+
+/**
+ * 从本联盟城市和世界地图交集解析当前账号的联盟序号。
+ *
+ * 宣战列表包含全服联盟的记录，只有与本联盟城市对应的唯一 guildIdx 才能证明本账号
+ * 有进攻资格；缺失或冲突时宁可跳过，不能把别的联盟宣战目标当成自己的派遣目标。
+ *
+ * @param {import('./context.mjs').AutomationContext} ctx 当前自动化上下文。
+ * @returns {Promise<string|null>} 已确认的本联盟序号；无法唯一确认时返回 null。
+ */
+async function cityWarOwnGuildIdx(ctx) {
+  const ownCityIds = new Set((await ctx.query('GuildCityInfoRequest')).cities?.map(city => idString(city.cityId)).filter(Boolean));
+  if (!ownCityIds.size) return null;
+  // WorldInfoRequest 的 screenCenter 是协议必填字段；城战只需要城市归属，不依赖地图坐标。
+  const cities = (await ctx.query('WorldInfoRequest', { screenCenter: { x: 0, y: 0 } })).cities ?? [];
+  const guildIndexes = new Set(cities
+    .filter(city => ownCityIds.has(idString(city.id)) && city.guildIdx !== undefined && city.guildIdx !== null)
+    .map(city => idString(city.guildIdx)));
+  return guildIndexes.size === 1 ? [...guildIndexes][0] : null;
+}
+
 /** 城战仅在上海时间 20:00–21:00 且服务器确认开放后执行，城市记录按角色业务日隔离。 */
 async function cityWar(ctx, options) {
   if (!inWindows(CITY_WAR_EXECUTION_WINDOW, ctx.now())) return skip(ctx, '不在城战执行时段（20:00–21:00）');
   // 先以服务端宣战状态二次确认，防止活动临时调整时在线奖请求被拒绝。
   const war = await ctx.query('WarDeclarationRequest');
   if (!(war.startTime <= ctx.now() / 1000 && war.endTime > ctx.now() / 1000)) return skip(ctx, '不在城战时段');
+  // 日志和战报里城池用配置名（如 堡垒G2）展示，编号只留在数据层。
+  const cityNames = cityNameMap(ctx.config, ctx.player?.scenarioId);
+  const cityName = (cityId) => cityNames.get(Number(cityId)) ?? `城 #${cityId}`;
+  // 游戏内“委托自动打城战”会和自动化监管抢舰队（自动战斗不受派遣节奏控制），
+  // 城战时段开始时把仍挂着委托的舰队统一关闭；之后 isOn 全为 false，天然按日去重。
+  const delegated = ((await ctx.query('MyFleetsRequest')).fleets ?? [])
+    .filter(fleet => fleet?.autoFight?.isOn === true)
+    .map(fleet => String(fleet.buildingId));
+  if (delegated.length) {
+    const result = await mutate(ctx, 'SetFleetAutoFightRequest', { buildingIds: delegated, isOn: false }, 'MyFleetsRequest',
+      state => JSON.stringify((state.fleets ?? []).map(fleet => [fleet.buildingId, fleet.autoFight?.isOn === true])));
+    ctx.record({
+      label: '取消城战委托',
+      status: succeeded(result) ? (ctx.dryRun ? 'planned' : 'success') : result.status,
+      reason: `${delegated.join('、')} 的委托自动打城战与自动化监管冲突，已提交关闭`,
+    });
+  }
   if (options.online) {
-    // 服务端计数代表已经领取的礼包档位；每次模块运行都读回最新值，才能在下一档倒计时结束后继续领取。
+    // 每档倒计时以服务端计数更新时间为准；仅处于 ready 状态时才发送领取请求，避免未到时间的拒绝日志。
     const counters = (await ctx.query('CounterInfoRequest')).counters ?? [];
-    let claimed = amount(counters.find(counter => counter.type === 'DAILY_WORLD_ONLINE_RWD')?.num);
-    while (claimed < CITY_WAR_ONLINE_REWARD_LIMIT) {
-      const before = claimed;
+    let counter = counters.find(row => row.type === 'DAILY_WORLD_ONLINE_RWD');
+    let online = worldOnlineState(ctx.config, ctx.player, counter, ctx.now() / 1000);
+    if (online.status !== 'ready') {
+      skip(ctx, `城战在线奖励：${online.reason}`);
+    }
+    while (online.status === 'ready' && online.stage < CITY_WAR_ONLINE_REWARD_LIMIT) {
+      const before = online.stage;
       const result = await ctx.action('GotWorldOnlineRwdRequest', {}, {
         response: 'GotRewardResponse',
         confirm: async () => {
@@ -544,24 +618,53 @@ async function cityWar(ctx, options) {
           return amount(latest.find(counter => counter.type === 'DAILY_WORLD_ONLINE_RWD')?.num) > before;
         },
       });
-      // 倒计时未到时服务端会拒绝本档；停止本轮，等待下一次城战窗口内的状态刷新。
+      // 已确认的业务拒绝由 action 记录；本轮不应继续尝试后续档位。
       if (result.status !== 'success') break;
       const latest = (await ctx.query('CounterInfoRequest')).counters ?? [];
-      const next = amount(latest.find(counter => counter.type === 'DAILY_WORLD_ONLINE_RWD')?.num);
+      counter = latest.find(row => row.type === 'DAILY_WORLD_ONLINE_RWD');
+      const next = amount(counter?.num);
       if (next <= before) break;
-      claimed = next;
+      // 每次领取确认后重新计算下一档的倒计时；不能用前一档的状态推断下一档已解锁。
+      online = worldOnlineState(ctx.config, ctx.player, counter, ctx.now() / 1000);
     }
   }
   if (war.assembleCityId && ctx.pushes.get('SCAssembleCity')?.cityId !== war.assembleCityId && options.fleets.some(f => f.enabled)) {
-    // 集结城市由本次宣战状态提供，等待明确集结推送后才继续派遣。
-    await ctx.action('SetAssembleCityRequest', { cityId: war.assembleCityId }, { response: 'SCAssembleCity', confirm: async () => ctx.pushes.get('SCAssembleCity')?.cityId === war.assembleCityId });
+    if (ctx.count(CITY_WAR_ASSEMBLY_PERMISSION_DENIED)) {
+      // 无权限已由本业务日内的服务端 PromptResponse 确认，重启后也保持跳过，避免每轮重复写入。
+      skip(ctx, '今日已确认无设置集结城市权限，跳过重复请求');
+    } else {
+      // 集结城市由本次宣战状态提供，等待明确集结推送后才继续派遣。
+      await ctx.action('SetAssembleCityRequest', { cityId: war.assembleCityId }, {
+        response: 'SCAssembleCity',
+        confirm: async () => ctx.pushes.get('SCAssembleCity')?.cityId === war.assembleCityId,
+        onRejected: error => {
+          if (!isAssemblyPermissionDenied(error)) return null;
+          ctx.count(CITY_WAR_ASSEMBLY_PERMISSION_DENIED, 1);
+          // 权限拒绝不会自行恢复；额外记录提醒，让用户知道需要调整城战权限或关闭对应规则。
+          ctx.record({ label: '城战集结城市权限提醒', status: 'reminder', reason: '当前账号没有设置集结城市权限，请关闭城战舰队规则或授予对应权限' });
+          return { status: 'skipped', reason: '服务端确认无设置集结城市权限，今日不再重试' };
+        },
+      });
+    }
+  }
+  const hasAttackRule = options.fleets.some(rule => rule.enabled && rule.roles?.includes('attack'));
+  const ownGuildIdx = hasAttackRule ? await cityWarOwnGuildIdx(ctx) : null;
+  if (hasAttackRule && ownGuildIdx === null) {
+    // 只有本联盟发起的宣战允许进攻；无法归属时不发送会被服务器拒绝的派舰请求。
+    skip(ctx, '无法确认己方联盟序号，跳过城战进攻派遣');
   }
   for (const rule of options.fleets.filter(f => f.enabled)) {
     const fleet = (await idleFleets(ctx)).find(f => !rule.buildingId || rule.buildingId === f.buildingId);
     // 已派出或维修中的前序舰队不能阻塞后续已配置舰队的城战派遣。
     if (!fleet) continue;
     for (const role of rule.roles ?? []) {
-      const cityId = role === 'goto' ? rule.gotoCityId : role === 'defend' ? war.assembleCityId : war.declarations?.find(d => options.reattack || !ctx.count(`cityWar.${d.cityId}`))?.cityId;
+      const cityId = role === 'goto'
+        ? rule.gotoCityId
+        : role === 'defend'
+          ? war.assembleCityId
+          : role === 'attack' && ownGuildIdx !== null
+            ? war.declarations?.find(declaration => idString(declaration.attackGuildIdx) === ownGuildIdx && (options.reattack || !ctx.count(`cityWar.${declaration.cityId}`)))?.cityId
+            : null;
       if (!cityId) continue;
       if (role === 'defend') {
         // 募防改变城市守军列表，不是派遣此舰队；确认必须读取城市防守状态。
@@ -570,13 +673,20 @@ async function cityWar(ctx, options) {
         const result = await dispatch(ctx, 'MoveFleetsToCityRequest', { buildingId: [fleet.buildingId], cityId }, [fleet]);
         if (succeeded(result)) {
           ctx.count(`cityWar.${cityId}`, 1);
+          ctx.record({
+            label: `城战派遣 ${fleet.buildingId}`,
+            status: result.status,
+            reason: `${result.status === 'planned' ? '已生成派遣计划' : '派遣已确认'}：${role === 'goto' ? '前往' : '进攻'} ${cityName(cityId)}`,
+          });
           // 只有移动已确认后才允许提交行军加速，避免把未派出的舰队误扣钻石。
           if (rule.marchSpeedUp) {
             // 预览的派遣只有 planned 状态，不能在日志中冒充已确认的真实行军。
             const movementLogStatus = result.status === 'planned' ? 'planned' : 'success';
-            ctx.record({ label: `行军加速判定 ${fleet.buildingId}`, status: movementLogStatus, reason: result.status === 'planned' ? '已生成派遣计划，舰队规则已开启行军加速' : '派遣已确认，舰队规则已开启行军加速' });
+            ctx.record({ label: `行军加速判定 ${fleet.buildingId}`, status: movementLogStatus, reason: result.status === 'planned' ? '已生成派遣计划，舰队规则已开启行军加速' : `派遣已确认（目标 ${cityName(cityId)}），舰队规则已开启行军加速` });
             const speedResult = await speedUpFleet(ctx, fleet);
             logSpeedUpResult(ctx, `行军加速结果 ${fleet.buildingId}`, speedResult, '已确认行军结束时间更新');
+            // 面板统计的钻石加速次数只记确认成功且非预览的执行。
+            if (speedResult.status === 'success') ctx.count('cityWar.rubyMarchSpeedUp', 1);
           } else {
             ctx.record({ label: `行军加速判定 ${fleet.buildingId}`, status: 'skipped', reason: '派遣已确认，但舰队规则未开启行军加速' });
           }
@@ -657,9 +767,10 @@ async function trade(ctx, options) {
   }
   if (options.upgrade) {
     const cfg = ctx.rows('TradeShipCfg').find(r => r.lv === state.cargo?.cargoLv + 1);
-    // 升级同时消耗贸易金币和配置资产；贸易金币不属于 AllResource，单独核验。
-    if (cfg && state.player?.coins >= cfg.upMoney) await mutate(ctx, 'TradeCargoUpgradeRequest', {}, 'TradeInfoRequest', s => s.cargo?.cargoLv, { expenses: cfg.upCost.length ? [cfg.upCost] : [] });
-    else skip(ctx, '缺少下一贸易船等级或升级消耗');
+    // TradeShipCfg 的 upMoney 是累计利润门槛，服务端用 player.profit 校验；coins 仅用于到港购货，不能据此发送升级请求。
+    if (!cfg) skip(ctx, '缺少下一贸易船等级或升级消耗');
+    else if (state.player?.profit < cfg.upMoney) skip(ctx, '贸易累计利润不足以升级下一等级船只');
+    else await mutate(ctx, 'TradeCargoUpgradeRequest', {}, 'TradeInfoRequest', s => s.cargo?.cargoLv, { expenses: cfg.upCost.length ? [cfg.upCost] : [] });
   }
   state = await ctx.query('TradeInfoRequest');
   if (state.cargo?.moveEndTime > ctx.now() / 1000) {
@@ -672,6 +783,18 @@ async function trade(ctx, options) {
   }
   const cityId = state.cargo?.cityId;
   if (!cityId) return skip(ctx, '贸易船没有当前城市');
+  const cargoGoods = (state.player?.goods ?? []).filter(goods => amount(goods.num) > 0);
+  const notYetDeparted = cargoGoods.length > 0 && cargoGoods.every(goods => goods.cityId !== undefined && amount(goods.cityId) === amount(cityId));
+  if (notYetDeparted) {
+    // 货物购自当前城市表示贸易船尚未离港；服务端拒绝同城卖货，必须保留货物并直接迁往下一座商情城市。
+    const destination = tradeDestination(cityId, cargoGoods, (await ctx.query('TradeGuildRadarRequest')).radar ?? []);
+    if (!destination) return skip(ctx, '联盟商情没有可用迁船城市');
+    await ctx.action('TradeMoveRequest', { cityId, mvToCityId: destination.cityId }, {
+      label: destination.label,
+      accept: value => value.cargo?.cityId === cityId && value.cargo?.moveToCityId === destination.cityId && value.cargo?.moveEndTime > ctx.now() / 1000,
+    });
+    return;
+  }
   let city = await ctx.query('TradeCityRequest', { cityId });
   if (!city.isReport) {
     const shared = await mutate(ctx, 'TradeCityReportRequest', { cityId }, 'TradeCityRequest', value => value.isReport, { stateBody: { cityId } });
@@ -679,19 +802,31 @@ async function trade(ctx, options) {
     city = await ctx.query('TradeCityRequest', { cityId });
   }
   for (const goods of state.player?.goods ?? []) if (goods.num > 0) if (!succeeded(await ctx.action('TradeSellRequest', { cityId, pid: goods.pid, sellNum: goods.num }))) return;
-  // 城市商品库存来自刚查询的 TradeCityResponse；库存为 0 时不发送必然被拒绝的购买请求。
-  const target = city.goods?.filter(g => amount(g.price) > 0 && amount(g.stock) > 0).sort((a, b) => amount(a.price) - amount(b.price))[0];
-  if (!target) return skip(ctx, '贸易城市没有库存商品');
   state = await ctx.query('TradeInfoRequest');
+  const cargoLevel = amount(state.cargo?.cargoLv);
+  // 特产（TradeCityResponse.specGoodsId）的 stock 字段恒为 0 但始终可购买：
+  // 2026-11-10 太阳岛淡水全天 stock=0，游戏客户端仍成功整船买入 6443 件（买价 44）。
+  // 客户端展示的“数量 60000”是供应量，不是 DispTradeGoods.stock；因此特产不参与库存过滤。
+  const specGoodsId = amount(city.specGoodsId);
+  const stockedGoods = city.goods?.filter(goods => amount(goods.price) > 0
+    && (amount(goods.stock) > 0 || amount(goods.goodsId) === specGoodsId)) ?? [];
+  if (!stockedGoods.length) return skip(ctx, '贸易城市没有库存商品');
+  // TradeCityResponse 会同时列出各等级商品；服务端拒绝购买等级高于当前贸易船的商品
+  // （lv3 船买 lv4 珍珠报 stock not enough），低等级商品不受限（lv3 船实测可买 lv1 淡水）。
+  const target = stockedGoods.filter((goods) => {
+    const goodsCfg = ctx.rows('TradeGoodsCfg').find(row => amount(row.goodsId) === amount(goods.goodsId));
+    return amount(goodsCfg?.lv) <= cargoLevel;
+  }).sort((a, b) => amount(a.price) - amount(b.price))[0];
+  if (!target) return skip(ctx, '贸易城市没有当前船等级可购买的商品');
   const remainingCapacity = tradeRemainingCapacity(ctx, state);
   if (remainingCapacity === null) return skip(ctx, '缺少当前贸易船舱容配置');
   const targetCfg = ctx.rows('TradeGoodsCfg').find(row => amount(row.goodsId) === amount(target.goodsId));
   const unitCapacity = Number(targetCfg?.capacity);
   if (!Number.isFinite(unitCapacity) || unitCapacity <= 0) return skip(ctx, '缺少当前商品舱容配置');
-  // 购买量同时受金币、服务器库存和剩余舱容限制，避免提交服务端必然拒绝的数量。
+  // 购买量同时受金币、剩余舱容和（非特产的）服务器库存限制，避免提交服务端必然拒绝的数量。
   const buyNum = Math.min(
     Math.floor(amount(state.player?.coins) / amount(target.price)),
-    amount(target.stock),
+    amount(target.stock) > 0 ? amount(target.stock) : Number.MAX_SAFE_INTEGER,
     Math.floor(remainingCapacity / unitCapacity),
   );
   if (buyNum <= 0) return skip(ctx, '贸易金币不足以购买当前有库存商品');

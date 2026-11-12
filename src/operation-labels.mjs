@@ -16,6 +16,7 @@ export const operationLabels = {
   '/api/fleets/formation': '远征舰队编队',
   '/api/lineups': '查看推荐阵容', '/api/lineups/apply': '应用推荐阵容',
   '/api/world': '查看海面', '/api/world/run': '执行海面经营', '/api/worlds': '查看海域',
+  '/api/map/city-war/settings': '保存城战自动化开关', '/api/map/city-war/dispatch': '城战手动派遣',
   '/api/world/order/submit': '手动提交居民订单',
   '/api/worlds/enter': '进入海域', '/api/trials/challenge': '挑战试炼副本',
   '/api/appointments': '查看英雄职位', '/api/appointments/run': '任命英雄',

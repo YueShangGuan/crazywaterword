@@ -2,23 +2,25 @@ import { readFileSync } from 'node:fs';
 import { automationTasks } from './automation.mjs';
 import { operationLabels } from './operation-labels.mjs';
 import { iconEntry } from './art.mjs';
-import { rail, topbar, journal, dialogs, templates, overviewPage, manualPage, heroesPage, dailiesPage, activitiesPage, accountPage, automationPage, idlePanel, stagePanel } from './ui/dist/console.mjs';
+import { rail, topbar, journal, dialogs, templates, overviewPage, manualPage, heroesPage, dailiesPage, activitiesPage, accountPage, automationPage, idlePanel, stagePanel, mapPage } from './ui/dist/console.mjs';
 import { AUTOMATION_SCRIPT } from './automation-ui.mjs';
 const componentCss = readFileSync(new URL('./ui/dist/theme.css', import.meta.url), 'utf8');
 const consoleCss = readFileSync(new URL('./console.css', import.meta.url), 'utf8');
 const automationCss = readFileSync(new URL('./automation.css', import.meta.url), 'utf8');
+const mapCss = readFileSync(new URL('./map.css', import.meta.url), 'utf8');
 const progressionScript = readFileSync(new URL('./ui/progression.js', import.meta.url), 'utf8');
 const activitiesScript = readFileSync(new URL('./ui/activities.js', import.meta.url), 'utf8');
 const connectionScript = readFileSync(new URL('./ui/connection.js', import.meta.url), 'utf8');
+const mapScript = readFileSync(new URL('./ui/map.js', import.meta.url), 'utf8');
 
 export const PAGE = `<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect fill='%23102d39' width='40' height='40' rx='8'/%3E%3Cpath fill='%23ffbd77' d='m20 3 4 13 13 4-13 4-4 13-4-13-13-4 13-4z'/%3E%3C/svg%3E">
-<title>疯狂水世界</title>
+<title>Crazy Water Word</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<style>@layer theme, legacy, utilities; @layer legacy { ${consoleCss} ${automationCss} } ${componentCss}</style>
+<style>@layer theme, legacy, utilities; @layer legacy { ${consoleCss} ${automationCss} ${mapCss} } ${componentCss}</style>
 </head>
 <body>
 <div class="app">
@@ -32,6 +34,10 @@ ${topbar()}
 
   <section id="tab-idle" class="hidden">
     ${idlePanel(automationTasks.filter(task => task.group !== '限时活动'))}
+  </section>
+
+  <section id="tab-map" class="hidden">
+    ${mapPage()}
   </section>
 
   <section id="tab-manual" class="hidden">
@@ -400,7 +406,18 @@ function renderMessages({ connected = snapshot.connected, errors = messageErrors
     const row = el('div', 'message-row');
     row.appendChild(el('span', 'ts', new Date(message.at).toLocaleTimeString('zh-CN', { hour12: false })));
     row.appendChild(el('span', 'sender', message.sender?.nickname || (message.kind === 'notice' ? '系统' : '未知')));
-    row.appendChild(el('span', 'body', message.text || '（无文本消息）'));
+    const body = el('span', 'body');
+    if (Array.isArray(message.segments) && message.segments.length) {
+      // 系统消息按配置模板的分段上色，与游戏内公告的橙色/红色高亮保持一致。
+      for (const segment of message.segments) {
+        const part = el('span', '', segment.text);
+        if (segment.color) part.style.color = segment.color;
+        body.appendChild(part);
+      }
+    } else {
+      body.textContent = message.text || '（无文本消息）';
+    }
+    row.appendChild(body);
     list.appendChild(row);
   }
   const parts = [connected ? '实时消息已连接' : (messages.length ? '已断开，显示内存消息' : '未连接')];
@@ -429,7 +446,47 @@ function selectMessageTab(kind) {
   messageTab = kind;
   document.querySelectorAll('#message-tabs button').forEach(button => button.classList.toggle('on', button.dataset.messageTab === kind));
   renderMessages();
+  syncChatComposer();
 }
+
+/** 聊天输入只对可发送的频道开放；通知是系统广播、私聊需要目标玩家，暂只读。 */
+function syncChatComposer() {
+  const input = $('chat-input');
+  if (!input) return;
+  const sendable = messageTab === 'world' || messageTab === 'guild';
+  input.disabled = !sendable;
+  const send = $('chat-send');
+  if (send) send.disabled = !sendable;
+  input.placeholder = sendable
+    ? '输入消息，发送到' + (messageTab === 'guild' ? '联盟' : '世界') + '频道'
+    : '该频道为只读视图，暂不支持在此发送';
+}
+
+$('chat-send').onclick = async () => {
+  const input = $('chat-input');
+  const text = String(input?.value ?? '').trim();
+  const hint = $('chat-hint');
+  if (!input || !text || input.disabled) return;
+  const account = current;
+  $('chat-send').disabled = true;
+  if (hint) hint.textContent = '发送中…';
+  try {
+    const result = await call('/api/chat/send', {
+      method: 'POST',
+      body: JSON.stringify({ channel: messageTab === 'guild' ? 2 : 1, text }),
+    });
+    if (account !== current) return;
+    input.value = '';
+    if (hint) hint.textContent = result.confirmed ? '已发送' : '已提交，但未在频道记录中确认';
+    // 自己的发言通常经 SCChatReceive 回推；这里再拉一次快照兜底。
+    await loadMessages();
+  } catch (error) {
+    if (hint) hint.textContent = '发送失败：' + error.message;
+  } finally {
+    $('chat-send').disabled = false;
+    syncChatComposer();
+  }
+};
 
 /** Append a unique real-time message received through the current account's SSE stream. */
 function appendMessageToPage(message) {
@@ -444,6 +501,9 @@ function appendMessageToPage(message) {
 document.querySelectorAll('#message-tabs button').forEach(button => {
   button.onclick = () => selectMessageTab(button.dataset.messageTab);
 });
+// 页面初始标记不带选中态；启动时只同步高亮与输入行，消息渲染等首份快照由 loadMessages 触发。
+document.querySelectorAll('#message-tabs button').forEach(button => button.classList.toggle('on', button.dataset.messageTab === messageTab));
+syncChatComposer();
 function updateLogSummary() {
   const issues = logEl.querySelectorAll('.error,.warn').length;
   const count = onlyIssues ? issues : logEl.childElementCount;
@@ -727,6 +787,39 @@ function renderOverviewRows(id, rows) {
   box.appendChild(list);
 }
 
+/**
+ * Keeps a collapsed production list moving slowly so rows remain discoverable without manual scrolling.
+ * Hovering or focusing the list pauses the movement while CSS expands the viewport to five rows.
+ */
+function bindOverviewProductionAutoScroll(scroll) {
+  // The real console runs in a browser; DOM-only test fixtures may omit animation APIs.
+  if (typeof window.requestAnimationFrame !== 'function') return;
+  let paused = false;
+  let lastStep = 0;
+
+  const pause = () => { paused = true; };
+  const resume = (event) => {
+    // Moving focus between table controls should not restart the scroll until focus leaves the whole list.
+    if (!event.relatedTarget || !scroll.contains(event.relatedTarget)) paused = false;
+  };
+  scroll.addEventListener('mouseenter', pause);
+  scroll.addEventListener('mouseleave', () => { paused = false; });
+  scroll.addEventListener('focusin', pause);
+  scroll.addEventListener('focusout', resume);
+
+  const tick = (time) => {
+    // Rendering a fresh overview detaches the old container; stop its loop on the next frame.
+    if (!scroll.isConnected) return;
+    if (!paused && time - lastStep >= 70 && scroll.scrollHeight > scroll.clientHeight + 1) {
+      const maxScroll = scroll.scrollHeight - scroll.clientHeight;
+      scroll.scrollTop = scroll.scrollTop >= maxScroll ? 0 : scroll.scrollTop + 1;
+      lastStep = time;
+    }
+    window.requestAnimationFrame(tick);
+  };
+  window.requestAnimationFrame(tick);
+}
+
 /** Builds an expandable, readable trade-radar list so city and goods IDs are not the only operator-facing data. */
 function tradeRadarDisclosure(radar) {
   const details = el('details', 'trade-radar-disclosure');
@@ -757,6 +850,9 @@ function renderOverviewTrade(data) {
   const trade = data.trade || {};
   // A non-positive period means the event is closed, so old voyage data must not remain visible after a refresh.
   const tradeOpen = Number(trade.period) > 0;
+  // Hide the whole card so a closed event does not leave an empty panel title in the overview.
+  const panel = card.closest?.('[data-slot=card]');
+  if (panel) panel.hidden = !tradeOpen;
   card.hidden = !tradeOpen;
   if (!tradeOpen) {
     clear(card);
@@ -778,15 +874,100 @@ function renderOverviewTrade(data) {
   ]);
 }
 
-/** Renders the current ten-thousand-ton ship reward availability and the player's occupation rank. */
+/** Renders the world situation card: fleet movement, trade route and occupied resource fields. */
+function renderOverviewWorldMap(data) {
+  const box = clear($('overview-world-map'));
+  const fleets = data.fleets?.list ?? [];
+  const trade = data.trade || {};
+  const cargo = trade.cargo || {};
+  const moving = fleets.filter((fleet) => Number(fleet.state) === 2).length;
+  const rows = [['舰队', fleets.length ? fleets.length + ' 支 · ' + moving + ' 在航' : '暂无舰队']];
+  if (Number(trade.period) > 0 && cargo.cityId) {
+    const remain = Math.max(0, Math.round(Number(cargo.moveEndTime) - Date.now() / 1000));
+    const eta = remain > 0 ? Math.floor(remain / 60) + ' 分钟到港' : '已到港';
+    rows.push(['商船', '城 ' + cargo.cityId + ' → ' + (cargo.moveToCityId || '-') + ' · ' + eta]);
+  }
+  const fields = data.resFields?.fields ?? [];
+  rows.push(['资源田', data.resFields ? fields.length + ' / ' + (data.resFields.maxNum ?? data.resFields.max ?? '?') : '未取得']);
+  renderOverviewRows('overview-world-map', rows);
+  const link = el('button', 'world-map-open', '打开世界地图');
+  link.type = 'button';
+  link.onclick = () => {
+    const target = [...document.querySelectorAll('[data-tab]')].find((node) => node.dataset.tab === 'map');
+    if (target) target.click();
+  };
+  box.appendChild(link);
+}
+
+/** Builds the reward list as icon cells with the quantity centred beneath each icon; only the name stays in the hover tip. */
+function merchantRewardList(rewards) {
+  const list = el('div', 'overview-reward-list');
+  for (const reward of rewards) {
+    const item = el('div', 'overview-reward-item');
+    item.appendChild(iconEl(reward.icon, 30, reward.name || reward.id || '未知奖励'));
+    item.appendChild(el('span', 'overview-reward-num', 'x' + fmt(reward.num ?? 0)));
+    list.appendChild(item);
+  }
+  return list;
+}
+
+/** Renders one row per merchant-ship claim so each haul keeps its own line; the row leads with the claim time. */
+function merchantClaimList(groups) {
+  const list = el('div', 'overview-claim-list');
+  for (const group of groups) {
+    const row = el('div', 'overview-claim-row');
+    if (group.at) row.appendChild(el('span', 'ts dim', new Date(group.at).toTimeString().slice(0, 5)));
+    row.appendChild(merchantRewardList(group.rewards));
+    list.appendChild(row);
+  }
+  return list;
+}
+
+/** Renders the current ten-thousand-ton ship occupation progress, rewards and today's claimed list. */
 function renderOverviewMerchantShip(data) {
   const merchant = data.merchantShip || {};
-  const rewards = (merchant.reward || []).map((asset) => (asset.name || asset.id || '未知奖励') + ' ×' + (asset.num ?? 0));
+  const rewardValue = merchant.uid == null ? null : (merchant.reward?.length ? () => merchantRewardList(merchant.reward) : '暂无奖品');
+  const times = merchant.todayRewardTimes == null || merchant.totalRewardTimes == null
+    ? null : merchant.todayRewardTimes + ' / ' + merchant.totalRewardTimes;
+  // 货轮在场时状态行显示占领总进度，不再显示“已出现”字样。
+  const status = merchant.uid == null ? '当前不存在万吨货轮'
+    : merchant.progress != null ? '占领 ' + merchant.progress + '%' : '已出现';
+  // 今日已领按艘分组换行展示；每行行首是领取时间，行内沿用只显示图标的设计，奖品名和数量收进悬停提示。
+  const claimGroups = (merchant.claimedToday || [])
+    .map(ship => ({ ...ship, rewards: (ship.rewards || []).filter(reward => Number(reward.num) > 0) }))
+    .filter(ship => ship.rewards.length);
+  const claimedValue = claimGroups.length ? () => merchantClaimList(claimGroups) : null;
+  const claimedLabel = '今日已领' + (merchant.claimedShips > 0 ? '（' + merchant.claimedShips + ' 艘）' : '');
   renderOverviewRows('overview-merchant-ship', [
-    ['今日剩余领奖次数', merchant.remainingRewardTimes == null ? null : String(merchant.remainingRewardTimes) + ' 次'],
-    ['状态', merchant.uid == null ? '当前不存在万吨货轮' : '已出现'],
-    ['当前奖品', merchant.uid == null ? null : (rewards.join('、') || '暂无奖品')],
+    ['今日领奖次数', times],
+    ['状态', status],
+    ['当前奖品', rewardValue],
+    [claimedLabel, claimedValue],
     ['当前占有排名', merchant.uid == null ? null : (merchant.rank == null ? '暂未上榜' : '第 ' + merchant.rank + ' 名')],
+  ]);
+}
+
+/**
+ * Renders today's city-war panel: battle-report stats (fetched live) plus local
+ * dispatch / diamond-speedup counters from the automation ledger.
+ */
+function renderOverviewCityWar(stats) {
+  if (!$('overview-city-war')) return;
+  if (!stats) {
+    renderOverviewRows('overview-city-war', [['城战统计', '暂无数据']]);
+    return;
+  }
+  const battles = stats.battles;
+  const battleText = battles ? battles.count + ' 场' : (stats.connected ? '今日暂无战报' : '未连接');
+  const dispatchList = (stats.dispatchByCity || [])
+    .map((row) => row.name + ' ×' + row.count).join('、');
+  renderOverviewRows('overview-city-war', [
+    ['今日参战场次', battleText],
+    ['击杀 / 功勋', battles ? fmt(battles.kills) + ' / ' + fmt(battles.feats) : null],
+    ['今日派遣次数', stats.dispatchCount ? String(stats.dispatchCount) : '0'],
+    ['派遣明细', dispatchList || null],
+    ['钻石行军加速', stats.rubyMarchSpeedUp + ' 次'],
+    ['钻石维修加速', stats.rubyRepairSpeedUp + ' 次'],
   ]);
 }
 
@@ -803,31 +984,45 @@ function renderOverviewProduction(data) {
   const grid = el('div', 'overview-production');
   const farmPane = el('div', 'overview-table');
   farmPane.appendChild(el('h4', null, '农田（' + farms.length + ' 块）'));
-  farmPane.appendChild(table(['农田', '作物', '状态'], farms.map((farm) => {
+  // 建筑回包顺序不稳定；numeric 排序能按农田编号比较，且不会受页面模板字符串的转义影响。
+  const sortedFarms = [...farms].sort((a, b) => String(a.buildingId ?? '').localeCompare(String(b.buildingId ?? ''), 'zh-CN', { numeric: true }));
+  const farmTable = table(['农田', '作物', '状态'], sortedFarms.map((farm) => {
     const ripe = farm.productId && farm.ripeTime && farm.ripeTime <= Date.now() / 1000;
     const status = !farm.productId ? chip('paid', '空闲') : ripe ? chip('done', '已成熟')
       : chip('ready', farm.ripeTime ? '生长至 ' + when(farm.ripeTime * 1000) : '种植中');
-    return [farm.buildingId, farm.productId ? { cells: [{ name: farm.productId, icon: farm.icon }] } : '未种植', status];
-  })));
+    // 作物只留图标，名字收进悬停提示，让面板默认保持紧凑。
+    return [farm.buildingId, farm.productId ? { cells: [{ icon: farm.icon, tip: farm.name || farm.productId }] } : '未种植', status];
+  }));
+  // 默认只展示两行，保留滚动容器让较长的农田列表仍可在卡片内浏览；悬停时由 CSS 展开完整内容。
+  const farmScroll = el('div', 'overview-production-scroll');
+  farmScroll.appendChild(farmTable);
+  farmPane.appendChild(farmScroll);
   grid.appendChild(farmPane);
   const factoryPane = el('div', 'overview-table');
   factoryPane.appendChild(el('h4', null, '工厂（' + factories.length + ' 座）'));
-  factoryPane.appendChild(table(['工厂', '产品', '状态 / 完成时间'], factories.map((factory) => {
+  const factoryTable = table(['工厂', '产品', '状态 / 完成时间'], factories.map((factory) => {
     const queue = factory.queue || [];
-    const products = queue.length ? queue.map((job) => ({ name: job.productId, icon: job.icon }))
-      : factory.autoProductId ? [{ name: '自动：' + factory.autoProductId, icon: factory.autoIcon }] : [];
+    // 队列每项只留图标、名字收进悬停提示，避免长队列把面板撑成竖条。
+    const products = queue.length ? queue.map((job) => ({ icon: job.icon, tip: job.name || job.productId || '' }))
+      : factory.autoProductId ? [{ icon: factory.autoIcon, tip: '自动：' + (factory.autoName || factory.autoProductId) }] : [];
     const finish = queue.filter((job) => job.finishTime).map((job) => when(job.finishTime * 1000)).join('、');
     const status = queue.length ? chip('ready', '生产中 ' + queue.length + ' 项')
       : factory.autoProductId ? chip('ready', '自动生产')
         : factory.finished?.length ? chip('paid', '待领取 ' + factory.finished.length + ' 项') : chip('paid', '空闲');
     return [factory.buildingId, products.length ? { cells: products } : '无排产', finish ? '生产中至 ' + finish : status];
-  })));
+  }));
+  // 工厂队列可能比农田更长；使用同样的容器规则，避免低优先级信息挤占总览首屏空间。
+  const factoryScroll = el('div', 'overview-production-scroll');
+  factoryScroll.appendChild(factoryTable);
+  factoryPane.appendChild(factoryScroll);
   grid.appendChild(factoryPane);
   box.appendChild(grid);
+  bindOverviewProductionAutoScroll(farmScroll);
+  bindOverviewProductionAutoScroll(factoryScroll);
 }
 
 /** Renders basic account data together with cache-backed inventory, commerce and production panels. */
-function renderOverview(data) {
+function renderOverview(data, cityWarStats = null) {
   renderWho(data);
   const res = clear($('res'));
   for (const entry of data.resources || []) res.appendChild(cell(entry.icon, 34, entry.name, fmt(entry.amount), false));
@@ -858,6 +1053,8 @@ function renderOverview(data) {
   if (!heroes.childElementCount) heroes.appendChild(el('span', 'dim', '暂无数据'));
   renderOverviewTrade(data);
   renderOverviewMerchantShip(data);
+  renderOverviewWorldMap(data);
+  renderOverviewCityWar(cityWarStats);
   renderOverviewProduction(data);
 }
 
@@ -879,11 +1076,15 @@ async function refreshOverview() {
   const account = current;
   overviewPending = true;
   try {
-    const data = await call('/api/overview');
+    // 城战统计要连游戏查战报，失败不应拖垮总览；单独降级成 null。
+    const [data, cityWarStats] = await Promise.all([
+      call('/api/overview'),
+      call('/api/city-war/stats').catch(() => null),
+    ]);
     if (account !== current || snapshot.paused || disconnected.has(account)) return;
     snapshot = data.status;
     renderAccountSelect();
-    renderOverview(data);
+    renderOverview(data, cityWarStats);
     overviewAt = Date.now();
     overviewAccount = account;
     overviewFailed = false;
@@ -1430,7 +1631,8 @@ bindGameAction('dailies-run', async () => {
 });
 
 // ---- 表格 ------------------------------------------------------------------
-// 单元格可以是字符串、{num}、{chip}、{cell: 图标项}、{cells: [图标项]}
+// 单元格可以是字符串、{num}、{chip}、{cell: 图标项}、{cells: [图标项]}；
+// 图标项带 tip 时只显示图标，文本收进悬停提示。
 function putCell(td, spec) {
   if (spec == null) return;
   if (spec instanceof Node) {
@@ -1455,8 +1657,8 @@ function putCell(td, spec) {
     if (spec.prefix) td.appendChild(el('span', 'dim', spec.prefix));
     for (const entry of list) {
       const who = el('span', 'who-cell');
-      if (entry?.icon) who.appendChild(iconEl(entry.icon, 26, entry.name));
-      who.appendChild(el('span', null, entry ? entry.name + (entry.num != null ? ' x' + fmt(entry.num) : '') : spec.text));
+      if (entry && (entry.icon || entry.tip != null)) who.appendChild(iconEl(entry.icon, 26, entry.tip ?? entry.name));
+      if (entry?.tip == null) who.appendChild(el('span', null, entry ? entry.name + (entry.num != null ? ' x' + fmt(entry.num) : '') : spec.text));
       td.appendChild(who);
       td.appendChild(document.createTextNode(' '));
     }
@@ -1756,6 +1958,7 @@ ${AUTOMATION_SCRIPT}
 ${activitiesScript}
 ${progressionScript}
 ${connectionScript}
+${mapScript}
 document.querySelectorAll('[data-subtabs]').forEach((group) => {
   const tabs = [...group.querySelectorAll('[role=tab]')];
   const choose = (tab, focus) => {
@@ -1795,6 +1998,7 @@ document.querySelectorAll('#tabs button').forEach((button) => {
       pollCapture();
     }
     if (button.dataset.tab === 'manual') refreshManualWorld();
+    if (button.dataset.tab === 'map') refreshWorldMap();
     if (button.dataset.tab === 'idle') refreshLoop();
     if (button.dataset.tab === 'activities') refreshActivities();
     if (button.dataset.tab === 'stages') refreshStages();

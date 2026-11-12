@@ -1,6 +1,6 @@
 import * as React from "react"
 import { renderToStaticMarkup } from "react-dom/server"
-import { Compass, LayoutDashboard, Timer, Hand, Flag, Swords, CalendarDays, ContactRound, Gift, ScrollText, SlidersHorizontal, X } from "lucide-react"
+import { Compass, LayoutDashboard, Timer, Hand, Flag, Swords, CalendarDays, ContactRound, Gift, ScrollText, SlidersHorizontal, X, Map as MapIcon } from "lucide-react"
 import { Button } from "./button"
 import { Badge } from "./badge"
 import { Card, CardContent, CardHeader, CardTitle } from "./card"
@@ -10,7 +10,7 @@ import { Input } from "./input"
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "./table"
 
 const navGroups = [
-  ["概览", [["overview", "总览", "icon_btn_bottom_home", LayoutDashboard], ["idle", "挂机", "icon_btn_offline", Timer]]],
+  ["概览", [["overview", "总览", "icon_btn_bottom_home", LayoutDashboard], ["map", "世界地图", "icon_world", MapIcon], ["idle", "挂机", "icon_btn_offline", Timer]]],
   // 高级自动化有独立的账号设置与执行记录，不能和通用挂机开关混在同一个入口。
   ["操作", [["manual", "单次操作", "icon_btn_bottom_bag", Hand], ["stages", "挑战", "icon_btn_bottom_battle", Flag],
     ["heroes", "英雄", "icon_btn_bottom_hero", Swords], ["dailies", "日常", "icon_btn_star", CalendarDays],
@@ -34,7 +34,7 @@ function GameIcon({ sprite, size, children }: { sprite: Sprite | null; size: num
 export function rail(icon: (name: string) => Sprite | null) {
   return renderToStaticMarkup(<aside className="rail">
     <div className="mast"><span className="mast-icon"><GameIcon sprite={icon("icon_sail")} size={26}><Compass className="bearing" aria-hidden="true" /></GameIcon></span>
-      <div><h1>疯狂水世界</h1><span className="brand-label">航行控制台</span></div></div>
+      <div><h1>Crazy Water Word</h1><span className="brand-label">航行控制台</span></div></div>
     <nav id="tabs" aria-label="功能导航">{navGroups.map(([group, items]) => <div className="nav-group" key={group}>
       <span className="nav-label">{group}</span>
       {items.map(([key, title, name, Icon]) =>

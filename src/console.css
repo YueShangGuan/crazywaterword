@@ -16,7 +16,9 @@ h1,h2,h3,p { margin:0 }
 .mast { display:flex; align-items:center; gap:10px; padding-inline:4px }
 .mast-icon { display:grid; place-items:center; flex:none; width:34px; height:34px; border-radius:9px; background:#1d4a57; color:#ffe0a7 }
 .bearing { width:22px; height:22px }
-h1 { font-size:16px; letter-spacing:.02em; line-height:1.25; color:#fff }
+h1 { font-size:16px; letter-spacing:.02em; line-height:1.2; color:#fff }
+/* 英文站名在 188px 侧栏里会折成两行，和下方副标题留出间距 */
+.mast h1 { margin-bottom:3px }
 .brand-label { display:block; font-size:11px; line-height:1.3; color:#9dbcbd }
 #tabs { display:grid; gap:14px }
 .nav-group { display:grid; gap:2px }
@@ -153,7 +155,8 @@ section h2:first-child { border-top:0; margin-top:0; padding-top:0 }
 .who .k,.kv .k,.dim,.id { color:var(--muted); font-size:12px }
 .who .v { font-size:15px; font-weight:650; line-height:1.4; overflow-wrap:anywhere }
 .icons { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(100%,125px),1fr)); gap:7px; align-items:start }
-.cell,.who-cell { display:flex; align-items:center; gap:7px }
+.cell { display:flex; align-items:center; gap:7px }
+.who-cell { display:inline-flex; align-items:center; gap:7px; vertical-align:middle }
 .cell { padding:6px; border:1px solid #d6e2de; border-radius:7px }
 .cell .txt { display:grid; font-size:12px }
 .icons > .cell { min-width:0; min-height:52px; box-sizing:border-box }
@@ -173,6 +176,18 @@ section h2:first-child { border-top:0; margin-top:0; padding-top:0 }
 .overview-production { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr)); gap:14px }
 .overview-table { min-width:0; overflow-x:auto }
 .overview-table h4 { margin:0; font-size:13px; color:var(--muted) }
+/* 总览中的农田与工厂是低优先级长列表：默认约两行，悬停/聚焦时平滑展开到约五行。 */
+.overview-production-scroll { max-height:7.4rem; overflow:auto; scrollbar-gutter:stable; transition:max-height 420ms ease; }
+.overview-production-scroll:hover, .overview-production-scroll:focus-within { max-height:15rem; }
+.overview-production-scroll table { margin-top:0; }
+.overview-production-scroll thead { position:sticky; top:0; z-index:1; background:var(--color-card, #fff); }
+.overview-reward-list { display:flex; flex-wrap:wrap; gap:6px }
+.overview-reward-list .cell { min-width:0 }
+.overview-reward-item { display:flex; flex-direction:column; align-items:center; gap:1px }
+.overview-reward-num { font-size:11px; color:var(--muted); line-height:1.2; font-variant-numeric:tabular-nums }
+.overview-claim-list { display:grid; gap:5px }
+.overview-claim-row { display:flex; align-items:center; gap:8px; min-width:0 }
+.overview-claim-row > .ts { flex:none }
 .order-state { display:grid; justify-items:start; gap:4px; max-width:40ch; white-space:normal }
 .qty,.ts,#log-count,.num { font-variant-numeric:tabular-nums }
 .qty { color:var(--muted) }

@@ -49,6 +49,10 @@ export function overviewPage() {
       </Panel>
       <Panel title="万吨货轮"><div id="overview-merchant-ship"><span className="dim">连接后显示</span></div>
       </Panel>
+      <Panel title="世界态势"><div id="overview-world-map"><span className="dim">连接后显示</span></div>
+      </Panel>
+      <Panel title="城战"><div id="overview-city-war"><span className="dim">城战时段（20:00–21:00）或有派遣记录后显示</span></div>
+      </Panel>
       <Panel title="农田与工厂生产"><div id="overview-production"><span className="dim">连接后显示</span></div>
       </Panel>
     </div>
@@ -203,14 +207,6 @@ export function accountPage() {
         <p id="batch-redeem-summary" className="dim">尚未开始</p>
         <div id="batch-redeem-results" className="grid gap-2" />
       </div>
-    </Panel>
-    <Panel title="游戏消息">
-      <div id="message-tabs" className="bar" role="tablist" aria-label="游戏消息分类">
-        <Button data-message-tab="world" variant="outline" size="sm">世界</Button><Button data-message-tab="notice" variant="outline" size="sm">通知</Button>
-        <Button data-message-tab="private" variant="outline" size="sm">私聊</Button><Button data-message-tab="guild" variant="outline" size="sm">联盟</Button>
-      </div>
-      <p id="messages-status" className="dim" role="status" />
-      <div id="message-list" className="message-list" />
     </Panel>
     </> },
     { id: "worlds", title: "区服", content: <>
