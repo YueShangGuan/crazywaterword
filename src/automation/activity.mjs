@@ -4,6 +4,7 @@ import { amount, idString } from './context.mjs';
 import { costs, mutate, repeat, skip, succeeded } from './common.mjs';
 import { activities } from './welfare.mjs';
 import { claimPass } from './battle.mjs';
+import { snowball } from './snowball.mjs';
 
 /** 活动天数从上海日零点计算，跨午夜不依赖电脑时区。 */
 export function openDays(openTime, now) {
@@ -61,6 +62,7 @@ export async function activity(ctx, options) {
   } else if (['midAutumn', 'blindBox', 'catcher', 'workshop', 'blessing'].some(k => options[k].enabled)) skip(ctx, '中秋活动未开放或已经结束');
   if (options.weekOrder.enabled) await weekOrder(ctx, options.weekOrder);
   if (options.weekLottery.enabled) await lottery(ctx, options.weekLottery);
+  if (options.snowball.enabled) await snowball(ctx, options.snowball);
 }
 
 /** 校验本局答案、四张显化状态和耐心；缺失状态不能作为未显化或正确答案处理。 */
