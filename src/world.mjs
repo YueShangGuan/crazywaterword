@@ -8,7 +8,7 @@
 //   可以离线复算（WaterModel._refreshPopulation 同款规则）。
 // - 工厂队列上限 = BuildingProduceParamCfg 制造位上限（6），成品存量上限 = GameParamCfg 产品存量初始上限（50）。
 // - 加速只花「加速器」：SpeedUpCostParam{type:2, useNum}（SpeedUpCost.SPEED_UP_ITEM=2）。
-//   type=1 是钻石、type=3 是广告，本模块永不使用。
+//   type=1 是钻石、type=3 是广告；本模块的普通计划不使用它们，免广告加速由 automation/base.mjs 单独处理。
 //
 // 交互原则与 tasks.mjs 一致：先只读探测，再算出计划，显式授权后才逐条执行；
 // 没有配套 Response 的写请求走 client.sendWatch()。
@@ -300,6 +300,8 @@ export async function surveyWorld(client, protocol, { config = null, player = nu
     autoProduceEndTime: water.autoProduceEndTime ?? 0,
     autoProduceForever: water.autoProduceForever === true,
     floaters: water.floater ?? [],
+    // 广告权益次数与 OnWater 同包返回；自动化用它同步当天已用次数，不再额外查询。
+    adv: water.adv ?? [],
     floaterCount: (water.floater ?? []).length,
     population,
     futurePopulation,
@@ -1089,7 +1091,16 @@ function parseMap(raw, file, scenarioId) {
     scenarioId: scenarioId > 0 ? scenarioId : 1,
     width: mapInfo?.width ?? 0,
     height: mapInfo?.height ?? 0,
+    tileWidth: mapInfo?.tileWidth ?? 0,
+    tileHeight: mapInfo?.tileHeight ?? 0,
     cityInfo,
+    // 世界地图需要原始格子和固定点位；旧调用方只用 width/height/cityInfo/fieldAt，新增字段不影响它们。
+    mapData,
+    wreckPos: Number.isSafeInteger(data.wreckPos) ? data.wreckPos : null,
+    bosses: Array.isArray(data.bossData) ? data.bossData : [],
+    treasures: Array.isArray(data.treasureData) ? data.treasureData : [],
+    limitedBoss: Array.isArray(data.limitedBossData) ? data.limitedBossData : [],
+    chipMines: Array.isArray(data.chipData) ? data.chipData : [],
     fieldCount: mapData.reduce((n, v) => n + (Math.floor(v / 10000) % 10 ? 1 : 0), 0),
     fieldAt(gridIdx) {
       const v = mapData[gridIdx];

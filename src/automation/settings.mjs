@@ -37,7 +37,7 @@ export function defaultSettings() {
     notifications: { wecom: { enabled: false, webhook: '' } },
     spending: { enabled: false, dailyLimit: 0, minRubyStock: 0, clickGoldTimes: 0, dailiesDiscountTickets2x: false, modules: Object.fromEntries([...MODULES, 'dailies'].map(id => [id, 0])) },
     modules: {
-      island: { enabled: false, collect: true, finish: true, build: false, upgrade: false, speedUp: false, disabledBuildings: [], factory: {
+      island: { enabled: false, collect: true, finish: true, build: false, upgrade: false, speedUp: false, adSpeedUp: false, disabledBuildings: [], factory: {
         gain: true, autoProduce: false, products: {}, disabledFactories: [], priorityProduce: false, mondayGuildPriority: false, proposedPriority: ['resident', 'cargo', 'guild'], speedUpForDemand: false,
         // 分档只使用单件实际耗时；库存目标是订单/配方消耗之外的余量，不默认补满仓。
         fastTimeSecs: 300, shortTimeSecs: 600, fastStockLow: 5, fastStockHigh: 10, shortStockLow: 3, shortStockHigh: 5,
@@ -57,7 +57,7 @@ export function defaultSettings() {
       world: { enabled: false, report: false, fleet: { repair: false, repairThresholds: [], repairSpeedUp: false, repairSpeedUpMinRemainSecs: 20 }, pirate: { attack: false, sweep: false, attackTypes: [], sweepTypes: [], dailySweepLimit: 10, attackTime: { start: '00:00', end: '00:00' } }, radar: { enabled: false, claim: true, kinds: [], fixed: false }, resField: { enabled: false, factory: 7, oasis: 3, tank: 0 }, chipMine: { enabled: false, hours: [], dailyCap: 0, fleets: [] }, treasureLoot: { enabled: false, hours: [], fleets: [] }, merchantShip: { enabled: false, retryMinutes: 0, rewardMaterials: [], fleets: [] }, cityWar: { enabled: false, online: false, reattack: false, fleets: [] }, worldBoss: { enabled: false, attackTimes: 1 }, limitedBoss: { enabled: false, challengeReward: false, fleets: [] }, trade: { enabled: false, claim: false, upgrade: false, speedUp: false, speedUpDailyLimit: 0, profitLimit: 0 } },
       guild: { enabled: false, packs: { guild: false, title: false }, order: { enabled: 'off', dailyLimit: 20, cityIds: [] }, aid: { receive: false, ask: false, askItems: [], help: false, helpItems: [], helpNicknameKeywords: [], helpMinStock: 30, helpDailyLimit: 50 }, tech: { enabled: false, items: [] }, ship: { captain: false, crew: false, qualities: [], rewardItems: [], minWaterCoin: 0, forbiddenMaterials: [], relaxFilters: false } },
       welfare: { enabled: false, daily: true, weeklyLottery: false, uniqueLottery: false, dailyTask: true, growth: true, events: true, email: true },
-      activity: { enabled: false, edict: { enabled: false }, midAutumn: { enabled: false, signIn: false, freeGift: false, activeReward: false }, blindBox: { enabled: false, freeGift: false, scoreReward: false, play: false, keepCards: 0 }, catcher: { enabled: false, play: false, repeat: false, sweep: false, passReward: false, keepHooks: 0, maxStage: 30, sweepStage: 0 }, workshop: { enabled: false, produce: false, gain: false, speedUp: false, keepStock: 10, keepClaws: 0, speedUpDailyLimit: 0 }, blessing: { enabled: false, boost: false, skinId: 0, boostTimes: 1, claimReward: false, keepKnots: 0 }, weekOrder: { enabled: false, buyMissingMaterials: false, minRubyStock: 0 }, weekLottery: { enabled: false, prize: false, maxDraws: 1 } },
+      activity: { enabled: false, edict: { enabled: false }, midAutumn: { enabled: false, signIn: false, freeGift: false, activeReward: false }, blindBox: { enabled: false, freeGift: false, scoreReward: false, play: false, keepCards: 0 }, catcher: { enabled: false, play: false, repeat: false, sweep: false, passReward: false, keepHooks: 0, maxStage: 30, sweepStage: 0 }, workshop: { enabled: false, produce: false, gain: false, speedUp: false, keepStock: 10, keepClaws: 0, speedUpDailyLimit: 0 }, blessing: { enabled: false, boost: false, skinId: 0, boostTimes: 1, claimReward: false, keepKnots: 0 }, weekOrder: { enabled: false, buyMissingMaterials: false, minRubyStock: 0 }, weekLottery: { enabled: false, prize: false, maxDraws: 1 }, snowball: { enabled: false, minEnergy: 100, autoStart: false } },
       snap: { enabled: false, pve: false, pvpTrustee: false, giveUpPve: false, cancelMatchmaking: false, freeMatch: false, diamondMatch: false, diamondMatchDailyLimit: 0, matchWindows: [], passReward: false, maxMatches: 10 },
     },
   };
@@ -217,6 +217,7 @@ export function validateSettings(value, { pirateDailyLimit = null } = {}) {
   if (pirateDailyLimit !== null && pirate.dailySweepLimit > pirateDailyLimit)
     throw new Error(`每日扫荡次数不能超过当前角色上限 ${pirateDailyLimit} 次`);
   if (![1, 2].includes(result.modules.choiceEvent.optionIndex)) throw new Error('选择事件选项必须为 1 或 2');
+  if (result.modules.activity.snowball.minEnergy < 1) throw new Error('走江踏浪启动能量必须至少为 1');
   if (result.modules.battle.expedition.challengeMinTeamHpPct > 100) throw new Error('远征最低血量不能超过 100%');
   if (result.modules.island.factory.proposedPriority.some(id => !['resident', 'cargo', 'guild'].includes(id))) throw new Error('需求来源无效');
   const factory = result.modules.island.factory;

@@ -14,7 +14,7 @@ export async function activities(ctx) {
 /** 福利领取使用服务端已达标状态；周抽奖和专属抽奖均独立于日奖开关。 */
 export async function welfare(ctx, options) {
   if (options.growth) await repeat(ctx, 50, async () => {
-    const survey = await surveyTasks(ctx.client, ctx.protocol, { config: ctx.config });
+    const survey = await surveyTasks(ctx.client, ctx.protocol, { config: ctx.config, player: ctx.player });
     const plan = survey.plan.filter(s => s.kind !== 'orderDaily');
     for (const step of plan) {
       const query = step.kind === 'achievement' ? 'AchievementInfoRequest' : 'MainTaskInfoRequest';

@@ -17,8 +17,17 @@ async function readRecruit(client) {
   return reply?.antique;
 }
 
-// As in RecruitUtil.seasonTasks, reuse the latest configured season at or below the player's.
-function rewardTiers(config, player) {
+/**
+ * 解析角色当前世界适用的藏品累计招募奖励档位。
+ *
+ * 游戏服务器按角色所在世界划分赛季；手工可编辑的高级自动化赛季不能替代该身份信息，
+ * 否则会把已过期赛季的较低门槛误当成当前可领取档位。
+ *
+ * @param {object} config 当前游戏配置表。
+ * @param {object} player 当前角色身份。
+ * @returns {Array<object>} 当前世界对应赛季（或最近已配置赛季）的奖励档位，按 ID 升序排列。
+ */
+export function antiqueRecruitRewardTiers(config, player) {
   const world = normalize(player?.worldId);
   if (!Number.isSafeInteger(world) || world <= 0) return [];
   const season = Math.floor(world / 1e6) % 1000;
@@ -56,7 +65,7 @@ async function freeDraw(client, state, config, enabled, report, scheduler) {
 }
 
 async function claimRewards(client, state, config, player, enabled, report, scheduler) {
-  const tiers = rewardTiers(config, player);
+  const tiers = antiqueRecruitRewardTiers(config, player);
   if (!tiers.length) { report(skip(rewardKey, '未找到当前赛季的招募奖励配置')); return; }
   let task = state?.task;
   let claimed = false;

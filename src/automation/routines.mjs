@@ -1,8 +1,7 @@
 import { amount, idString } from './context.mjs';
 import { businessDate } from './settings.mjs';
 import { serverTime } from './schedule.mjs';
-import { makeTypeResolver } from '../world.mjs';
-import { skip } from './common.mjs';
+import { petBreedingRoom, skip } from './common.mjs';
 
 /** 当前连接校时后的业务日，用于区分每日权益和防重复记录。 */
 function date(ctx) { return businessDate(serverTime(ctx)); }
@@ -145,9 +144,7 @@ export async function claimBattlePass(ctx) {
 
 /** 仅读取真实培育室队列；普通建筑默认 petBreed 字段不能用于判断容量。 */
 function breedRoom(ctx, water) {
-  const types = new Set(ctx.rows('BuildingCfg').filter(row => row.name === '宠物').map(row => row.buildingType));
-  const resolve = makeTypeResolver(ctx.config);
-  return water.building?.find(building => types.has(resolve(building.buildingId)) && building.petBreed);
+  return petBreedingRoom(ctx, water);
 }
 
 /** 队列槽位可能重用，必须联合服务端起止时间识别同一培育任务。 */

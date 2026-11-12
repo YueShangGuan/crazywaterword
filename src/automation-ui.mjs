@@ -20,7 +20,7 @@ const executionModes = {
   'modules.equip.enabled': ['friday', '周五开启']
 };
 const automationLabels = {
-  season:'当前赛季',vipFreeAd:'VIP免广告',spending:'钻石消费',enabled:'开启',dailyLimit:'每日总额度',minRubyStock:'最低钻石保留量',clickGoldTimes:'钻石点金次数',modules:'各模块每日额度',
+  season:'当前赛季',vipFreeAd:'VIP免广告',spending:'钻石消费',enabled:'开启',dailyLimit:'每日总额度',minRubyStock:'最低钻石保留量',clickGoldTimes:'钻石点金次数',modules:'各模块每日额度',adSpeedUp:'免广告加速（建造/生产）',
   collect:'领取产物',finish:'自动竣工',build:'自动建造',upgrade:'自动升级',speedUp:'使用加速道具',disabledBuildings:'禁用建筑',factory:'工厂',gain:'领取成品',autoProduce:'自动生产',products:'工厂产品（建筑类型 → 产品）',disabledFactories:'禁用工厂',priorityProduce:'需求优先生产',proposedPriority:'需求顺序',speedUpForDemand:'为需求加速',
   harvest:'收割',plant:'种植',cropPriorities:'作物优先级（数字越小越优先）',cropKeepStock:'作物库存水位',priorityPlant:'订单需求优先',seedOnDemand:'缺种子时安排生产',speedUpMaxActions:'每轮最多加速次数',orderReward:'领取订单档位奖',blockedMaterials:'禁止交单材料',skipCropOrders:'跳过作物订单',minExp:'最低经验奖励',minGold:'最低金币奖励',dailyCap:'每日次数上限（0 不设本地上限）',fill:'装填货船',reward:'领取奖励',optionIndex:'选择选项（1 或 2）',
   fishing:'钓鱼',maxFishCasts:'每轮最多钓鱼次数',floater:'拾取浮漂',floaterCollectWhenFull:'满仓仍收取浮漂',openChests:'使用钥匙开箱',maxChests:'每轮最多开箱次数',diving:'潜水',divingEach:'每种潜水材料数量',salvage:'拾荒',salvageEach:'每种拾荒材料数量',enhance:'采集强化',enhanceTargetLevel:'强化目标等级',claim:'领取',levelUp:'升级',levelReward:'领取等级奖励',claimAfterHours:'累计挂机几小时后领取',
@@ -29,7 +29,7 @@ const automationLabels = {
   maxActions:'每轮最多挑战次数',stage:'主线',samePowerRetryCount:'同战力战败重试次数',claimReward:'领取章节奖励',arena:'竞技场',sweep:'扫荡',challenge:'挑战',trial:'试炼',heroExp:'英雄经验试炼',forge:'强化石试炼',petExp:'宠物经验试炼',rubySweep:'允许钻石扫荡',league:'联盟赛',reservePoints:'保留挑战券',hangupReward:'领取挂机奖励',danReward:'领取段位奖励',passReward:'领取战令奖励',expedition:'远征',finalReward:'领取最终奖励',freePass:'领取远征战令',challengeStopOnHeroDeath:'英雄阵亡时停止',challengeMinTeamHpPct:'最低队伍血量百分比',dailySweepLimit:'每日扫荡次数（目标）',times:'扫荡次数',
 report:'领取战报',fleet:'舰队',repair:'维修',repairThresholds:'各舰队维修耐久阈值（按列表顺序）',repairSpeedUp:'加速维修（可使用钻石）',repairSpeedUpMinRemainSecs:'维修加速剩余秒数门槛',pirate:'海盗',attack:'挑战',attackTypes:'挑战海盗类型',sweepTypes:'扫荡海盗类型',attackTime:'执行时段',start:'开始时间',end:'结束时间',radar:'雷达',kinds:'雷达事件类型',fixed:'固定事件',resField:'已有资源田配比',oasis:'种子田权重',tank:'汽油田权重',chipMine:'芯片矿',hours:'执行小时（空为全天）',fleets:'舰队规则',treasureLoot:'宝藏掠夺',merchantShip:'搁浅商船（万吨货轮）',retryMinutes:'重新夺取间隔（分钟，0 不重试）',rewardMaterials:'奖励材料筛选',cityWar:'城战',online:'领取在线奖',reattack:'允许重复进攻',worldBoss:'世界 Boss',attackTimes:'每轮挑战次数',limitedBoss:'限时 Boss',challenge:'挑战',challengeReward:'领取挑战奖',trade:'海商王',profitLimit:'航行加速最低累计利润',speedUpDailyLimit:'每日航行加速次数',
   packs:'联盟礼包',guild:'联盟礼包',title:'职级奖励',order:'募兵订单',cityIds:'城市 ID',aid:'互助',receive:'领取帮助',ask:'发起求助',askItems:'求助物品',help:'帮助盟友',helpItems:'帮助物品',helpNicknameKeywords:'盟友昵称关键词',helpMinStock:'帮助后库存保留门槛',helpDailyLimit:'每日帮助次数',tech:'联盟科技',items:'科技 ID',ship:'联盟商船',captain:'应聘船长',crew:'补货登船',qualities:'船只品质',rewardItems:'期望奖励物品',minWaterCoin:'最低水姆币奖励',forbiddenMaterials:'禁用补货材料',relaxFilters:'允许放宽品质与奖励筛选',
-  daily:'免费日奖与已有卡权益',weeklyLottery:'周抽奖（领取免费礼包）',uniqueLottery:'每周专属抽奖（领取免费次数）',dailyTask:'任务与活跃度奖励',growth:'成长、支线与成就',events:'成长活动奖励',email:'邮件奖励',midAutumn:'中秋日奖',signIn:'签到',freeGift:'免费礼包',activeReward:'活跃奖励',blindBox:'盲盒',scoreReward:'积分奖',play:'开始新局',keepCards:'保留盲盒卡',catcher:'海底捞月',repeat:'重复挑战最高开放关卡',keepHooks:'保留捞月钩',maxStage:'最高关卡',sweepStage:'扫荡关卡',workshop:'活动工坊',produce:'生产',keepStock:'备货目标',keepClaws:'保留爪钩',blessing:'祝福',boost:'消耗福运结祝福',skinId:'祝福皮肤 ID',boostTimes:'每次祝福数量',keepKnots:'保留福运结',weekOrder:'不差钱商人',buyMissingMaterials:'允许钻石补齐整单缺料',weekLottery:'幸运转盘',prize:'使用现有转盘币',pve:'水世界牌 PVE',freeMatch:'免费匹配',diamondMatch:'允许钻石匹配',diamondMatchDailyLimit:'每日钻石匹配次数上限（0 禁止）',matchWindows:'匹配时段',dailies:'原有付费日常',dailiesDiscountTickets2x:'2折英雄藏品券'
+  daily:'免费日奖与已有卡权益',weeklyLottery:'周抽奖（领取免费礼包）',uniqueLottery:'每周专属抽奖（领取免费次数）',dailyTask:'任务与活跃度奖励',growth:'成长、支线与成就',events:'成长活动奖励',email:'邮件奖励',midAutumn:'中秋日奖',signIn:'签到',freeGift:'免费礼包',activeReward:'活跃奖励',blindBox:'盲盒',scoreReward:'积分奖',play:'开始新局',keepCards:'保留盲盒卡',catcher:'海底捞月',repeat:'重复挑战最高开放关卡',keepHooks:'保留捞月钩',maxStage:'最高关卡',sweepStage:'扫荡关卡',workshop:'活动工坊',produce:'生产',keepStock:'备货目标',keepClaws:'保留爪钩',blessing:'祝福',boost:'消耗福运结祝福',skinId:'祝福皮肤 ID',boostTimes:'每次祝福数量',keepKnots:'保留福运结',weekOrder:'不差钱商人',buyMissingMaterials:'允许钻石补齐整单缺料',weekLottery:'幸运转盘',prize:'使用现有转盘币',snowball:'走江踏浪',minEnergy:'启动所需能量（瓶）',autoStart:'有能量就连续开局',pve:'水世界牌 PVE',freeMatch:'免费匹配',diamondMatch:'允许钻石匹配',diamondMatchDailyLimit:'每日钻石匹配次数上限（0 禁止）',matchWindows:'匹配时段',dailies:'原有付费日常',dailiesDiscountTickets2x:'2折英雄藏品券'
 };
 // 酆都玩法沿用活动模块，只增加本期参与开关。
 automationLabels.edict = '酆都捞尸人';
@@ -43,7 +43,7 @@ const automationSpendingScenes = {
   cargo:'当前没有主动钻石消费功能；装填货船使用现有材料，不购买缺料。',
   choiceEvent:'当前没有主动钻石购买或加速功能；本模块只提交已设置的事件选项。',
   gather:'当前没有主动钻石消费功能；开箱使用现有钥匙，采集强化使用配置材料，不购买钥匙或采集材料。',
-  afk:'钻石点金。按顶部“钻石点金次数”补足当天付费目标；本模块额度为 0 时不执行钻石点金，免费点金不占此额度。',
+  afk:'钻石点金与免费点金。先用完当天免费次数，再按顶部“钻石点金次数”补足付费目标；本模块额度为 0 时不执行钻石点金，免费点金不占此额度。',
   hero:'当前没有主动钻石消费功能；培养使用现有经验、碎片和材料，招募使用免费次数或现有券。折扣商店购买招募券归属“原有付费日常”。',
   antique:'当前没有主动钻石消费功能；激活、升星和套装升级使用现有材料，招募使用免费次数或现有券。购买藏品券归属“原有付费日常”。',
   pet:'当前没有主动钻石消费功能；培育、喂养、升级和进阶使用现有材料，不购买缺料。',
@@ -66,13 +66,17 @@ Object.assign(automationLabels,{fastTimeSecs:'第一档耗时上限（秒）',sh
 // 文案按完整设置路径区分同名字段，避免把“余额保留量”误读成“每日额度”。
 const automationSettingCopy = {
   'modules.activity.edict.enabled': { note:'入场券足够时参与一局，每张符文先显化一次，再竞猜并结算。每次执行最多一局，已有局优先续接。' },
-  season: { note:'赛季 0 不执行依赖赛季配置的玩法；填写当前赛季后，赛季城市和科技等候选项才会刷新。' },
-  vipFreeAd: { note:'仅当前连接角色等级达到 10 级且 VIP 达到 3 级时显示。开启后，在挑战模块已启用、对应试炼已通关且广告额度未用尽时，自动领取英雄经验、强化石、宠物经验试炼的每日免广告额外扫荡奖励，无需开启钻石扫荡。工厂生产广告加速、建筑升级广告加速、英雄广告招募、藏品广告招募和广告商店奖励暂未接入此开关。' },
+  'modules.activity.snowball.enabled': { note:'开启后按当前能量打一局走江踏浪；优先铺满五列，再合成女伙伴，符文只在失守或高血量列时使用。' },
+  'modules.activity.snowball.minEnergy': { title:'启动所需能量（瓶）', note:'未开启“有能量就连续开局”时，开局前至少需要这么多“能量饮料”；低于该值不会开新局，当前已开始的局会打完。默认 100 瓶。' },
+  'modules.activity.snowball.autoStart': { note:'开启后，一局结束只要还剩能量就继续开下一局，此时不再要求 100 瓶启动门槛；默认关闭。' },
+  season: { note:'赛季 0 不执行依赖赛季配置的玩法；这里填地图场景编号（1 世界地图 / 2 黑潮侵袭），填写后赛季城市和科技等候选项才会刷新。居民订单档位奖励与此设置无关，按 worldId 推导的档位表领取。' },
+  vipFreeAd: { note:'仅当前连接角色等级达到 10 级且 VIP 达到 3 级时显示。开启后，在挑战模块已启用、对应试炼已通关且广告额度未用尽时，自动领取英雄经验、强化石、宠物经验试炼的每日免广告额外扫荡奖励，无需开启钻石扫荡；在挂机模块已启用且当日广告额度未用尽时，自动领取挂机收益的每日免广告额外奖励（每日 1 次，无需等待挂机时长）。工厂生产与建筑升级广告加速由“建筑与工厂”中的独立开关控制；英雄广告招募、藏品广告招募和广告商店奖励暂未接入此开关。' },
+  'modules.island.adSpeedUp': { title:'使用免广告加速（建造/生产）', note:'仅当前连接角色 VIP 达到 3 级时生效。只对剩余时间严格超过 30 分钟的建造或生产使用：29 分钟跳过，31 分钟执行；每次先登记广告权益，再按抓包确认的 type=3、useNum=0 加速，不消耗加速器或钻石。建筑和工厂分别按 AdvEffectCfg 的每日额度（当前各 3 次）执行，本地按北京时间记录当天已用次数；用完后不再查询广告次数，跨天后自动恢复。' },
   spending: { note:'这是所有钻石操作的共同护栏，不会自行触发消费；每一次消费都要同时通过总开关、总额度、模块额度和余额保留量。' },
   'spending.enabled': { note:'只允许已经在玩法中勾选的钻石操作；关闭时任何模块都不会花钻石。' },
   'spending.dailyLimit': { note:'同一账号所有角色每日合计的消费上限，已确认消费和结果未确认的预留都会占用；0 禁止全部钻石消费。' },
   'spending.minRubyStock': { note:'当前角色游戏内钻石余额的下限，不是每日可用额度。每次消费后（含未确认预留）余额仍须不少于此值；10000 会按原值保存。' },
-  'spending.clickGoldTimes': { note:'每日付费点金总目标；0 关闭。免费点金不计入，挂机收益模块开启后才会执行，且仍受总额度、挂机额度和最低钻石保留量限制。' },
+  'spending.clickGoldTimes': { note:'每日付费点金总目标；0 关闭。免费次数不计入该目标，但会先于付费点金自动用完；挂机收益模块开启后才会执行，且仍受总额度、挂机额度和最低钻石保留量限制。' },
   'spending.modules': { note:'各玩法每日的独立额度，同一账号的所有角色合计；它还必须不超过“每日总额度”，设置更高不会增加总额度。' },
   'spending.dailiesDiscountTickets2x': { note:'强烈建议开启。发现2折或更低折扣的抽卡券、藏品券时必定购买，并使用免费刷新继续查找另一类；此开关会突破钻石购买上限，但仍要求实际钻石余额足够。' },
   'modules.world.fleet.repairSpeedUp': { note:'仅对城战规则中已启用的舰队生效，优先使用现有加速器；无道具或道具被明确拒绝、业务失败时改用钻石。剩余分钟数向上取整，每分钟 10 钻：60 秒 10 钻，61 秒 20 钻；提交前按完整费用检查钻石总额度、模块额度和余额保留量。' },
@@ -97,7 +101,7 @@ const automationSettingCopy = {
 // 每个折叠组先交代实际处理的玩法和资源边界，字段说明再补充该项如何改变本组行为。
 const automationFeatureCopy = {
   'spending.modules': { action:'为每个自动化模块设置钻石日额度', scope:'同一账号的所有角色合计；每个模块额度还会受顶部每日总额度限制' },
-  'modules.island': { action:'收取建筑产物、完成竣工、建造、升级与普通工厂排产', scope:'当前角色海面上的普通建筑和工厂；历史活动工坊不在本组范围' },
+  'modules.island': { action:'收取建筑产物、完成竣工、建造、升级、普通工厂排产与免广告加速', scope:'当前角色海面上的普通建筑和工厂；历史活动工坊不在本组范围' },
   'modules.island.factory': { action:'领取普通工厂成品、安排生产、自动生产和需求优先排产', scope:'当前角色的普通工厂；禁用工厂不会被本组重新开工' },
   'modules.farm': { action:'收割成熟农田、按水位种植、补种子和使用农田加速', scope:'当前角色已拥有的农田；不扫描或新建资源田' },
   'modules.resident': { action:'处理居民订单与订单进度奖励', scope:'当前角色当前可见的居民订单；材料不足只跳过，不会购买材料' },
@@ -141,8 +145,9 @@ const automationFeatureCopy = {
   'modules.guild.tech': { action:'升级指定联盟科技', scope:'当前角色当前赛季可升级的科技；只消耗现有科技点' },
   'modules.guild.ship': { action:'应聘联盟商船船长并精确补货登船', scope:'当前角色符合品质、奖励和材料筛选的联盟商船；不会购买补货材料' },
   'modules.welfare': { action:'领取日常权益、任务、成长、活动和邮件奖励', scope:'当前角色现有且未领取的免费或已持有权益；不会购买月卡、礼包或付费资格' },
-  'modules.activity': { action:'处理酆都捞尸人、不差钱商人和幸运转盘', scope:'当前角色当前活动周期；中秋、盲盒、捞月、工坊和祝福在“历史活动”中单独配置' },
+  'modules.activity': { action:'处理酆都捞尸人、不差钱商人、幸运转盘和走江踏浪', scope:'当前角色当前活动周期；中秋、盲盒、捞月、工坊和祝福在“历史活动”中单独配置' },
   'modules.activity.edict': { action:'入场券足够时参与一局，每张符文先显化一次，再竞猜并结算', scope:'当前角色开放中的捞尸人联动活动；每次执行最多一局，优先续接已有局' },
+  'modules.activity.snowball': { action:'参与走江踏浪，自动放置、合成、使用符文并领取累计积分奖励', scope:'当前角色开放中的走江踏浪；未开启连续开局时每次执行最多一局，已有局优先续接' },
   'modules.activity.midAutumn': { action:'领取中秋签到、免费礼包和活跃奖励', scope:'当前角色当前开放的中秋活动；活动或子玩法关闭时不会操作' },
   'modules.activity.blindBox': { action:'续办或开启盲盒并领取免费、积分奖励', scope:'当前角色本期盲盒；已有局优先续办，每个格子只处理一次' },
   'modules.activity.catcher': { action:'挑战、续局、扫荡捞月并领取战令奖励', scope:'当前角色当前开放的海底捞月；已开始的局会沿用保存的奖励信息，不重复消耗钩子' },
@@ -161,6 +166,7 @@ const automationFieldActionCopy = {
   build:'按当前可建条件创建建筑；人口、材料或建筑状态不满足时跳过',
   upgrade:'升级当前可升级的建筑；材料不足或不满足前置条件时跳过',
   speedUp:'对本组正在进行的项目使用现有加速道具；没有道具时不会购买',
+  adSpeedUp:'对剩余时间严格超过 30 分钟的建造或生产使用当天 VIP 免广告加速；每日额度用完后不再查询或请求',
   disabledBuildings:'列出的建筑不会被本组建造、升级或加速；不影响手动操作',
   gain:'领取已完成的工厂或活动工坊成品，并在领取后刷新库存',
   autoProduce:'为普通工厂开启游戏内自动生产；需求优先开启后仍保留自动生产，并在现有队列后追加需求材料',
@@ -417,7 +423,7 @@ function settingHeading(title, note) {
 
 // 已下架玩法仍复用原有模块 ID 与账号设置路径；这里只调整控制台呈现位置，避免历史配置失效。
 const HISTORICAL_ACTIVITY_KEYS = ['midAutumn', 'blindBox', 'catcher', 'workshop', 'blessing'];
-const CURRENT_ACTIVITY_KEYS = ['enabled', 'edict', 'weekOrder', 'weekLottery'];
+const CURRENT_ACTIVITY_KEYS = ['enabled', 'edict', 'weekOrder', 'weekLottery', 'snowball'];
 const HISTORICAL_ACTIVITY_LABELS = { midAutumn: '中秋', blindBox: '盲盒', catcher: '抓捕（海底捞月）', workshop: '活动工坊', blessing: '祈福' };
 
 /**
@@ -1205,7 +1211,7 @@ function formatAutomationTime(value) {
 /** 结果面板显示计划、跳过、不确定和失败状态，执行与预览分开显示。 */
 function renderAutomationStatus(data) {
   automationRunning = Boolean(data.running);
-  const labels={planned:'计划',success:'成功',skipped:'跳过',disabled:'未开启',uncertain:'未确认',failed:'业务失败',rejected:'服务器拒绝',error:'错误'};
+  const labels={planned:'计划',success:'成功',skipped:'跳过',disabled:'未开启',uncertain:'未确认',reminder:'提醒',failed:'业务失败',rejected:'服务器拒绝',error:'错误'};
   $('automation-view').textContent=(data.results||[]).map(r=>formatAutomationTime(r.at)+' ['+(labels[r.status]||r.status)+'] '+automationModuleLabel(r.module)+' '+(r.label||r.request||'')+(r.ruby?' / '+r.ruby+' 钻石':'')+(r.reason?'：'+r.reason:'')).join('\n')+(data.error?'\n中止：'+data.error:'');
   const activeModule = automationModuleLabel(data.module);
   $('automation-hint').textContent=data.looping?'循环运行中 '+(activeModule||'等待下一轮'):data.running?'正在执行 '+activeModule:'本轮已结束';

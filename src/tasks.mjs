@@ -47,8 +47,12 @@ export function taskTarget(row) {
 
 // WorkerOrderUtil uses RewardUtil.seasonCfgList: within the season take the
 // most recent group unlocked by the world's age, counting Beijing calendar days.
-export function nextOrderTier(config, { orderNum = 0, rewardedNum = 0, player, now = Date.now() / 1000 } = {}) {
-  let rows = config?.tables?.OrderDailyRewardCfg?.data ?? [];
+// 赛季/档组解析不出来时保持“未解析”（tier 与 reqNums 均为空），语义由调用方决定：
+// 视图路径不确认也不顺延；领取路径传 probe 用全表并集继续决策，宁多发一次被拒的
+// 请求也不静默漏领（设置里的“当前赛季”是地图场景，与档位赛季无关，不能拿来兜底）。
+export function nextOrderTier(config, { orderNum = 0, rewardedNum = 0, player, now = Date.now() / 1000, probe = false } = {}) {
+  const all = config?.tables?.OrderDailyRewardCfg?.data ?? [];
+  let rows = all;
   if (rows.some(row => row.season != null)) {
     const { worldId, worldOpenTime } = normalize(player ?? {});
     const season = Math.floor(worldId / 1e6) % 1000;
@@ -61,10 +65,13 @@ export function nextOrderTier(config, { orderNum = 0, rewardedNum = 0, player, n
       : age === null ? null : days.filter(day => day <= age).at(-1) ?? days[0];
     rows = rows.filter(row => row.worldOpenDays === group);
   }
+  // 表里有档位但当前世界解析不出档组时，probe 改用全部档位的并集继续决策。
+  const probed = probe && !rows.length && all.some(row => Number.isFinite(row.reqNum));
+  if (probed) rows = all;
   const reqNums = [...new Set(rows.map(row => row.reqNum))].filter(num => Number.isFinite(num)).sort((a, b) => a - b);
   const tier = reqNums.find((num) => num > rewardedNum) ?? null;
-  if (tier === null) return { tier: null, reqNums, claimable: false };
-  return { tier, reqNums, claimable: orderNum >= tier };
+  if (tier === null) return { tier: null, reqNums, claimable: false, probed };
+  return { tier, reqNums, claimable: orderNum >= tier, probed };
 }
 
 // 只读探测：把三类任务和每日订单档位都拉一遍，算出每一条能不能领。

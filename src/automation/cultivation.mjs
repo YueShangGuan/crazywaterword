@@ -1,8 +1,8 @@
 import { planHeroes } from '../heroes.mjs';
-import { makeTypeResolver } from '../world.mjs';
+import { antiqueRecruitRewardTiers } from '../antique-recruit.mjs';
 import { amount, idString } from './context.mjs';
 import { moduleActive, modeActive, serverTime } from './schedule.mjs';
-import { costs, mutate, repeat, succeeded, skip, referencedIds } from './common.mjs';
+import { costs, mutate, petBreedingRoom, repeat, succeeded, skip, referencedIds } from './common.mjs';
 
 const COLOR_COST = { BLUE: 'consumeBlue', PURPLE: 'consumePur', ORANGE: 'consumeOra', RED: 'consumeRed' };
 
@@ -165,7 +165,10 @@ async function recruits(ctx, options, antique) {
   });
   if (options.points) await repeat(ctx, options.maxDraws, async () => {
     const data = (await ctx.query('RecruitInfoRequest'))[group];
-    const cfg = ctx.rows(antique ? 'AntiqueRecruitTaskCfg' : 'HeroRecruitTaskCfg').find(r => r.season === ctx.season && r.id === (data.task?.gotId ?? 0) + 1);
+    // 藏品累计奖励由角色世界赛季决定，不能使用可编辑的 settings.season，避免向服务端提交过期赛季档位。
+    const cfg = antique
+      ? antiqueRecruitRewardTiers(ctx.config, ctx.player).find(r => r.id === (data.task?.gotId ?? 0) + 1)
+      : ctx.rows('HeroRecruitTaskCfg').find(r => r.season === ctx.season && r.id === (data.task?.gotId ?? 0) + 1);
     if (!cfg || !data.task || data.task.times < cfg.times) return false;
     return succeeded(await mutate(ctx, antique ? 'GotAntiqueRecruitTaskRequest' : 'GotHeroRecruitTaskRequest', {}, 'RecruitInfoRequest', s => s[group]?.task));
   });
@@ -225,16 +228,16 @@ export async function pet(ctx, options) {
   let water = await ctx.query('OnWaterRequest');
   if (options.claim && water.building?.some(b => b.petBreed?.maturePets?.length)) await mutate(ctx, 'GetMaturePetRequest', {}, 'OnWaterRequest', s => s.building?.map(b => b.petBreed));
   water = await ctx.query('OnWaterRequest');
-  const petBuildingTypes = new Set(ctx.rows('BuildingCfg').filter(row => row.name === '宠物').map(row => row.buildingType));
-  const resolveBuildingType = makeTypeResolver(ctx.config);
-  if (options.breed && !petBuildingTypes.size) skip(ctx, '缺少宠物建筑配置，跳过培育');
+  // 培育队列只存在于解锁表里的培育室；其余建筑收到的是默认空 petBreed，不能据此判断容量。
+  const room = petBreedingRoom(ctx, water);
+  if (options.breed && !room) skip(ctx, '没有找到已建成的宠物培育室，跳过培育');
   for (const building of water.building ?? []) {
     const breed = building.petBreed;
     if (breed && options.feed) for (const job of breed.breedQ ?? []) {
       if (job.feedRequirements?.length && ctx.enough(costs(job.feedRequirements, ctx.protocol))) await mutate(ctx, 'PetFeedRequest', { jobIdx: job.idx }, 'OnWaterRequest', s => s.building?.find(b => b.buildingId === building.buildingId)?.petBreed, { expenses: costs(job.feedRequirements, ctx.protocol) });
     }
-    // OnWater 会给普通建筑下发默认 petBreed；培育请求不带 buildingId，只能读取真实宠物建筑的全局队列。
-    if (breed && options.breed && petBuildingTypes.has(resolveBuildingType(building.buildingId))) {
+    // 培育请求不带 buildingId，只能对着真实培育室的全局队列确认结果。
+    if (breed && options.breed && room?.buildingId === building.buildingId) {
       const quality = ctx.rows('PetBreedCfg').find(r => r.quality === options.breedMinQuality)?.qualityIndex;
       const species = ctx.rows('PetSpeciesCfg').filter(r => options.breedSpecies.includes(r.name)).map(r => r.spId);
       if (options.breedMinQuality && quality === undefined) { skip(ctx, '宠物培育品质无效'); continue; }
