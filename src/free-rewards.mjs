@@ -206,16 +206,27 @@ export async function weekChargeState(client, config, row) {
   return { amount, got, stages, ready: stages.filter(item => amount >= item.rechargeAmount && !got.includes(item.rwdId)) };
 }
 
+/**
+ * Reads the current weekly hero-star reward eligibility without treating an absent hero as a valid zero-star hero.
+ *
+ * @param {object} client Connected game client used for read-only state queries.
+ * @param {object} config Current game configuration tables.
+ * @param {object} row Active weekly activity row.
+ * @returns {Promise<object>} Reward period, next stage, observed stars, and whether the next stage is claimable.
+ */
 export async function weekHeroStarState(client, config, row) {
   const info = normalize(await client.request('WeekHeroStarInfoRequest', {}, 'WeekHeroStarInfoResponse'));
   const period = tableRows(config, 'WeekHeroStarPeriodCfg').find(item => item.periodId === row.period);
   const stages = tableRows(config, 'WeekHeroStarRwdCfg').filter(item => item.periodId === row.period).sort((a, b) => a.rwdId - b.rwdId);
   const heroes = normalize(await client.request('AllHeroRequest', {}, 'AllHeroResponse')).heroes ?? [];
-  const star = id => heroes.find(hero => hero.heroId === id)?.star ?? 0;
+  const heroesById = new Map(heroes.map(hero => [hero.heroId, hero]));
+  const requiredHeroes = period ? [heroesById.get(period.showHero1), heroesById.get(period.showHero2)] : [];
+  const stars = requiredHeroes.map(hero => hero?.star ?? 0);
   const gotStage = info.gotStage ?? 0;
   const next = stages.find(item => item.rwdId > gotStage);
-  const ready = Boolean(period && next && star(period.showHero1) >= next.hero1Star && star(period.showHero2) >= next.hero2Star);
-  return { period, gotStage, next, ready, stars: period ? [star(period.showHero1), star(period.showHero2)] : [] };
+  // A missing configured hero must not satisfy a zero-star first stage: the server rejects that claim as "hero not found".
+  const ready = Boolean(period && next && requiredHeroes.every(Boolean) && stars[0] >= next.hero1Star && stars[1] >= next.hero2Star);
+  return { period, gotStage, next, ready, stars };
 }
 
 export async function weekFreePackState(client, config, type) {

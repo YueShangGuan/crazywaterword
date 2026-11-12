@@ -1,5 +1,6 @@
 import { amount, idString } from './context.mjs';
-import { mutate, repeat, skip, succeeded } from './common.mjs';
+import { discardExpiredVipRegistration, mutate, repeat, skip, succeeded } from './common.mjs';
+import { businessDate } from './settings.mjs';
 
 // 实测服务端约需 1.3 秒间隔，取 1.5 秒为网络抖动保留余量。
 const CHALLENGE_COOLDOWN_MS = 1_500;
@@ -94,18 +95,49 @@ export async function claimPass(ctx, type, table, rows = ctx.rows(table)) {
   });
 }
 
+/**
+ * 解除同一关遗留的零消耗未确认锁。
+ *
+ * ChallengeStageResponse 只在回包时给出胜负，服务端没有能读回主关卡号的只读接口；
+ * 跨轮保留这条锁会让战斗模块停到下一个业务日。主线挑战本身不消耗资源，解除后仍由
+ * 本轮内存锁阻止重发，不影响钻石和材料预留。
+ *
+ * @param {import('./context.mjs').AutomationContext} ctx 当前自动化上下文。
+ * @param {number} stage 即将挑战的主线关卡。
+ * @returns {boolean} 是否解除了一条旧锁。
+ */
+function releaseStageLock(ctx, stage) {
+  const key = `ChallengeStageRequest:${JSON.stringify({ stage })}`;
+  const pending = ctx.ledger.pending[key];
+  // 预览只反映账本现状；带钻石预留的记录必须由对应玩法结算，不能在这里丢弃。
+  if (!pending || pending.ruby !== 0 || ctx.dryRun) return false;
+  if (!ctx.discardPending(key)) return false;
+  ctx.record({ request: 'ChallengeStageRequest', label: `解除主线第 ${stage} 关未确认记录`, status: 'skipped',
+    reason: '主线挑战不消耗资源且无法读回胜负，解除旧锁后重新挑战' });
+  return true;
+}
+
 /** 挑战共用显式次数上限，主线和试炼战败后立即停止当前玩法。 */
 export async function battle(ctx, options) {
   const pacing = { lastSentAt: 0 };
   let challengeRejected = false;
   if (options.stage.enabled) {
     let stage = ctx.player.mainlineStage;
+    releaseStageLock(ctx, stage);
     await repeat(ctx, options.maxActions, async () => {
       if (!(stage > 0)) return false;
       let result;
       for (let attempt = 0; attempt <= options.stage.samePowerRetryCount; attempt++) {
         await waitChallengeCooldown(ctx, pacing);
-        result = await ctx.action('ChallengeStageRequest', { stage }, { accept: r => r?.stats?.isLeftWin === true });
+        // 战斗回包只用胜负判断是否推进；关卡号写入日志，避免已确认战败被显示成没有原因的请求失败。
+        result = await ctx.action('ChallengeStageRequest', { stage }, {
+          label: `主线第 ${stage} 关挑战`,
+          accept: r => r?.stats?.isLeftWin === true,
+          // 挑战不消耗任何资源，回包丢失后也无法读回胜负：只在本轮阻止重发，下一轮重新挑战，
+          // 不落盘跨轮锁，更不能因为一条无法核对的结果停掉整轮挂机。
+          continueAfterUncertain: true,
+          lockOnUncertain: false,
+        });
         if (result.status === 'rejected') {
           // 频控拒绝说明当前连接仍在冷却期，停止整个战斗模块避免继续打其他副本。
           challengeRejected = true;
@@ -184,6 +216,9 @@ async function vipTrialSweep(ctx, raidId) {
   const state = (await ctx.query('OnWaterRequest')).adv?.find(row => row.id === id);
   if (!Number.isSafeInteger(state?.gotTimes) || state.gotTimes < 0) return skip(ctx, `试炼 ${raidId} 缺少服务端广告次数`);
   const countKey = `trial.vipAdSweep.${raidId}`;
+  const registrationKey = `WatchAdvRequest:${JSON.stringify({ type, id })}`;
+  // 当前服务端次数无法证明昨日登记是否曾成功，但该登记零消耗且额度每日重置，跨日后可安全开始新一轮尝试。
+  discardExpiredVipRegistration(ctx, registrationKey);
   if (state.gotTimes >= rule.dailyLimit || ctx.count(countKey) >= rule.dailyLimit) return;
   // 只读查询期间也可能收到 VIP 更新，写入前再次核对当前资格。
   if (!vipTrialSweepEnabled(ctx)) return;
@@ -192,6 +227,7 @@ async function vipTrialSweep(ctx, raidId) {
   if (!ctx.dryRun) ctx.count(countKey, 1);
   const registered = await ctx.action('WatchAdvRequest', { type, id }, {
     response: 'OkResponse', label: `试炼 ${raidId} VIP免广告登记`,
+    key: registrationKey,
     // 三类试炼的广告权益彼此独立；账本仍锁定当前登记，继续执行不会重复发这条请求。
     continueAfterUncertain: true, blockModuleOnUncertain: false,
   });
@@ -245,10 +281,19 @@ async function trial(ctx, raidId, options, limit, pacing) {
     const raid = (await ctx.query('TrialRaidInfoRequest', { raidId })).raid;
     const cap = ctx.rows('TrialRaidParamCfg').find(r => r.paramName === '试炼副本扫荡次数')?.paramValue;
     if (!raid?.passedStage || !cap || raid.buySweepTimes >= cap) return false;
+    const body = { raidId, useAdvCard: false };
+    // 上一轮押钻结果未确认时写前快照已随预留落盘；即使对应价格行已被旧写入买走，也要先只读回放结算。
+    const sweepPending = ctx.hasPending(`TrialRaidBuySweepRequest:${JSON.stringify(body)}`);
     const price = ctx.rows('TrialRaidBuySweepCfg').find(r => r.buyTimes === raid.buySweepTimes + 1)?.costRuby;
-    if (price === undefined) { skip(ctx, '当前扫荡次数缺少价格，停止'); return false; }
+    if (!sweepPending && price === undefined) { skip(ctx, '当前扫荡次数缺少价格，停止'); return false; }
     if (price > 0 && !options.rubySweep) return false;
-    return succeeded(await mutate(ctx, 'TrialRaidBuySweepRequest', { raidId, useAdvCard: false }, 'TrialRaidInfoRequest', s => s.raid?.buySweepTimes, { stateBody: { raidId }, ruby: price }));
+    return succeeded(await mutate(ctx, 'TrialRaidBuySweepRequest', body, 'TrialRaidInfoRequest', s => s.raid?.buySweepTimes, {
+      stateBody: { raidId }, ruby: price ?? 0,
+      // 押钻请求未确认时保留预留和幂等锁，下一轮回放结算；本轮只跳过本动作，
+      // 不阻断同模块其他玩法（与 VIP 免广告路径一致），预留金额本身仍约束钻石额度。
+      continueAfterUncertain: true,
+      blockModuleOnUncertain: false,
+    }));
   });
 }
 

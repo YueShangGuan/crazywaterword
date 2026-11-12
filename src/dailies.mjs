@@ -256,7 +256,8 @@ export const DAILY_DRIVERS = {
       if (cheapest.realPrice > ruby) return { status: 'blocked', reason: `最便宜的一件要 ${cheapest.realPrice} 钻石，当前 ${ruby}` };
       return {
         status: 'ready',
-        actions: [{ request: 'DiscountShopBuyRequest', body: { id: cheapest.id }, response: null, cost: `${RESOURCE_RUBY} x${cheapest.realPrice}`, note: '购买折扣商品' }],
+        // 服务端会回 DiscountShopBuyResponse{shopItem, reward}；reward 就是本次买到的奖励。
+        actions: [{ request: 'DiscountShopBuyRequest', body: { id: cheapest.id }, response: 'DiscountShopBuyResponse', cost: `${RESOURCE_RUBY} x${cheapest.realPrice}`, note: '购买折扣商品' }],
       };
     },
   },
@@ -414,6 +415,74 @@ export async function runDailies(client, protocol, survey, { allowMutate = false
     return gameplaySession({ accountId, player, client, protocol, config: config ?? survey.config, stop, work: (execute, ctx) => runDailies(client, protocol, survey, { allowMutate, allowPaid, claimRewards, config, timeout, actionExecutor: execute, moduleExecutor: id => dailyGameplay(ctx, id), handledIds, stop, onStep, allowAction, context: ctx }) });
   }
   const results = [];
+  /** 折扣购买待确认记录按业务日与商品内容保存，换页或换日后不再是同一件商品。 */
+  const isDiscountPending = ([key, record]) => key.startsWith('DiscountShopBuyRequest:') && Boolean(record);
+  /**
+   * 结算跨业务日遗留的折扣购买未确认记录。
+   *
+   * 折扣商店跨日后槽位已换成别的商品，isBuy 与商品内容都无法读回，记录只剩「可能已扣款」。
+   * 这里按已花费结算到记录当天：不影响今天已经结束的额度，同时释放预留，避免永远占着钻石余额；
+   * 若购买其实没有生效，也只是少算了结束那天的额度，不会让今天多花。
+   *
+   * @returns {void}
+   */
+  function settleExpiredDiscountPurchases() {
+    if (!context) return;
+    const today = context.businessDate();
+    for (const [key, record] of Object.entries(context.ledger.pending)) {
+      if (!isDiscountPending([key, record]) || record.date === today) continue;
+      if (!context.settlePending(key)) continue;
+      const outcome = {
+        id: 1007,
+        title: TASK_TITLES[1007],
+        request: 'DiscountShopBuyRequest',
+        note: `跨日结果无法读回，按已花费结算 ${record.ruby} 钻石（${record.date}）`,
+        ok: true,
+        status: 'success',
+        ruby: record.ruby,
+      };
+      results.push(outcome);
+      onStep?.(outcome);
+    }
+  }
+  /** 当天已有一笔结果未确认的折扣购买时，本轮不能再用旧余额买第二件。 */
+  function todayUnconfirmedDiscount() {
+    if (!context) return null;
+    const today = context.businessDate();
+    return Object.entries(context.ledger.pending).find(([key, record]) => isDiscountPending([key, record]) && record.date === today) ?? null;
+  }
+  /**
+   * 每日任务已完成时结算当天的折扣购买待确认记录。
+   *
+   * 1007 的完成进度由服务端在购买成功后推进，是购买没有回包时唯一可信的业务证据；
+   * 只处理今天，跨日的记录交给 settleExpiredDiscountPurchases。
+   *
+   * @returns {void}
+   */
+  function settleCompletedDiscountPurchase() {
+    if (!context) return;
+    const task = survey.tasks.find(entry => entry.task.id === 1007);
+    if (!task || task.task.progress < task.task.targetProgress) return;
+    const today = context.businessDate();
+    for (const [key, record] of Object.entries(context.ledger.pending)) {
+      if (!isDiscountPending([key, record]) || record.date !== today) continue;
+      if (!context.settlePending(key)) continue;
+      const outcome = {
+        id: 1007,
+        title: task.task.title,
+        request: 'DiscountShopBuyRequest',
+        note: '每日任务已完成，确认折扣购买已生效',
+        ok: true,
+        status: 'success',
+        verifiedByRead: true,
+        ruby: record.ruby,
+      };
+      results.push(outcome);
+      onStep?.(outcome);
+    }
+  }
+  settleExpiredDiscountPurchases();
+  settleCompletedDiscountPurchase();
   for (const entry of survey.tasks) {
     if (stop.aborted) break;
     if (handledIds.includes(entry.task.id)) continue;
@@ -426,6 +495,15 @@ export async function runDailies(client, protocol, survey, { allowMutate = false
           results.push(outcome); onStep?.(outcome);
         }
         continue;
+      }
+    }
+    if (entry.status !== 'done' && entry.task.id === 1007) {
+      // 今天买过一次但结果没确认时，既不能重复下单也不能凭旧余额判断，等任务进度或跨日结算。
+      const unconfirmed = todayUnconfirmedDiscount();
+      if (unconfirmed) {
+        const outcome = { id: 1007, title: entry.task.title, request: 'DiscountShopBuyRequest', skipped: true,
+          reason: `今天已有 ${unconfirmed[1].ruby} 钻石的折扣购买结果未确认，等任务进度确认后结算，本轮不重复购买` };
+        results.push(outcome); onStep?.(outcome); continue;
       }
     }
     if (entry.status !== 'done' && entry.task.id === 1007 && context?.settings?.spending?.dailiesDiscountTickets2x === true) {
@@ -445,7 +523,7 @@ export async function runDailies(client, protocol, survey, { allowMutate = false
       const cheapest = items
         .map(item => ({ ...item, realPrice: Math.floor(item.price * item.discount) }))
         .sort((a, b) => a.realPrice - b.realPrice)[0];
-      const fallback = { request: 'DiscountShopBuyRequest', body: { id: cheapest.id }, response: null, note: '购买折扣商品' };
+      const fallback = { request: 'DiscountShopBuyRequest', body: { id: cheapest.id }, response: 'DiscountShopBuyResponse', note: '购买折扣商品' };
       if (!allowPaid) {
         const outcome = { id: entry.task.id, title: entry.task.title, request: fallback.request, skipped: true, reason: '需要付费，未开 allowPaid' };
         results.push(outcome); onStep?.(outcome); continue;

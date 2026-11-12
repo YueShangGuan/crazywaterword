@@ -23,6 +23,20 @@ function findJob(water, target) {
 }
 
 /**
+ * 判断队列里是否出现了开工前不存在的同产品制造位。
+ * 产品同时被其他工厂或订单消耗时，库存和队列总量会一起波动，只有新增制造位能证明这次开工已生效。
+ *
+ * @param {object} water 写后读回的水面快照。
+ * @param {{ buildingId: string, productId: string, beforeIndexes?: number[] }} intent 记录的开工意图。
+ * @returns {boolean} 存在新制造位时返回 true；缺少写前索引的旧记录不做推断。
+ */
+function addedJob(water, intent) {
+  if (!Array.isArray(intent.beforeIndexes)) return false;
+  const queue = water.building?.find(building => building.buildingId === intent.buildingId)?.factory?.factoryQ ?? [];
+  return queue.some(job => job.idx !== undefined && job.productId === intent.productId && !intent.beforeIndexes.includes(job.idx));
+}
+
+/**
  * 执行三档排产；每次写后读回水面和真实库存，取消不推算原料返还。
  * 调度状态按角色持久化；写前记录意图，避免取消成功后进程退出使原任务丢失。
  * @param {object} ctx 当前角色的自动化上下文。
@@ -70,7 +84,9 @@ export async function scheduleProduction(ctx, options, needs, disabledBuildings 
     if (!state.intent) return true;
     const intent = state.intent;
     const count = outputCount(water, ctx.stock, intent.productId);
-    const verified = intent.kind === 'reorder' ? !findJob(water, intent) && count < intent.before : count > intent.before;
+    // 产品被其他工厂或订单同时消耗时，总量可能不升反降；新增制造位同样是开工已生效的证据。
+    const verified = intent.kind === 'reorder' ? !findJob(water, intent) && count < intent.before
+      : count > intent.before || addedJob(water, intent);
     if (!verified) {
       skip(ctx, '存在未确认的工厂重排/开工动作，停止排产以避免重复操作', intent.buildingId);
       return false;
@@ -171,8 +187,11 @@ export async function scheduleProduction(ctx, options, needs, disabledBuildings 
           const current = await ctx.query('OnWaterRequest');
           await ctx.refreshStock();
           confirmedWater = current;
-          return outputCount(current, ctx.stock, task.productId) > state.intent.before;
+          return addedJob(current, state.intent) || outputCount(current, ctx.stock, task.productId) > state.intent.before;
         },
+        // 开工消耗材料，未确认时仍保留跨轮幂等锁；但它只影响当前排产计划，不能让持续挂机的
+        // 其他独立模块全部停止。下轮会先读回制造位，再决定是否结算或继续保持锁定。
+        continueAfterUncertain: true,
       });
       if (result.status === 'success') {
         finishIntent(confirmedWater);

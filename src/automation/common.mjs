@@ -1,4 +1,21 @@
 import { amount, idString } from './context.mjs';
+import { businessDate } from './settings.mjs';
+
+/**
+ * 释放跨业务日遗留的 VIP 广告登记锁。
+ *
+ * WatchAdvRequest 不消耗钻石或道具，且每个广告权益的尝试额度按日重置；昨天无法确认的登记
+ * 不能永久阻断今天的独立广告权益。当天记录仍保留，由日内尝试次数防止重复提交。
+ *
+ * @param {import('./context.mjs').AutomationContext} ctx 当前自动化上下文。
+ * @param {string} key VIP 广告登记的幂等键。
+ * @returns {boolean} 是否释放了一条旧锁。
+ */
+export function discardExpiredVipRegistration(ctx, key) {
+  const pending = ctx.ledger.pending[key];
+  if (!pending || pending.date === businessDate(ctx.now())) return false;
+  return ctx.discardPending(key);
+}
 
 /**
  * 从工厂收成待确认键中还原目标建筑，格式异常时不尝试猜测目标。
@@ -73,10 +90,13 @@ export async function rewardAction(ctx, request, body = {}, options = {}) {
  */
 export async function mutate(ctx, request, body, stateRequest, select = value => value, options = {}) {
   const { stateBody = {}, confirm: suppliedConfirm, ...actionOptions } = options;
-  const before = JSON.stringify(select(await ctx.query(stateRequest, stateBody)));
+  // 写前快照随预留落盘：跨轮回放时旧写入往往早已生效，现场再取「前态」永远与后态相等，
+  // 只有「当前状态 ≠ 落盘写前态」才能证明旧写入已经落库。
+  const beforeState = JSON.stringify(select(await ctx.query(stateRequest, stateBody)));
+  const readState = async () => JSON.stringify(select(await ctx.query(stateRequest, stateBody)));
   // 默认比较读回快照；个别静默协议落库较慢时，调用方提供的确认器仍只读状态而不会重发写请求。
-  const confirm = suppliedConfirm ?? (async () => JSON.stringify(select(await ctx.query(stateRequest, stateBody))) !== before);
-  return ctx.action(request, body, { ...actionOptions, confirm });
+  const confirm = suppliedConfirm ?? (async () => await readState() !== beforeState);
+  return ctx.action(request, body, { ...actionOptions, confirm, beforeState, replayConfirm: async stored => await readState() !== stored });
 }
 
 /** 在明确的次数上限内刷新并处理，预览只产生第一步以免假定写操作已经生效。 */
@@ -126,6 +146,27 @@ export async function idleFleets(ctx) {
 /** 品质顺序来自当前数值表，不通过中文名称猜测。 */
 export function qualityIndex(ctx, table, idField, id) {
   return ctx.rows(table).find(r => r[idField] === id)?.qualityIndex;
+}
+
+/**
+ * 找出真正承载培育队列的培育室。
+ *
+ * OnWater 会给每座建筑都下发一份默认的空 petBreed，队列是否可用只能由解锁表里的
+ * 「宠物培育室」定位；旧配置没有解锁表时退回 BuildingCfg 中名为「宠物」的建筑类型。
+ *
+ * @param {object} ctx 自动化上下文。
+ * @param {{building?: object[]}} water OnWaterRequest 当前快照。
+ * @returns {object|null} 带 petBreed 的培育室建筑；没有真实培育室时返回 null。
+ */
+export function petBreedingRoom(ctx, water) {
+  const buildings = water?.building ?? [];
+  const rooms = new Set(ctx.rows('BuildingUnlockCfg')
+    .filter(row => row.buildingType === '宠物培育室').map(row => row.buildingId));
+  if (rooms.size) return buildings.find(building => rooms.has(building.buildingId) && building.petBreed) ?? null;
+  const types = [...new Set(ctx.rows('BuildingCfg').filter(row => row.name === '宠物').map(row => row.buildingType))]
+    .sort((a, b) => b.length - a.length);
+  return buildings.find(building => building.petBreed
+    && types.some(type => String(building.buildingId).endsWith(type))) ?? null;
 }
 
 /** 找出英雄、舰队和建筑结构里引用的 UID，避免释放正在使用的对象。 */

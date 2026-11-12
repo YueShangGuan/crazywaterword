@@ -1,5 +1,5 @@
-import { LABELS, MODULES, loadLedger, loadSettings, validateSettings, accountSpending, defaultSettings, selectModules } from './settings.mjs';
-import { createContext, withRoleLock } from './context.mjs';
+import { LABELS, MODULES, loadLedger, loadSettings, validateSettings, accountSpending, defaultSettings, selectModules, businessDate } from './settings.mjs';
+import { amount, createContext, withRoleLock } from './context.mjs';
 import * as base from './base.mjs';
 import * as cultivation from './cultivation.mjs';
 import { battle } from './battle.mjs';
@@ -45,6 +45,48 @@ export function stopAutomation(accountId, { manual = false, unexpectedDisconnect
 }
 
 /**
+ * 解除跨业务日遗留的幂等锁；零消耗与押钻记录都按「旧请求作废」处理。
+ *
+ * 昨天的请求早已不可能还在途中。零消耗记录的键在按物品、槽位或空请求体生成时会与今天的新请求相同，
+ * 永久保留会挡住正常操作。押钻记录无法回读旧请求是否已扣费（每日重置的计数器跨天后连写前快照也失去参照），
+ * 但永久占押会卡死后续钻石动作：这里放弃预留，不记成功、不计消费，并在解除记录中标注押钻金额，
+ * 真伪以游戏内钻石流水为准。
+ *
+ * @param {object} ctx 自动化上下文。
+ * @returns {void} 没有可解除记录时不做任何写入。
+ */
+export function releaseExpiredLocks(ctx) {
+  if (ctx.dryRun) return;
+  const today = ctx.businessDate();
+  const released = new Map();
+  for (const [key, record] of Object.entries(ctx.ledger.pending)) {
+    if (!record || record.date === today) continue;
+    if (!ctx.discardPending(key, { allowRuby: true })) continue;
+    const group = record.module || '';
+    if (!released.has(group)) released.set(group, new Map());
+    const name = key.split(':', 1)[0];
+    const counts = released.get(group);
+    const entry = counts.get(name) ?? { count: 0, ruby: 0 };
+    entry.count += 1;
+    entry.ruby += record.ruby;
+    counts.set(name, entry);
+  }
+  for (const [module, counts] of released) {
+    const detail = [...counts].map(([name, entry]) => entry.ruby > 0 ? `${name} ${entry.count} 条（押 ${entry.ruby} 钻）` : `${name} ${entry.count}`).join('、');
+    const total = [...counts.values()].reduce((sum, entry) => sum + entry.count, 0);
+    const held = [...counts.values()].reduce((sum, entry) => sum + entry.ruby, 0);
+    ctx.record({
+      module,
+      label: '解除跨日未确认记录',
+      status: 'skipped',
+      reason: held > 0
+        ? `${detail}：旧请求已不可能还在途，押钻结果无法回读，不再占用预留也不计成功或消费，请以游戏内钻石流水为准`
+        : `${detail}：旧请求已不可能还在途，只移除幂等锁，不计成功也不计消费`,
+    });
+  }
+}
+
+/**
  * 计划和执行使用同一注册表；缺模块或未知选择直接拒绝，防止静默漏跑。
  *
  * @param {object} options 自动化执行参数。
@@ -66,13 +108,20 @@ export async function runAutomation({ selector = 'all', settings, onModuleComple
     try {
       ctx = createContext({ ...args, settings: resolved, stop: state.stop, onStep: row => { state.results.push(row); args.onStep?.(row); }, onQuery: args.onQuery });
       state.ledger = ctx.ledger;
+      releaseExpiredLocks(ctx);
       for (const id of selected) {
         ctx.assertReady(); state.module = id; ctx.setModule(id);
         const options = resolved.modules[id];
         if (!moduleActive(id, options, ctx)) { ctx.record({ status: moduleConfigured(id, options) ? 'skipped' : 'disabled', label: LABELS[id], reason: '当前执行模式未启用或未到指定星期' }); continue; }
         await ctx.refreshStock();
         try { await HANDLERS[id](ctx, options); }
-        catch (error) { state.error = error.message; ctx.record({ status: 'error', reason: error.message }); ctx.assertReady(); }
+        catch (error) {
+          // 停止信号只是中断了模块，具体原因已由触发方记录；再记一条无标题错误会显示成「检查任务失败」。
+          if (!(ctx.stop.aborted && error.message === '自动化已停止')) {
+            state.error = error.message; ctx.record({ status: 'error', reason: error.message });
+          }
+          ctx.assertReady();
+        }
         // 分类缓存必须等整个模块批次结束后再刷新，避免农田收割后又被后续种植覆盖成中间状态。
         try { await onModuleComplete?.(id, ctx); }
         catch (error) { ctx.record({ status: 'error', reason: `缓存刷新失败：${error.message}` }); }
@@ -133,7 +182,7 @@ export async function runPriorityDiscountShop(ctx, execute) {
       const step = {
         request: 'DiscountShopBuyRequest',
         body: { id: item.id },
-        response: null,
+        response: 'DiscountShopBuyResponse',
         note: kind === 'hero' ? '强制购买2折英雄招募券' : '强制购买2折藏品券',
         bypassSpendingLimits: true,
       };
@@ -167,6 +216,28 @@ export async function runPriorityDiscountShop(ctx, execute) {
 }
 
 /**
+ * 折扣商品的业务内容签名；槽位 id 只是位置，换页、换日或买完后都会指向别的商品。
+ *
+ * @param {object} item 当前折扣商品。
+ * @returns {string} 槽位、奖励、原价、折扣组成的稳定签名。
+ */
+export function discountSignature(item) {
+  const assets = (item.reward?.asset ?? []).map(asset => `${asset.id}x${amount(asset.num)}`).join('+');
+  return `${item.id}|${assets}|${item.price}|${item.discount}`;
+}
+
+/**
+ * 折扣购买的幂等键按业务日和商品内容生成，避免旧商品或旧日期的记录挡住新商品。
+ *
+ * @param {object} item 当前折扣商品。
+ * @param {string} date 业务日期（北京时间）。
+ * @returns {string} 持久账本使用的幂等键。
+ */
+export function discountPurchaseKey(item, date) {
+  return `DiscountShopBuyRequest:${date}:${discountSignature(item)}`;
+}
+
+/**
  * 原有日常付费点金和折扣购买也必须查询当前价格并走持久化额度。
  *
  * @param {object} ctx 当前账号自动化上下文。
@@ -174,7 +245,7 @@ export async function runPriorityDiscountShop(ctx, execute) {
  * @returns {Promise<unknown>} 服务端业务回包。
  */
 export async function guardedDailyAction(ctx, step) {
-  let ruby = 0, confirm;
+  let ruby = 0, confirm, key;
   if (step.request === 'ClickGoldRequest' && step.body.free === false) {
     const price = ctx.rows('OfflineParamCfg').find(r => r.paramName === '点金价格')?.paramValue;
     if (!(price > 0)) throw new Error('缺少付费点金价格');
@@ -183,23 +254,31 @@ export async function guardedDailyAction(ctx, step) {
     confirm = async () => (await ctx.query('ClickGoldInfoRequest')).info?.paidTimes >= before + step.body.times;
   }
   if (step.request === 'DiscountShopBuyRequest') {
-    const key = `${step.request}:${JSON.stringify(step.body)}`;
     const item = (await ctx.query('DiscountShopRequest')).shopItem?.find(s => s.id === step.body.id);
-    confirm = async () => (await ctx.query('DiscountShopRequest')).shopItem?.find(s => s.id === step.body.id)?.isBuy === true;
+    if (!item) throw new Error('折扣商店没有该商品');
+    const signature = discountSignature(item);
+    key = discountPurchaseKey(item, businessDate(ctx.now()));
+    // 买走的槽位会立刻换成下一件商品，isBuy 读回一直为 false；只能用「槽位消失、已标记购买或换成别的商品」确认下单已生效。
+    confirm = async () => {
+      const current = (await ctx.query('DiscountShopRequest')).shopItem?.find(s => s.id === step.body.id);
+      return !current || current.isBuy === true || discountSignature(current) !== signature;
+    };
     // 已购商品只可能用于结算本地未确认写入；没有待确认记录时不能把外部购买视为本次成功。
-    if (item?.isBuy) {
+    if (item.isBuy) {
       if (!ctx.hasPending(key)) throw new Error('当前折扣商品已购买');
-      const settled = await ctx.action(step.request, step.body, { confirm, response: step.response, label: step.note, key });
-      if (settled.status !== 'success') throw new Error(settled.reason ?? `操作${settled.status}`);
-      return settled.value;
+    } else {
+      if (!Number.isFinite(item.price) || !Number.isFinite(item.discount)) throw new Error('缺少当前折扣商品价格');
+      ruby = Math.floor(item.price * item.discount);
+      if (!(ruby >= 0)) throw new Error('折扣商品价格无效');
     }
-    if (!item || !Number.isFinite(item.price) || !Number.isFinite(item.discount)) throw new Error('缺少当前折扣商品价格');
-    const goods = item;
-    ruby = Math.floor(goods.price * goods.discount);
-    if (!(ruby >= 0)) throw new Error('折扣商品价格无效');
   }
   await ctx.refreshStock();
-  const result = await ctx.action(step.request, step.body, { ruby, confirm, response: step.response, label: step.note, bypassSpendingLimits: step.bypassSpendingLimits === true });
+  // 折扣购买有专用 DiscountShopBuyResponse（带本次奖励），优先用它确认，不要退回读回猜测。
+  const discountResponse = step.response ?? 'DiscountShopBuyResponse';
+  const response = step.request === 'DiscountShopBuyRequest'
+    ? (ctx.protocol[discountResponse] ? discountResponse : null)
+    : step.response;
+  const result = await ctx.action(step.request, step.body, { ruby, confirm, response, label: step.note, key, bypassSpendingLimits: step.bypassSpendingLimits === true });
   if (result.status !== 'success') throw new Error(result.reason ?? `操作${result.status}`);
   return result.value;
 }
@@ -209,6 +288,7 @@ export async function gameplaySession({ accountId, client, protocol, config, pla
   return withRoleLock(accountId, player?.playerId, async () => {
     const ctx = createContext({ accountId, client, protocol, config, player, stop, onQuery, onStep, initialPushes, settings: loadSettings(accountId) });
     ctx.setModule(module);
+    releaseExpiredLocks(ctx);
     try { await ctx.refreshStock(); return await work(step => legacyAction(ctx, step), ctx); }
     finally { ctx.dispose(); }
   });
