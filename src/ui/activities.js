@@ -148,6 +148,7 @@ function renderActivityTask(box, row, task) {
   const descriptions = {
     evilExpel: '清理当前可驱除的邪祟，并领取已达标的累计奖励。',
     edict: '完成当前解符对局；没有对局时，最多消耗 1 份贡品开局。',
+    edictPass: '领取酆都法旨战令已达标的奖励，不消耗贡品。',
     compassReward: '领取已达标的积分奖励，不进行罗盘抽奖。',
     weekPass: '领取已完成任务的积分和已达标的战令奖励。',
     weekGift: '领取本期可用的免费礼包。',
@@ -158,6 +159,9 @@ function renderActivityTask(box, row, task) {
     festivalActive: '领取活跃积分已达标的档位。',
     festivalGifts: '领取今天的免费礼包，付费礼包不会购买。',
     snowballFree: '领取免费礼包和通行证已达标的免费奖励，不玩小游戏，也不买体力。',
+    riverScore: '领取走江踏浪已达标的累计积分奖励。',
+    riverPass: '领取走江踏浪通行证已达标的免费奖励。',
+    riverHelp: '领取当前渠道允许的走江踏浪免费助力奖励。',
     compassSpin: '消耗抽奖券抽奖，不花钻石。单次执行和自动运行的每一轮都按设置的张数，不足时有多少用多少。',
     weekLotterySpin: '消耗周转盘币抽奖，每次执行最多 10 次，不花钻石。',
     weekCharge: '领取累充金额已达标的档位，不充值。',
@@ -179,6 +183,7 @@ function renderActivityTask(box, row, task) {
   button.onclick = async () => {
     if (button.disabled || account !== current || snapshot.paused || disconnected.has(account) || pendingActivities.has(key)) return;
     if (row.endTime && row.endTime <= activityNow()) { refreshActivities(); return; }
+    if (task.key === 'weekOrderSubmit') { confirmWeekOrderAction('submit'); return; }
     const spinCount = spinInput ? spinInput.valueAsNumber : undefined;
     if (spinInput && !spinInput.checkValidity()) { reportError(new Error('抽奖券张数必须是 1 到 ' + spinInput.max + ' 的整数'), '风水罗盘抽奖'); return; }
     pendingActivities.add(key);
@@ -205,6 +210,7 @@ function renderActivityTask(box, row, task) {
     const field = el('label', 'activity-auto');
     field.append(el('span', null, '每次使用'), spinInput, el('span', null, '张'));
     bar.append(field);
+    if (activitiesData.compassSpinEditable === false) bar.appendChild(el('span', 'dim', '在游戏配置中修改'));
   }
   bar.append(button, auto);
   item.appendChild(bar);
@@ -218,6 +224,7 @@ function spinCountInput(account) {
   input.step = 1;
   input.required = true;
   input.value = activitiesData.compassSpinCount;
+  input.disabled = activitiesData.compassSpinEditable === false;
   input.setAttribute('aria-label', '风水罗盘每次使用的抽奖券张数');
   input.onchange = async () => {
     const saved = activitiesData.compassSpinCount;
@@ -251,11 +258,44 @@ function renderActivityOrder() {
     materials.appendChild(el('p', 'dim', data.order.ready
       ? '周订单材料已齐，已预留整单用量，可点上方「提交周订单」或开启自动运行。'
       : '周订单尚缺材料。已备齐的居民订单可先用所需份额，挂机再按缺口补产。'));
-    materials.appendChild(table(['材料', '需要', '库存', '还缺', '生产地点', '当前状态'], data.order.materials.map(row =>
-      [row.name, String(row.required), String(row.owned), row.missing ? String(row.missing) : '已齐',
+    const submit = smallButton('提交整单');
+    submit.disabled = !data.order.ready;
+    submit.onclick = () => confirmWeekOrderAction('submit');
+    materials.appendChild(submit);
+    materials.appendChild(table(['材料', '需要', '库存', '还缺', '生产地点', '当前状态', '钻石购买'], data.order.materials.map(row => {
+      const cost = row.price * row.missing, buy = smallButton(cost + ' 钻');
+      buy.onclick = () => confirmWeekOrderAction('buy', { itemId: row.id, quantity: row.missing, cost });
+      return [row.name, String(row.required), String(row.owned), row.missing ? String(row.missing) : '已齐',
         row.seed ? '农田' : row.factory ? row.factory.name + ' · ' + row.factory.required + ' 级' : '无工厂配方',
-        row.seed ? row.farmStatus : !row.factory ? '—' : row.factory.level === null ? '等级未知' : row.factory.level ? row.factory.level + ' 级' + (row.factory.constructing ? ' · 升级中' : '') : row.factory.constructing ? '建造中' : '未建造'])));
+        row.seed ? row.farmStatus : !row.factory ? '—' : row.factory.level === null ? '等级未知' : row.factory.level ? row.factory.level + ' 级' + (row.factory.constructing ? ' · 升级中' : '') : row.factory.constructing ? '建造中' : '未建造',
+        row.missing && row.price ? buy : row.missing ? '无售价' : '—'];
+    })));
   } else materials.textContent = data.orderError ? '未能读取材料，详情见运行日志' : !data.order ? '本期未开放周订单' : data.order.finalReady ? '本期周订单已全部交付，可在游戏内领取最终奖励。' : data.order.finished ? '本期周订单已完成' : '当前没有材料需求';
+}
+
+function confirmWeekOrderAction(action, payload = {}) {
+  const account = activitiesAccount, order = activitiesData?.order;
+  if (!order || account !== current) return;
+  const row = order.materials.find(item => item.id === payload.itemId);
+  const detail = action === 'buy'
+    ? row.name + ' ×' + payload.quantity + '，共 ' + payload.cost + ' 钻石'
+    : order.materials.map(item => item.name + ' ×' + item.required).join('、');
+  const key = account + ':week-order:' + action + ':' + (payload.itemId || '');
+  openConfirm(action === 'buy' ? '钻石购买材料' : '提交整份周订单', [el('p', '', detail)], async () => {
+    if (account !== current || account !== activitiesAccount) throw Error('账号已切换，请刷新');
+    if (snapshot.paused || disconnected.has(account)) throw Error('请先连接账号并恢复运行');
+    if (pendingActivities.has(key)) return;
+    pendingActivities.add(key);
+    try {
+      const result = await call('/api/week-order/' + action + '?account=' + encodeURIComponent(account), {
+        method: 'POST', body: JSON.stringify({ confirm: true, orderKey: order.orderKey, ...payload }),
+      });
+      if (account === current) $('hint').textContent = result.message;
+    } finally {
+      pendingActivities.delete(key);
+      if (account === current) await refreshActivities();
+    }
+  });
 }
 
 async function refreshActivities() {
@@ -283,8 +323,12 @@ async function refreshActivities() {
   }
   status.textContent = '正在读取活动…';
   try {
-    const data = await call('/api/activities');
+    const [data, sources] = await Promise.all([
+      call('/api/activities'),
+      sourceIndex ?? call('/api/material-sources').catch(() => null),
+    ]);
     if (version !== activitiesVersion || account !== current) return;
+    if (sources) { sourceIndex = sources; renderSourceSearch(); }
     // A settings save can overlap this read. Preserve the newer local value.
     for (const task of data.eventTasks) {
       const local = activityTaskEdits.get(account + ':' + task.key);
@@ -294,7 +338,7 @@ async function refreshActivities() {
     activitiesReceivedAt = Date.now();
     status.textContent = data.activities.length ? '' : '当前没有开放的限时或周期活动';
     renderActivityTabs();
-      if (selectedActivity === 'pirates') refreshProgression();
+    if (selectedActivity === 'pirates') refreshProgression('pirate-board');
     const endTimes = data.activities.filter(row => row.endTime > activityNow()).map(row => row.endTime);
     if (endTimes.length) activityExpiryTimer = setTimeout(() => {
       renderActivityTabs();
@@ -305,7 +349,7 @@ async function refreshActivities() {
     activitiesData = null;
     status.textContent = '活动读取失败，请刷新重试。详情见运行日志';
     renderActivityTabs();
-      if (selectedActivity === 'pirates') refreshProgression();
+    if (selectedActivity === 'pirates') refreshProgression('pirate-board');
   }
 }
 $('activities-refresh').onclick = refreshActivities;

@@ -2,57 +2,57 @@
 // 该脚本被内联进控制台页面，与 page.mjs 的 $ / el / clear / call / current / snapshot 共享作用域。
 // 顶层只声明状态和函数，不访问 DOM；首次进入标签页时才绑定事件与请求数据。
 
-const worldMapResColors = { 1: '#4f9f6a', 2: '#3f8fbf', 3: '#bf8f3f' };
-const worldMapNeutralColor = '#5c6b70';
-const worldMapEmptyColor = '#112b36';
-const worldMapOwnColor = '#ffd166';
-const worldMapBattleColor = '#e2685f';
+const mapTabResColors = { 1: '#4f9f6a', 2: '#3f8fbf', 3: '#bf8f3f' };
+const mapTabNeutralColor = '#5c6b70';
+const mapTabEmptyColor = '#112b36';
+const mapTabOwnColor = '#ffd166';
+const mapTabBattleColor = '#e2685f';
 // 城战标记：我方宣战的进攻目标用橙色虚框，受袭城（守方是我方）加一圈防守蓝框。
-const worldMapAttackColor = '#ffbd77';
-const worldMapDefendColor = '#5aa9e6';
-const worldMapObjectColors = { boss: '#e2685f', limitedBoss: '#e08a3f', treasure: '#d9b45f', chipMine: '#63c6c9', wreck: '#9aa9ae', merchantShip: '#00ff00' };
-const worldMapObjectLabels = { boss: '世界 Boss', treasure: '宝藏', merchantShip: '搁浅货轮', limitedBoss: '限时 Boss', chipMine: '硅矿', wreck: '沉船' };
+const mapTabAttackColor = '#ffbd77';
+const mapTabDefendColor = '#5aa9e6';
+const mapTabObjectColors = { boss: '#e2685f', limitedBoss: '#e08a3f', treasure: '#d9b45f', chipMine: '#63c6c9', wreck: '#9aa9ae', merchantShip: '#00ff00' };
+const mapTabObjectLabels = { boss: '世界 Boss', treasure: '宝藏', merchantShip: '搁浅货轮', limitedBoss: '限时 Boss', chipMine: '硅矿', wreck: '沉船' };
 
-let worldMapLayout = null;
-let worldMapLive = null;
-let worldMapReceivedAt = 0;
-let worldMapCityByCell = new Map();
-let worldMapFieldsByCity = new Map();
-let worldMapObjectsByCity = new Map();
-let worldMapObjectByGrid = new Map();
-let worldMapMerchantByGrid = new Map();
-let worldMapVersion = 0;
-let worldMapAccount = null;
-let worldMapLoading = false;
-let worldMapLastFreshAt = 0;
-let worldMapTimer = null;
-let worldMapRefreshTimer = null;
-let worldMapFrame = null;
-let worldMapDash = 0;
-let worldMapStatic = { key: '', canvas: null };
-let worldMapWarChoices = new Map();
-let worldMapView = { scale: 1, tx: 0, ty: 0, width: 0, height: 0, userAdjusted: false };
-let worldMapDrag = null;
-let worldMapDragMoved = false;
-let worldMapHover = null;
-let worldMapSelected = null;
-let worldMapLayers = {
+let mapTabLayout = null;
+let mapTabLive = null;
+let mapTabReceivedAt = 0;
+let mapTabCityByCell = new Map();
+let mapTabFieldsByCity = new Map();
+let mapTabObjectsByCity = new Map();
+let mapTabObjectByGrid = new Map();
+let mapTabMerchantByGrid = new Map();
+let mapTabVersion = 0;
+let mapTabAccount = null;
+let mapTabLoading = false;
+let mapTabLastFreshAt = 0;
+let mapTabTimer = null;
+let mapTabRefreshTimer = null;
+let mapTabFrame = null;
+let mapTabDash = 0;
+let mapTabStatic = { key: '', canvas: null };
+let mapTabWarChoices = new Map();
+let mapTabView = { scale: 1, tx: 0, ty: 0, width: 0, height: 0, userAdjusted: false };
+let mapTabDrag = null;
+let mapTabDragMoved = false;
+let mapTabHover = null;
+let mapTabSelected = null;
+let mapTabLayers = {
   faction: true, fields: false,
   myFleets: true, allyFleets: true, enemyFleets: false,
   trade: true, allyTrade: true,
   objects: true, grid: true,
 };
 
-function worldMapVisible() {
+function mapTabVisible() {
   const section = $('tab-map');
   return Boolean(section) && !section.classList.contains('hidden');
 }
 
-function worldMapLayerOn(name) {
-  return worldMapLayers[name] !== false;
+function mapTabLayerOn(name) {
+  return mapTabLayers[name] !== false;
 }
 
-function worldMapDuration(seconds) {
+function mapTabDuration(seconds) {
   const value = Math.max(0, Math.round(Number(seconds) || 0));
   if (!value) return '已到达';
   const hours = Math.floor(value / 3600);
@@ -62,8 +62,8 @@ function worldMapDuration(seconds) {
   return value + ' 秒';
 }
 
-// 倒计时用紧凑时钟格式（mm:ss / h:mm:ss），与粗粒度的 worldMapDuration 区分。
-function worldMapClock(seconds) {
+// 倒计时用紧凑时钟格式（mm:ss / h:mm:ss），与粗粒度的 mapTabDuration 区分。
+function mapTabClock(seconds) {
   const value = Math.max(0, Math.floor(Number(seconds) || 0));
   const hours = Math.floor(value / 3600);
   const minutes = Math.floor((value % 3600) / 60);
@@ -71,18 +71,18 @@ function worldMapClock(seconds) {
   return (hours ? hours + ':' + pad(minutes) : String(minutes)) + ':' + pad(value % 60);
 }
 
-function worldMapGuildColor(guildIdx) {
-  const entry = (worldMapLive?.legend ?? []).find((row) => Number(row.guildIdx) === Number(guildIdx));
-  return entry?.color ?? (Number(guildIdx) > 0 ? '#8aa0a8' : worldMapNeutralColor);
+function mapTabGuildColor(guildIdx) {
+  const entry = (mapTabLive?.legend ?? []).find((row) => Number(row.guildIdx) === Number(guildIdx));
+  return entry?.color ?? (Number(guildIdx) > 0 ? '#8aa0a8' : mapTabNeutralColor);
 }
 
-function worldMapCityName(cityId) {
-  const city = worldMapLayout?.cities?.find((row) => row.id === Number(cityId));
+function mapTabCityName(cityId) {
+  const city = mapTabLayout?.cities?.find((row) => row.id === Number(cityId));
   return city?.name ?? ('城 #' + cityId);
 }
 
 // 连续格坐标转成游戏里的「行字母 + 列号」位置名（如 E3）；行号超出字母表时退回数字。
-function worldMapCellName(cell) {
+function mapTabCellName(cell) {
   if (!cell) return '';
   const letters = 'ABCDEFGHIJ';
   const row = Math.floor(cell.y);
@@ -90,22 +90,22 @@ function worldMapCellName(cell) {
   return (letters[row] ?? String(row)) + col;
 }
 
-function worldMapCityAtCell(point) {
+function mapTabCityAtCell(point) {
   if (!point) return null;
-  return worldMapCityByCell.get(Math.floor(point.x) + ',' + Math.floor(point.y)) ?? null;
+  return mapTabCityByCell.get(Math.floor(point.x) + ',' + Math.floor(point.y)) ?? null;
 }
 
-function worldMapServerNow() {
-  const base = Number(worldMapLive?.serverNow) || Date.now() / 1000;
-  return base + (Date.now() - worldMapReceivedAt) / 1000;
+function mapTabServerNow() {
+  const base = Number(mapTabLive?.serverNow) || Date.now() / 1000;
+  return base + (Date.now() - mapTabReceivedAt) / 1000;
 }
 
-function worldMapHead(track) {
+function mapTabHead(track) {
   if (!track) return null;
   const start = Number(track.start);
   const end = Number(track.end);
   if (!(end > start) || !track.from || !track.to) return track.head ?? track.from ?? null;
-  const progress = Math.min(1, Math.max(0, (worldMapServerNow() - start) / (end - start)));
+  const progress = Math.min(1, Math.max(0, (mapTabServerNow() - start) / (end - start)));
   return {
     x: track.from.x + (track.to.x - track.from.x) * progress,
     y: track.from.y + (track.to.y - track.from.y) * progress,
@@ -113,25 +113,25 @@ function worldMapHead(track) {
 }
 
 // 格坐标（城市格中心为 col + 0.5 / row + 0.5）到画布像素。
-function worldMapScreen(point) {
-  return { x: point.x * worldMapView.scale + worldMapView.tx, y: point.y * worldMapView.scale + worldMapView.ty };
+function mapTabScreen(point) {
+  return { x: point.x * mapTabView.scale + mapTabView.tx, y: point.y * mapTabView.scale + mapTabView.ty };
 }
 
-function worldMapSetEmpty(text) {
+function mapTabSetEmpty(text) {
   const node = $('map-empty');
   if (!node) return;
   node.hidden = !text;
   node.textContent = text || '';
 }
 
-function worldMapSetStatus(text) {
+function mapTabSetStatus(text) {
   const node = $('map-status');
   if (node) node.textContent = text || '';
 }
 
 function applyWorldMapLayout(layout) {
-  worldMapLayout = layout;
-  worldMapCityByCell = new Map();
+  mapTabLayout = layout;
+  mapTabCityByCell = new Map();
   for (const city of layout?.cities ?? []) {
     if (!Number.isSafeInteger(city.col) || !Number.isSafeInteger(city.row)) continue;
     const colSpan = Math.max(1, city.colSpan || 1);
@@ -139,54 +139,54 @@ function applyWorldMapLayout(layout) {
     // 大城占多格：命中与悬浮时每一格都要指回同一座城。
     for (let dy = 0; dy < rowSpan; dy += 1) {
       for (let dx = 0; dx < colSpan; dx += 1) {
-        worldMapCityByCell.set((city.col + dx) + ',' + (city.row + dy), city);
+        mapTabCityByCell.set((city.col + dx) + ',' + (city.row + dy), city);
       }
     }
   }
-  worldMapFieldsByCity = new Map();
+  mapTabFieldsByCity = new Map();
   for (const field of layout?.fields ?? []) {
-    if (!worldMapFieldsByCity.has(field.cityId)) worldMapFieldsByCity.set(field.cityId, []);
-    worldMapFieldsByCity.get(field.cityId).push(field);
+    if (!mapTabFieldsByCity.has(field.cityId)) mapTabFieldsByCity.set(field.cityId, []);
+    mapTabFieldsByCity.get(field.cityId).push(field);
   }
-  worldMapObjectsByCity = new Map();
-  worldMapObjectByGrid = new Map();
+  mapTabObjectsByCity = new Map();
+  mapTabObjectByGrid = new Map();
   for (const [kind, list] of Object.entries(layout?.objects ?? {})) {
     const points = Array.isArray(list) ? list : (list ? [list] : []);
     for (const point of points) {
       // 城池详情的"世界对象"不列静态宝藏位，避免每个城都挂一条"宝藏"；
       // 舰队目标格反查仍登记宝藏，舰队列表里"目标：宝藏"的命名要靠它。
       if (kind !== 'treasure' && point?.cityId > 0) {
-        if (!worldMapObjectsByCity.has(point.cityId)) worldMapObjectsByCity.set(point.cityId, []);
-        worldMapObjectsByCity.get(point.cityId).push({ kind, point });
+        if (!mapTabObjectsByCity.has(point.cityId)) mapTabObjectsByCity.set(point.cityId, []);
+        mapTabObjectsByCity.get(point.cityId).push({ kind, point });
       }
       // 舰队目标格反查对象名（宝藏/货轮/Boss…），目标不是城时详情与舰队列表用它。
-      if (Number.isSafeInteger(point?.gridIdx)) worldMapObjectByGrid.set(point.gridIdx, { kind, point });
+      if (Number.isSafeInteger(point?.gridIdx)) mapTabObjectByGrid.set(point.gridIdx, { kind, point });
     }
   }
-  worldMapStatic = { key: '', canvas: null };
-  worldMapView = { scale: 1, tx: 0, ty: 0, width: 0, height: 0, userAdjusted: false };
-  worldMapHover = null;
-  worldMapSelected = null;
+  mapTabStatic = { key: '', canvas: null };
+  mapTabView = { scale: 1, tx: 0, ty: 0, width: 0, height: 0, userAdjusted: false };
+  mapTabHover = null;
+  mapTabSelected = null;
 }
 
-function worldMapApplyState(state) {
-  worldMapLive = state;
-  worldMapReceivedAt = Date.now();
+function mapTabApplyState(state) {
+  mapTabLive = state;
+  mapTabReceivedAt = Date.now();
   // 当前万吨货轮的格子优先于静态宝藏位命名（舰队目标反查用）。
-  worldMapMerchantByGrid = new Map();
+  mapTabMerchantByGrid = new Map();
   const ship = state?.merchantShip;
   if (ship && Number.isSafeInteger(ship.gridIdx)) {
-    worldMapMerchantByGrid.set(ship.gridIdx, { kind: 'merchantShip', point: ship });
+    mapTabMerchantByGrid.set(ship.gridIdx, { kind: 'merchantShip', point: ship });
   }
   // bossData 候选位只保留今日 WorldBossInfo.gridIdx 命中的那一只：
   // 城池详情的"世界对象"和舰队目标反查都不再提其他候选位。
   const bossGrid = Number(state?.worldBoss?.gridIdx) || 0;
-  for (const [cityId, list] of worldMapObjectsByCity) {
+  for (const [cityId, list] of mapTabObjectsByCity) {
     const kept = list.filter((entry) => entry.kind !== 'boss' || Number(entry.point?.gridIdx) === bossGrid);
-    if (kept.length !== list.length) worldMapObjectsByCity.set(cityId, kept);
+    if (kept.length !== list.length) mapTabObjectsByCity.set(cityId, kept);
   }
-  for (const [grid, entry] of worldMapObjectByGrid) {
-    if (entry.kind === 'boss' && Number(grid) !== bossGrid) worldMapObjectByGrid.delete(grid);
+  for (const [grid, entry] of mapTabObjectByGrid) {
+    if (entry.kind === 'boss' && Number(grid) !== bossGrid) mapTabObjectByGrid.delete(grid);
   }
   renderWorldMapLegend();
   renderWorldMapStatus();
@@ -195,24 +195,24 @@ function worldMapApplyState(state) {
   renderWorldMapWarSettings();
 }
 
-function worldMapObjectAtGrid(gridIdx) {
+function mapTabObjectAtGrid(gridIdx) {
   const grid = Number(gridIdx);
   if (!grid) return null;
-  return worldMapMerchantByGrid.get(grid) ?? worldMapObjectByGrid.get(grid) ?? null;
+  return mapTabMerchantByGrid.get(grid) ?? mapTabObjectByGrid.get(grid) ?? null;
 }
 
-function worldMapFleetTargetText(fleet) {
+function mapTabFleetTargetText(fleet) {
   if (fleet.state === 4 && Number(fleet.repairEndTs) > 0) {
-    const remain = fleet.repairEndTs - worldMapServerNow();
-    return remain > 0 ? '维修中 · 剩 ' + worldMapClock(remain) : '维修收尾';
+    const remain = fleet.repairEndTs - mapTabServerNow();
+    return remain > 0 ? '维修中 · 剩 ' + mapTabClock(remain) : '维修收尾';
   }
   if (fleet.track?.moving) {
-    const object = worldMapObjectAtGrid(fleet.targetGridIdx);
-    const target = fleet.targetCityId ? worldMapCityName(fleet.targetCityId)
-      : (object ? (worldMapObjectLabels[object.kind] ?? object.kind) : worldMapCityAtCell(fleet.track.to)?.name);
-    return '前往 ' + (target || '目标') + ' · ' + worldMapDuration(fleet.track.eta);
+    const object = mapTabObjectAtGrid(fleet.targetGridIdx);
+    const target = fleet.targetCityId ? mapTabCityName(fleet.targetCityId)
+      : (object ? (mapTabObjectLabels[object.kind] ?? object.kind) : mapTabCityAtCell(fleet.track.to)?.name);
+    return '前往 ' + (target || '目标') + ' · ' + mapTabDuration(fleet.track.eta);
   }
-  return fleet.cityId ? '在 ' + worldMapCityName(fleet.cityId) : '待命';
+  return fleet.cityId ? '在 ' + mapTabCityName(fleet.cityId) : '待命';
 }
 
 function renderWorldMapFleets() {
@@ -220,7 +220,7 @@ function renderWorldMapFleets() {
   const count = $('map-fleet-count');
   if (!box) return;
   clear(box);
-  const fleets = worldMapLive?.fleets ?? [];
+  const fleets = mapTabLive?.fleets ?? [];
   if (count) count.textContent = fleets.length ? `${fleets.length} 支 · ${fleets.filter((fleet) => fleet.state === 2).length} 在航` : '';
   if (!fleets.length) {
     box.appendChild(el('span', 'dim', '暂无舰队数据'));
@@ -233,20 +233,20 @@ function renderWorldMapFleets() {
     const body = el('div');
     body.appendChild(el('div', 'world-map-fleet-name', fleet.buildingId + ' · ' + fleet.stateText));
     body.appendChild(el('div', 'world-map-fleet-meta', '耐久 ' + fmt(fleet.durability) + ' / ' + fmt(fleet.maxDura)));
-    body.appendChild(el('div', 'world-map-fleet-meta', worldMapFleetTargetText(fleet)));
+    body.appendChild(el('div', 'world-map-fleet-meta', mapTabFleetTargetText(fleet)));
     row.appendChild(dot);
     row.appendChild(body);
     box.appendChild(row);
   }
 }
 
-function worldMapWarTargetOptions(role) {
-  const war = worldMapLive?.war;
+function mapTabWarTargetOptions(role) {
+  const war = mapTabLive?.war;
   if (!war) return [];
   return role === 'defend' ? (war.defendTargets ?? []) : (war.attackTargets ?? []);
 }
 
-function worldMapWarTargetLabel(target) {
+function mapTabWarTargetLabel(target) {
   const tags = [];
   if (target.assemble) tags.push('集结');
   if (target.underAttack) tags.push('受袭');
@@ -259,18 +259,18 @@ function renderWorldMapWar() {
   const box = $('map-war-targets');
   if (!box) return;
   clear(box);
-  const war = worldMapLive?.war;
-  const worldFleets = worldMapLive?.worldFleets ?? [];
+  const war = mapTabLive?.war;
+  const worldFleets = mapTabLive?.worldFleets ?? [];
   const allyCount = worldFleets.filter((fleet) => fleet.kind === 'ally').length;
   const enemyCount = worldFleets.filter((fleet) => fleet.kind === 'enemy').length;
   if (status) {
-    if (!war || !war.ownGuildIdx) status.textContent = worldMapLive ? '未加入联盟或暂无城战数据' : '';
+    if (!war || !war.ownGuildIdx) status.textContent = mapTabLive ? '未加入联盟或暂无城战数据' : '';
     else if (war.active) {
       const start = new Date(war.startTime * 1000).toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' });
       const end = new Date(war.endTime * 1000).toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' });
       status.textContent = '进行中 ' + start + '–' + end +
         ' · 可进攻 ' + (war.attackTargets?.length ?? 0) + ' · 可防守 ' + (war.defendTargets?.length ?? 0) +
-        (war.assembleCityId ? ' · 集结城 ' + worldMapCityName(war.assembleCityId) : '');
+        (war.assembleCityId ? ' · 集结城 ' + mapTabCityName(war.assembleCityId) : '');
     } else {
       status.textContent = `未开始/已结束 · 可进攻 ${war.attackTargets?.length ?? 0} · 可防守 ${war.defendTargets?.length ?? 0}`;
     }
@@ -280,21 +280,21 @@ function renderWorldMapWar() {
   // 受袭城市单独列出（宣战守方是我方的城），哪怕舰队数据未就绪也要可见。
   const attacked = (war?.defendTargets ?? []).filter((target) => target.underAttack);
   if (attacked.length) {
-    box.appendChild(el('div', 'dim', '受袭：' + attacked.map((target) => worldMapWarTargetLabel(target)).join('、')));
+    box.appendChild(el('div', 'dim', '受袭：' + attacked.map((target) => mapTabWarTargetLabel(target)).join('、')));
   }
 
-  const fleets = worldMapLive?.fleets ?? [];
+  const fleets = mapTabLive?.fleets ?? [];
   if (!fleets.length) {
     box.appendChild(el('span', 'dim', '连接后可按舰队设置城战目标'));
     return;
   }
   for (const fleet of fleets) {
     const key = String(fleet.buildingId);
-    const choice = worldMapWarChoices.get(key) ?? { role: 'auto', cityId: 0 };
-    const targets = worldMapWarTargetOptions(choice.role);
+    const choice = mapTabWarChoices.get(key) ?? { role: 'auto', cityId: 0 };
+    const targets = mapTabWarTargetOptions(choice.role);
     if (choice.cityId && !targets.some((target) => target.cityId === choice.cityId)) {
       choice.cityId = 0;
-      worldMapWarChoices.set(key, choice);
+      mapTabWarChoices.set(key, choice);
     }
     const row = el('div', 'world-map-war-target');
     row.appendChild(el('div', 'world-map-fleet-name', key + ' · ' + fleet.stateText));
@@ -310,7 +310,7 @@ function renderWorldMapWar() {
     role.value = choice.role;
     role.setAttribute('aria-label', key + ' 城战行动');
     role.onchange = () => {
-      worldMapWarChoices.set(key, { role: role.value, cityId: 0 });
+      mapTabWarChoices.set(key, { role: role.value, cityId: 0 });
       renderWorldMapWar();
     };
 
@@ -323,14 +323,14 @@ function renderWorldMapWar() {
     for (const item of targets) {
       const option = document.createElement('option');
       option.value = String(item.cityId);
-      option.textContent = worldMapWarTargetLabel(item);
+      option.textContent = mapTabWarTargetLabel(item);
       target.appendChild(option);
     }
     target.value = String(choice.cityId || 0);
     target.disabled = choice.role === 'auto' || !targets.length;
     target.onchange = () => {
       const cityId = Number(target.value) || 0;
-      worldMapWarChoices.set(key, { role: choice.role, cityId });
+      mapTabWarChoices.set(key, { role: choice.role, cityId });
       const button = line.querySelector('button');
       if (button) button.disabled = !cityId || cityId === 0;
     };
@@ -349,7 +349,7 @@ function renderWorldMapWar() {
 }
 
 function renderWorldMapWarSettings() {
-  const settings = worldMapLive?.cityWarSettings;
+  const settings = mapTabLive?.cityWarSettings;
   if (!settings) return;
   for (const [id, value] of [['map-war-enabled', settings.enabled], ['map-war-online', settings.online], ['map-war-reattack', settings.reattack]]) {
     const input = $(id);
@@ -358,9 +358,9 @@ function renderWorldMapWarSettings() {
 }
 
 function dispatchWorldMapWarFleet(buildingId) {
-  const choice = worldMapWarChoices.get(String(buildingId));
+  const choice = mapTabWarChoices.get(String(buildingId));
   if (!choice || choice.role === 'auto' || !choice.cityId) return;
-  const target = worldMapWarTargetOptions(choice.role).find((item) => item.cityId === choice.cityId);
+  const target = mapTabWarTargetOptions(choice.role).find((item) => item.cityId === choice.cityId);
   if (!target) return;
   const action = choice.role === 'defend' ? '驻防' : '进攻';
   openConfirm('城战派遣', [
@@ -388,15 +388,15 @@ async function saveWorldMapWarSettings() {
         reattack: $('map-war-reattack')?.checked === true,
       }),
     });
-    if (worldMapLive) worldMapLive.cityWarSettings = result.cityWar;
+    if (mapTabLive) mapTabLive.cityWarSettings = result.cityWar;
     if (hint) hint.textContent = '城战自动化开关已保存';
   } catch (error) {
     if (hint) hint.textContent = '保存失败：' + error.message;
   }
 }
 
-function worldMapStatusLine() {
-  const state = worldMapLive;
+function mapTabStatusLine() {
+  const state = mapTabLive;
   if (!state) return '';
   const parts = [];
   parts.push(state.connected ? (state.stale ? '缓存' : '已同步') : (state.paused ? '已暂停' : '未连接'));
@@ -408,21 +408,21 @@ function worldMapStatusLine() {
   }
   const cargo = state.trade?.cargo;
   if (state.trade?.open && cargo?.cityId) {
-    parts.push('商船 ' + worldMapCityName(cargo.cityId) + ' → ' + worldMapCityName(cargo.moveToCityId));
+    parts.push('商船 ' + mapTabCityName(cargo.cityId) + ' → ' + mapTabCityName(cargo.moveToCityId));
   }
   if (state.warnings?.length) parts.push(state.warnings[0]);
   return parts.join(' · ');
 }
 
 function renderWorldMapStatus() {
-  worldMapSetStatus(worldMapStatusLine());
+  mapTabSetStatus(mapTabStatusLine());
 }
 
 function renderWorldMapLegend() {
   const box = $('map-legend');
   if (!box) return;
   clear(box);
-  const legend = worldMapLive?.legend ?? [];
+  const legend = mapTabLive?.legend ?? [];
   if (!legend.length) {
     box.appendChild(el('span', 'dim', '连接后读取势力归属'));
     return;
@@ -442,9 +442,9 @@ function renderWorldMapLegend() {
     box.appendChild(row);
   }
   // 城战标记图例：只在有宣战数据时展示，避免和平时期误导。
-  const war = worldMapLive?.war;
+  const war = mapTabLive?.war;
   if (war && ((war.attackTargets?.length ?? 0) || (war.defendTargets ?? []).some((target) => target.underAttack))) {
-    const marks = [['world-map-swatch-ring', worldMapAttackColor, 'dashed', '我方进攻目标'], ['world-map-swatch-ring', worldMapDefendColor, 'solid', '受袭（需防守）']];
+    const marks = [['world-map-swatch-ring', mapTabAttackColor, 'dashed', '我方进攻目标'], ['world-map-swatch-ring', mapTabDefendColor, 'solid', '受袭（需防守）']];
     for (const [cls, color, style, label] of marks) {
       const row = el('div', 'world-map-legend-row');
       const swatch = el('span', cls);
@@ -457,9 +457,9 @@ function renderWorldMapLegend() {
   }
 }
 
-function worldMapObjectText(cityId) {
-  const objects = worldMapObjectsByCity.get(cityId) ?? [];
-  return objects.map((entry) => worldMapObjectLabels[entry.kind] || entry.kind).join('、');
+function mapTabObjectText(cityId) {
+  const objects = mapTabObjectsByCity.get(cityId) ?? [];
+  return objects.map((entry) => mapTabObjectLabels[entry.kind] || entry.kind).join('、');
 }
 
 function renderWorldMapDetail(hit) {
@@ -475,7 +475,7 @@ function renderWorldMapDetail(hit) {
   const lines = [];
   if (hit.kind === 'city') {
     const city = hit.city;
-    const owner = worldMapLive?.cities?.find((row) => row.id === city.id);
+    const owner = mapTabLive?.cities?.find((row) => row.id === city.id);
     lines.push(city.name + ' · ' + city.level + ' 级' + (city.typeName ? ' · ' + city.typeName : ''));
     lines.push('势力：' + (Number(owner?.guildIdx) > 0 ? '联盟 #' + owner.guildIdx : '中立 / 野怪') + (owner?.own ? '（我方）' : ''));
     lines.push('资源田 ' + city.fieldCount + ' 块' + (owner?.battle ? ' · 交战中' : ''));
@@ -490,7 +490,7 @@ function renderWorldMapDetail(hit) {
       }).join('、');
       lines.push('交战 ' + fights.length + ' 处：' + text + (fights.length > 3 ? ' 等' : ''));
     }
-    const objects = worldMapObjectText(city.id);
+    const objects = mapTabObjectText(city.id);
     if (objects) lines.push('世界对象：' + objects);
   } else if (hit.kind === 'fleet') {
     const fleet = hit.fleet;
@@ -501,15 +501,15 @@ function renderWorldMapDetail(hit) {
       lines.push(fleet.buildingId + ' · ' + fleet.stateText);
       lines.push('耐久 ' + fmt(fleet.durability) + ' / ' + fmt(fleet.maxDura) + ' · 战力 ' + fmt(fleet.power));
     }
-    const object = worldMapObjectAtGrid(fleet.targetGridIdx);
-    const target = fleet.targetCityId ? worldMapCityName(fleet.targetCityId)
-      : (object ? (worldMapObjectLabels[object.kind] ?? object.kind) : worldMapCityAtCell(fleet.track?.to)?.name);
+    const object = mapTabObjectAtGrid(fleet.targetGridIdx);
+    const target = fleet.targetCityId ? mapTabCityName(fleet.targetCityId)
+      : (object ? (mapTabObjectLabels[object.kind] ?? object.kind) : mapTabCityAtCell(fleet.track?.to)?.name);
     lines.push('目标：' + (target || '原地'));
-    lines.push(fleet.track?.moving ? 'ETA ' + worldMapDuration(fleet.track.eta) : '已到达');
+    lines.push(fleet.track?.moving ? 'ETA ' + mapTabDuration(fleet.track.eta) : '已到达');
   } else if (hit.kind === 'object') {
-    const label = worldMapObjectLabels[hit.object.kind] ?? hit.object.kind;
+    const label = mapTabObjectLabels[hit.object.kind] ?? hit.object.kind;
     lines.push(label);
-    lines.push('位置 ' + worldMapCellName(hit.object.point.cell) + ' 格附近');
+    lines.push('位置 ' + mapTabCellName(hit.object.point.cell) + ' 格附近');
     if (hit.object.kind === 'merchantShip') {
       const owner = Number(hit.object.point.ownerGuildIdx) > 0
         ? '联盟 #' + hit.object.point.ownerGuildIdx
@@ -519,24 +519,24 @@ function renderWorldMapDetail(hit) {
   } else if (hit.kind === 'cargo') {
     const cargo = hit.cargo;
     lines.push(hit.own ? '我方商船 · 等级 ' + (cargo.cargoLv ?? '-') : (cargo.nickname || '其他玩家') + ' 的商船');
-    lines.push('航线：' + worldMapCityName(cargo.cityId) + ' → ' + worldMapCityName(cargo.moveToCityId));
-    lines.push(hit.track?.moving ? 'ETA ' + worldMapDuration(hit.track.eta) : '已停靠');
+    lines.push('航线：' + mapTabCityName(cargo.cityId) + ' → ' + mapTabCityName(cargo.moveToCityId));
+    lines.push(hit.track?.moving ? 'ETA ' + mapTabDuration(hit.track.eta) : '已停靠');
   }
   for (const line of lines) box.appendChild(el('div', null, line));
   if (hit.kind === 'city') appendWorldMapDefence(hit.city.id);
 }
 
 // 点击城池后异步拉取守军列表（CityDefenceRequest），追加在详情面板底部；过期响应按序号丢弃。
-let worldMapDefenceSeq = 0;
+let mapTabDefenceSeq = 0;
 async function appendWorldMapDefence(cityId) {
   const box = $('map-detail');
   if (!box) return;
-  const seq = ++worldMapDefenceSeq;
+  const seq = ++mapTabDefenceSeq;
   const holder = el('div', 'world-map-defence dim', '守军信息读取中…');
   box.appendChild(holder);
   try {
     const data = await call('/api/map/city-defence?cityId=' + encodeURIComponent(cityId));
-    if (seq !== worldMapDefenceSeq) return;
+    if (seq !== mapTabDefenceSeq) return;
     holder.classList.remove('dim');
     clear(holder);
     const fleets = data?.fleets ?? [];
@@ -553,16 +553,16 @@ async function appendWorldMapDefence(cityId) {
       holder.appendChild(el('div', null, label + faction + power + multiple));
     }
   } catch (error) {
-    if (seq !== worldMapDefenceSeq) return;
+    if (seq !== mapTabDefenceSeq) return;
     holder.classList.remove('dim');
     holder.textContent = '守军信息读取失败：' + error.message;
   }
 }
 
-function worldMapTooltipText(hit) {
+function mapTabTooltipText(hit) {
   if (!hit) return '';
   if (hit.kind === 'city') {
-    const owner = worldMapLive?.cities?.find((row) => row.id === hit.city.id);
+    const owner = mapTabLive?.cities?.find((row) => row.id === hit.city.id);
     const faction = Number(owner?.guildIdx) > 0 ? '联盟 #' + owner.guildIdx : '中立';
     return hit.city.name + ' · ' + hit.city.level + ' 级\n势力 ' + faction + (owner?.own ? '（我方）' : '');
   }
@@ -571,15 +571,15 @@ function worldMapTooltipText(hit) {
       ? (hit.fleet.kind === 'ally' ? '盟友 ' : '敌方 ') + (hit.fleet.owner?.nickname || hit.fleet.buildingId)
       : hit.fleet.buildingId;
     return label + ' · ' + hit.fleet.stateText + '\n' +
-      (hit.fleet.track?.moving ? 'ETA ' + worldMapDuration(hit.fleet.track.eta) : '已到达');
+      (hit.fleet.track?.moving ? 'ETA ' + mapTabDuration(hit.fleet.track.eta) : '已到达');
   }
   if (hit.kind === 'object') {
-    const label = worldMapObjectLabels[hit.object.kind] ?? hit.object.kind;
-    return label + '\n位置 ' + worldMapCellName(hit.object.point.cell) + ' 格附近';
+    const label = mapTabObjectLabels[hit.object.kind] ?? hit.object.kind;
+    return label + '\n位置 ' + mapTabCellName(hit.object.point.cell) + ' 格附近';
   }
   if (hit.kind === 'cargo') {
     return (hit.own ? '我方商船' : (hit.cargo.nickname || '其他玩家')) + '\n' +
-      (hit.track?.moving ? 'ETA ' + worldMapDuration(hit.track.eta) : '已停靠');
+      (hit.track?.moving ? 'ETA ' + mapTabDuration(hit.track.eta) : '已停靠');
   }
   return '';
 }
@@ -587,7 +587,7 @@ function worldMapTooltipText(hit) {
 function positionWorldMapTooltip(px, py) {
   const tip = $('map-tooltip');
   if (!tip) return;
-  const text = worldMapTooltipText(worldMapHover);
+  const text = mapTabTooltipText(mapTabHover);
   tip.hidden = !text;
   tip.textContent = text;
   if (!text) return;
@@ -602,14 +602,14 @@ function positionWorldMapTooltip(px, py) {
 
 function fitWorldMap() {
   const canvas = $('map-canvas');
-  if (!canvas || !worldMapLayout) return;
+  if (!canvas || !mapTabLayout) return;
   const width = canvas.clientWidth || 0;
   const height = canvas.clientHeight || 0;
   if (!width || !height) return;
-  const columns = worldMapLayout.columns || 1;
-  const rows = worldMapLayout.rows || 1;
+  const columns = mapTabLayout.columns || 1;
+  const rows = mapTabLayout.rows || 1;
   const scale = Math.max(8, Math.min(width / columns, height / rows) * 0.94);
-  worldMapView = {
+  mapTabView = {
     scale,
     tx: (width - columns * scale) / 2,
     ty: (height - rows * scale) / 2,
@@ -621,11 +621,11 @@ function fitWorldMap() {
 
 function focusWorldMapFleets() {
   const canvas = $('map-canvas');
-  const heads = (worldMapLive?.fleets ?? []).map((fleet) => worldMapHead(fleet.track)).filter(Boolean);
-  const cargo = worldMapLive?.trade?.cargo;
-  if (cargo?.track) heads.push(worldMapHead(cargo.track));
+  const heads = (mapTabLive?.fleets ?? []).map((fleet) => mapTabHead(fleet.track)).filter(Boolean);
+  const cargo = mapTabLive?.trade?.cargo;
+  if (cargo?.track) heads.push(mapTabHead(cargo.track));
   if (!canvas || !heads.length) {
-    worldMapSetStatus('当前没有可定位的舰队或商船');
+    mapTabSetStatus('当前没有可定位的舰队或商船');
     return;
   }
   const xs = heads.map((point) => point.x);
@@ -640,7 +640,7 @@ function focusWorldMapFleets() {
   const scale = Math.max(18, Math.min(width / spanX, height / spanY, 110));
   const centerX = (minX + maxX) / 2;
   const centerY = (minY + maxY) / 2;
-  worldMapView = {
+  mapTabView = {
     scale,
     tx: width / 2 - centerX * scale,
     ty: height / 2 - centerY * scale,
@@ -650,14 +650,14 @@ function focusWorldMapFleets() {
   };
 }
 
-function worldMapStaticKey(width, height) {
-  const state = worldMapLive;
+function mapTabStaticKey(width, height) {
+  const state = mapTabLive;
   return [
-    worldMapLayout?.scenarioId, worldMapLayout?.columns, worldMapLayout?.rows, width, height,
-    Math.round(worldMapView.scale * 100), Math.round(worldMapView.tx), Math.round(worldMapView.ty),
+    mapTabLayout?.scenarioId, mapTabLayout?.columns, mapTabLayout?.rows, width, height,
+    Math.round(mapTabView.scale * 100), Math.round(mapTabView.tx), Math.round(mapTabView.ty),
     state?.updatedAt ?? '', state?.ownCityIds?.length ?? 0,
-    worldMapLayerOn('fields') ? 1 : 0, worldMapLayerOn('faction') ? 1 : 0,
-    worldMapLayerOn('grid') ? 1 : 0, worldMapLayerOn('objects') ? 1 : 0,
+    mapTabLayerOn('fields') ? 1 : 0, mapTabLayerOn('faction') ? 1 : 0,
+    mapTabLayerOn('grid') ? 1 : 0, mapTabLayerOn('objects') ? 1 : 0,
   ].join('|');
 }
 
@@ -671,20 +671,20 @@ function drawWorldMapStatic(width, height, dpr) {
   ctx.fillStyle = '#0c2631';
   ctx.fillRect(0, 0, width, height);
 
-  const layout = worldMapLayout;
-  const scale = worldMapView.scale;
+  const layout = mapTabLayout;
+  const scale = mapTabView.scale;
   const columns = layout.columns || 1;
   const rows = layout.rows || 1;
-  const ownership = new Map((worldMapLive?.cities ?? []).map((row) => [row.id, row]));
+  const ownership = new Map((mapTabLive?.cities ?? []).map((row) => [row.id, row]));
   const gap = Math.max(1, Math.min(5, scale * 0.07));
 
   for (let row = 0; row < rows; row += 1) {
     for (let col = 0; col < columns; col += 1) {
-      const x = col * scale + worldMapView.tx;
-      const y = row * scale + worldMapView.ty;
-      ctx.fillStyle = worldMapEmptyColor;
+      const x = col * scale + mapTabView.tx;
+      const y = row * scale + mapTabView.ty;
+      ctx.fillStyle = mapTabEmptyColor;
       ctx.fillRect(x + gap / 2, y + gap / 2, scale - gap, scale - gap);
-      if (worldMapLayerOn('grid')) {
+      if (mapTabLayerOn('grid')) {
         ctx.strokeStyle = 'rgba(120, 170, 185, 0.12)';
         ctx.lineWidth = 1;
         ctx.strokeRect(Math.round(x) + 0.5, Math.round(y) + 0.5, Math.round(scale), Math.round(scale));
@@ -698,36 +698,36 @@ function drawWorldMapStatic(width, height, dpr) {
     const owned = Number(owner?.guildIdx) > 0;
     const colSpan = Math.max(1, city.colSpan || 1);
     const rowSpan = Math.max(1, city.rowSpan || 1);
-    const x = city.col * scale + worldMapView.tx;
-    const y = city.row * scale + worldMapView.ty;
+    const x = city.col * scale + mapTabView.tx;
+    const y = city.row * scale + mapTabView.ty;
     const blockWidth = scale * colSpan;
     const blockHeight = scale * rowSpan;
     const size = blockWidth - gap * 2;
     const sizeY = blockHeight - gap * 2;
-    const color = worldMapLayerOn('faction') && owned
-      ? worldMapGuildColor(owner.guildIdx)
-      : (worldMapLayerOn('faction') ? worldMapNeutralColor : '#7f9aa1');
+    const color = mapTabLayerOn('faction') && owned
+      ? mapTabGuildColor(owner.guildIdx)
+      : (mapTabLayerOn('faction') ? mapTabNeutralColor : '#7f9aa1');
     ctx.fillStyle = color;
     ctx.fillRect(x + gap, y + gap, size, sizeY);
     if (owner?.battle) {
-      ctx.strokeStyle = worldMapBattleColor;
+      ctx.strokeStyle = mapTabBattleColor;
       ctx.lineWidth = Math.max(2, scale * 0.045);
       ctx.strokeRect(x + gap + 1, y + gap + 1, size - 2, sizeY - 2);
     }
     if (owner?.own) {
-      ctx.strokeStyle = worldMapOwnColor;
+      ctx.strokeStyle = mapTabOwnColor;
       ctx.lineWidth = Math.max(2, scale * 0.05);
       ctx.strokeRect(x + gap, y + gap, size, sizeY);
     }
     if (owner?.underAttack) {
       // 受袭城（宣战守方是我方）：外围一圈防守蓝框。
-      ctx.strokeStyle = worldMapDefendColor;
+      ctx.strokeStyle = mapTabDefendColor;
       ctx.lineWidth = Math.max(2, scale * 0.05);
       ctx.strokeRect(x + gap - 3, y + gap - 3, size + 6, sizeY + 6);
     }
     if (owner?.attackTarget) {
       // 我方宣战的进攻目标：外围橙色虚框，与其他盟之间的交战红框区分。
-      ctx.strokeStyle = worldMapAttackColor;
+      ctx.strokeStyle = mapTabAttackColor;
       ctx.lineWidth = Math.max(2, scale * 0.05);
       ctx.setLineDash([Math.max(4, scale * 0.16), Math.max(3, scale * 0.1)]);
       ctx.strokeRect(x + gap - 3, y + gap - 3, size + 6, sizeY + 6);
@@ -749,13 +749,13 @@ function drawWorldMapStatic(width, height, dpr) {
       }
     }
 
-    if (worldMapLayerOn('fields')) {
-      const fields = worldMapFieldsByCity.get(city.id) ?? [];
+    if (mapTabLayerOn('fields')) {
+      const fields = mapTabFieldsByCity.get(city.id) ?? [];
       const pip = Math.max(2, Math.min(5, scale * 0.07));
       const startX = x + gap + 3;
       const startY = y + blockHeight - gap - pip - 3;
       fields.slice(0, 7).forEach((field, index) => {
-        ctx.fillStyle = worldMapResColors[field.resType] ?? '#7fa6a0';
+        ctx.fillStyle = mapTabResColors[field.resType] ?? '#7fa6a0';
         ctx.fillRect(startX + index * (pip + 2), startY, pip, pip);
       });
       if (fields.length > 7 && scale >= 40) {
@@ -767,7 +767,7 @@ function drawWorldMapStatic(width, height, dpr) {
     }
   }
 
-  if (worldMapLayerOn('objects')) {
+  if (mapTabLayerOn('objects')) {
     // 世界对象画在真实位置（硅矿/沉船），不再挤在最近城池的角标里。
     // 静态宝藏位（treasureData）只是货轮停靠点，全部不显示，只画当前万吨货轮那格；
     // bossData 是四个候选位，今日 Boss 在动态层按 WorldBossInfo.gridIdx 画，这里全跳过。
@@ -777,7 +777,7 @@ function drawWorldMapStatic(width, height, dpr) {
       const points = Array.isArray(list) ? list : (list ? [list] : []);
       for (const point of points) {
         if (!point?.cell) continue;
-        const screen = worldMapScreen(point.cell);
+        const screen = mapTabScreen(point.cell);
         if (screen.x < -20 || screen.y < -20 || screen.x > width + 20 || screen.y > height + 20) continue;
         ctx.beginPath();
         ctx.moveTo(screen.x, screen.y - size);
@@ -785,7 +785,7 @@ function drawWorldMapStatic(width, height, dpr) {
         ctx.lineTo(screen.x, screen.y + size);
         ctx.lineTo(screen.x - size, screen.y);
         ctx.closePath();
-        ctx.fillStyle = worldMapObjectColors[kind] ?? '#9aa9ae';
+        ctx.fillStyle = mapTabObjectColors[kind] ?? '#9aa9ae';
         ctx.fill();
         ctx.strokeStyle = 'rgba(10, 30, 38, 0.8)';
         ctx.lineWidth = 1;
@@ -796,7 +796,7 @@ function drawWorldMapStatic(width, height, dpr) {
           ctx.font = '9px system-ui, sans-serif';
           ctx.textAlign = 'center';
           ctx.textBaseline = 'top';
-          ctx.fillText(worldMapObjectLabels[kind] ?? kind, screen.x, screen.y + size + 2);
+          ctx.fillText(mapTabObjectLabels[kind] ?? kind, screen.x, screen.y + size + 2);
         }
       }
     }
@@ -807,11 +807,11 @@ function drawWorldMapStatic(width, height, dpr) {
 
 function drawWorldMapRoute(ctx, track, color, faded) {
   if (!track?.from || !track?.to || !track.moving) return;
-  const scale = worldMapView.scale;
-  const from = worldMapScreen(track.from);
-  const to = worldMapScreen(track.to);
-  const head = worldMapHead(track);
-  const now = worldMapScreen(head);
+  const scale = mapTabView.scale;
+  const from = mapTabScreen(track.from);
+  const to = mapTabScreen(track.to);
+  const head = mapTabHead(track);
+  const now = mapTabScreen(head);
   ctx.beginPath();
   ctx.setLineDash([5, 5]);
   ctx.strokeStyle = faded;
@@ -821,7 +821,7 @@ function drawWorldMapRoute(ctx, track, color, faded) {
   ctx.stroke();
   ctx.beginPath();
   ctx.setLineDash([7, 6]);
-  ctx.lineDashOffset = -worldMapDash;
+  ctx.lineDashOffset = -mapTabDash;
   ctx.strokeStyle = color;
   ctx.lineWidth = Math.max(1.5, Math.min(3, scale * 0.035));
   ctx.moveTo(now.x, now.y);
@@ -833,9 +833,9 @@ function drawWorldMapRoute(ctx, track, color, faded) {
 
 function drawWorldMapMarker(ctx, point, to, color, kind) {
   if (!ctx || !point) return;
-  const screen = worldMapScreen(point);
+  const screen = mapTabScreen(point);
   const angle = to ? Math.atan2(to.y - point.y, to.x - point.x) : 0;
-  const size = Math.max(3, Math.min(7, worldMapView.scale * 0.11));
+  const size = Math.max(3, Math.min(7, mapTabView.scale * 0.11));
   if (kind === 'ship') {
     ctx.beginPath();
     ctx.arc(screen.x, screen.y, Math.max(3, size * 0.8), 0, Math.PI * 2);
@@ -862,94 +862,94 @@ function drawWorldMapMarker(ctx, point, to, color, kind) {
   ctx.restore();
 }
 
-function drawWorldMap() {
+function mapTabDrawWorld() {
   const canvas = $('map-canvas');
-  if (!canvas || !worldMapLayout || typeof canvas.getContext !== 'function') return;
+  if (!canvas || !mapTabLayout || typeof canvas.getContext !== 'function') return;
   const width = canvas.clientWidth || 0;
   const height = canvas.clientHeight || 0;
   if (!width || !height) return;
-  if (!worldMapView.userAdjusted) fitWorldMap();
+  if (!mapTabView.userAdjusted) fitWorldMap();
 
   const dpr = Math.min(2, window.devicePixelRatio || 1);
   if (canvas.width !== Math.round(width * dpr) || canvas.height !== Math.round(height * dpr)) {
     canvas.width = Math.round(width * dpr);
     canvas.height = Math.round(height * dpr);
-    worldMapStatic = { key: '', canvas: null };
+    mapTabStatic = { key: '', canvas: null };
   }
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, width, height);
-  worldMapDash = (Date.now() / 55) % 13;
+  mapTabDash = (Date.now() / 55) % 13;
 
-  const key = worldMapStaticKey(width, height);
-  if (worldMapStatic.key !== key || !worldMapStatic.canvas) {
-    worldMapStatic = { key, canvas: drawWorldMapStatic(width, height, dpr) };
+  const key = mapTabStaticKey(width, height);
+  if (mapTabStatic.key !== key || !mapTabStatic.canvas) {
+    mapTabStatic = { key, canvas: drawWorldMapStatic(width, height, dpr) };
   }
-  if (worldMapStatic.canvas) ctx.drawImage(worldMapStatic.canvas, 0, 0, width, height);
+  if (mapTabStatic.canvas) ctx.drawImage(mapTabStatic.canvas, 0, 0, width, height);
 
-  if (worldMapLayerOn('objects')) {
+  if (mapTabLayerOn('objects')) {
     // 当前万吨货轮：绿色方框标出整格（同官方地图），有数据才画。
-    const merchantShip = worldMapLive?.merchantShip;
+    const merchantShip = mapTabLive?.merchantShip;
     if (merchantShip?.cell) {
-      const screen = worldMapScreen(merchantShip.cell);
-      const half = worldMapView.scale / 2;
-      ctx.strokeStyle = worldMapObjectColors.merchantShip;
-      ctx.lineWidth = Math.max(1.5, Math.min(3, worldMapView.scale * 0.05));
-      ctx.strokeRect(screen.x - half + 2, screen.y - half + 2, worldMapView.scale - 4, worldMapView.scale - 4);
-      if (worldMapView.scale >= 34) {
+      const screen = mapTabScreen(merchantShip.cell);
+      const half = mapTabView.scale / 2;
+      ctx.strokeStyle = mapTabObjectColors.merchantShip;
+      ctx.lineWidth = Math.max(1.5, Math.min(3, mapTabView.scale * 0.05));
+      ctx.strokeRect(screen.x - half + 2, screen.y - half + 2, mapTabView.scale - 4, mapTabView.scale - 4);
+      if (mapTabView.scale >= 34) {
         ctx.fillStyle = '#7dffa2';
         ctx.font = '10px system-ui, sans-serif';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
-        ctx.fillText(worldMapObjectLabels.merchantShip, screen.x, screen.y + half + 3);
+        ctx.fillText(mapTabObjectLabels.merchantShip, screen.x, screen.y + half + 3);
       }
     }
     // 今日世界 Boss：静态 bossData 只是候选位，只画 WorldBossInfo.gridIdx 命中的那一只。
-    const bossGrid = Number(worldMapLive?.worldBoss?.gridIdx) || 0;
+    const bossGrid = Number(mapTabLive?.worldBoss?.gridIdx) || 0;
     const bossPoint = bossGrid
-      ? (Array.isArray(worldMapLayout.objects?.boss) ? worldMapLayout.objects.boss : [])
+      ? (Array.isArray(mapTabLayout.objects?.boss) ? mapTabLayout.objects.boss : [])
         .find((point) => Number(point?.gridIdx) === bossGrid)
       : null;
     if (bossPoint?.cell) {
-      const screen = worldMapScreen(bossPoint.cell);
-      const size = Math.max(3.5, Math.min(7, worldMapView.scale * 0.14));
+      const screen = mapTabScreen(bossPoint.cell);
+      const size = Math.max(3.5, Math.min(7, mapTabView.scale * 0.14));
       ctx.beginPath();
       ctx.moveTo(screen.x, screen.y - size);
       ctx.lineTo(screen.x + size, screen.y);
       ctx.lineTo(screen.x, screen.y + size);
       ctx.lineTo(screen.x - size, screen.y);
       ctx.closePath();
-      ctx.fillStyle = worldMapObjectColors.boss;
+      ctx.fillStyle = mapTabObjectColors.boss;
       ctx.fill();
       ctx.strokeStyle = 'rgba(10, 30, 38, 0.8)';
       ctx.lineWidth = 1;
       ctx.stroke();
-      if (worldMapView.scale >= 42) {
+      if (mapTabView.scale >= 42) {
         ctx.fillStyle = 'rgba(235, 246, 245, 0.85)';
         ctx.font = '9px system-ui, sans-serif';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
-        ctx.fillText(worldMapObjectLabels.boss, screen.x, screen.y + size + 2);
+        ctx.fillText(mapTabObjectLabels.boss, screen.x, screen.y + size + 2);
       }
     }
   }
 
-  if (worldMapLayerOn('myFleets')) {
-    for (const fleet of worldMapLive?.fleets ?? []) {
-      const head = worldMapHead(fleet.track);
+  if (mapTabLayerOn('myFleets')) {
+    for (const fleet of mapTabLive?.fleets ?? []) {
+      const head = mapTabHead(fleet.track);
       if (!head) continue;
       drawWorldMapRoute(ctx, fleet.track, '#ffd166', 'rgba(255, 209, 102, 0.22)');
-      drawWorldMapMarker(ctx, head, fleet.track?.to, worldMapOwnColor, 'fleet');
+      drawWorldMapMarker(ctx, head, fleet.track?.to, mapTabOwnColor, 'fleet');
       // 自己的舰队始终标注名称 + 耐久；行军/维修时再补一行实时倒计时。
-      const serverNow = worldMapServerNow();
+      const serverNow = mapTabServerNow();
       const lines = [fleet.buildingId];
       if (fleet.maxDura) lines.push('耐久 ' + fmt(fleet.durability) + '/' + fmt(fleet.maxDura) +
-        (fleet.state === 2 && fleet.track?.moving ? ' · ' + worldMapClock(fleet.track.end - serverNow) : ''));
+        (fleet.state === 2 && fleet.track?.moving ? ' · ' + mapTabClock(fleet.track.end - serverNow) : ''));
       if (fleet.state === 4 && Number(fleet.repairEndTs) > serverNow) {
-        lines.push('维修 ' + worldMapClock(fleet.repairEndTs - serverNow));
+        lines.push('维修 ' + mapTabClock(fleet.repairEndTs - serverNow));
       }
-      const screen = worldMapScreen(head);
+      const screen = mapTabScreen(head);
       ctx.font = '10px system-ui, sans-serif';
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
@@ -964,14 +964,14 @@ function drawWorldMap() {
     }
   }
 
-  const worldFleets = worldMapLive?.worldFleets ?? [];
+  const worldFleets = mapTabLive?.worldFleets ?? [];
   const drawWorldFleet = (fleet, color, faded) => {
-    const head = worldMapHead(fleet.track);
+    const head = mapTabHead(fleet.track);
     if (!head) return;
     drawWorldMapRoute(ctx, fleet.track, color, faded);
     drawWorldMapMarker(ctx, head, fleet.track?.to, color, 'fleet');
-    if (worldMapView.scale >= 80) {
-      const screen = worldMapScreen(head);
+    if (mapTabView.scale >= 80) {
+      const screen = mapTabScreen(head);
       ctx.fillStyle = '#e8f2f2';
       ctx.font = '10px system-ui, sans-serif';
       ctx.textAlign = 'left';
@@ -979,27 +979,27 @@ function drawWorldMap() {
       ctx.fillText(fleet.owner?.nickname || fleet.buildingId, screen.x + 7, screen.y - 7);
     }
   };
-  if (worldMapLayerOn('allyFleets')) {
+  if (mapTabLayerOn('allyFleets')) {
     for (const fleet of worldFleets) if (fleet.kind === 'ally') drawWorldFleet(fleet, '#7ee0c8', 'rgba(126, 224, 200, 0.22)');
   }
-  if (worldMapLayerOn('enemyFleets')) {
+  if (mapTabLayerOn('enemyFleets')) {
     for (const fleet of worldFleets) if (fleet.kind === 'enemy') drawWorldFleet(fleet, '#e2685f', 'rgba(226, 104, 95, 0.22)');
   }
 
-  if (worldMapLive?.trade?.open) {
-    const cargo = worldMapLive.trade.cargo;
-    if (worldMapLayerOn('trade') && cargo?.track) {
-      const head = worldMapHead(cargo.track);
+  if (mapTabLive?.trade?.open) {
+    const cargo = mapTabLive.trade.cargo;
+    if (mapTabLayerOn('trade') && cargo?.track) {
+      const head = mapTabHead(cargo.track);
       if (head) {
         drawWorldMapRoute(ctx, cargo.track, '#ffbd77', 'rgba(255, 189, 119, 0.22)');
         drawWorldMapMarker(ctx, head, cargo.track?.to, '#ffbd77', 'ship');
       }
     }
-    if (worldMapLayerOn('allyTrade')) {
-      const ownGuildIdx = Number(worldMapLive.ownGuildIdx) || 0;
-      for (const ship of worldMapLive.trade.worldCargo ?? []) {
+    if (mapTabLayerOn('allyTrade')) {
+      const ownGuildIdx = Number(mapTabLive.ownGuildIdx) || 0;
+      for (const ship of mapTabLive.trade.worldCargo ?? []) {
         if (!ship.track || Number(ship.guildIdx) !== ownGuildIdx || !ownGuildIdx) continue;
-        const head = worldMapHead(ship.track);
+        const head = mapTabHead(ship.track);
         if (!head) continue;
         drawWorldMapRoute(ctx, ship.track, 'rgba(126, 224, 200, 0.7)', 'rgba(126, 224, 200, 0.12)');
         drawWorldMapMarker(ctx, head, ship.track?.to, 'rgba(126, 224, 200, 0.7)', 'ship');
@@ -1014,206 +1014,206 @@ function drawWorldMap() {
       x: hit.city.col + Math.max(1, hit.city.colSpan || 1) / 2,
       y: hit.city.row + Math.max(1, hit.city.rowSpan || 1) / 2,
     };
-    else if (hit.kind === 'fleet') point = worldMapHead(hit.fleet.track);
-    else if (hit.kind === 'cargo') point = worldMapHead(hit.track ?? hit.cargo?.track);
+    else if (hit.kind === 'fleet') point = mapTabHead(hit.fleet.track);
+    else if (hit.kind === 'cargo') point = mapTabHead(hit.track ?? hit.cargo?.track);
     if (!point) return;
-    const screen = worldMapScreen(point);
+    const screen = mapTabScreen(point);
     ctx.beginPath();
-    ctx.arc(screen.x, screen.y, Math.max(6, worldMapView.scale * 0.42), 0, Math.PI * 2);
+    ctx.arc(screen.x, screen.y, Math.max(6, mapTabView.scale * 0.42), 0, Math.PI * 2);
     ctx.strokeStyle = color;
     ctx.lineWidth = width;
     ctx.stroke();
   };
-  outline(worldMapHover, '#ffffff', 1.5);
-  outline(worldMapSelected, '#ffbd77', 2);
+  outline(mapTabHover, '#ffffff', 1.5);
+  outline(mapTabSelected, '#ffbd77', 2);
 }
 
 function startWorldMapTimers() {
-  if (!worldMapRefreshTimer) {
-    worldMapRefreshTimer = setInterval(() => {
-      if (!worldMapVisible() || document.hidden) return;
+  if (!mapTabRefreshTimer) {
+    mapTabRefreshTimer = setInterval(() => {
+      if (!mapTabVisible() || document.hidden) return;
       const auto = $('map-auto');
       if (auto && !auto.checked) return;
       if (!current || disconnected.has(current) || snapshot.paused) return;
-      if (worldMapLoading) return;
-      const wantFresh = Date.now() - worldMapLastFreshAt >= 30000;
+      if (mapTabLoading) return;
+      const wantFresh = Date.now() - mapTabLastFreshAt >= 30000;
       void refreshWorldMapState(wantFresh);
     }, 5000);
   }
   if (typeof requestAnimationFrame === 'function') {
-    if (!worldMapFrame) worldMapFrame = requestAnimationFrame(worldMapAnimate);
+    if (!mapTabFrame) mapTabFrame = requestAnimationFrame(mapTabAnimate);
     return;
   }
   // 无 requestAnimationFrame 的环境（离线测试桩）退回低频重绘。
-  if (!worldMapTimer) worldMapTimer = setInterval(() => {
-    if (worldMapVisible() && !document.hidden) drawWorldMap();
+  if (!mapTabTimer) mapTabTimer = setInterval(() => {
+    if (mapTabVisible() && !document.hidden) mapTabDrawWorld();
   }, 500);
 }
 
-function worldMapAnimate() {
-  worldMapFrame = null;
-  if (!worldMapVisible() || document.hidden) return;
-  drawWorldMap();
-  worldMapFrame = requestAnimationFrame(worldMapAnimate);
+function mapTabAnimate() {
+  mapTabFrame = null;
+  if (!mapTabVisible() || document.hidden) return;
+  mapTabDrawWorld();
+  mapTabFrame = requestAnimationFrame(mapTabAnimate);
 }
 
 async function refreshWorldMapState(fresh = false) {
   const account = current;
-  if (!account || account !== worldMapAccount) return;
-  const version = worldMapVersion;
+  if (!account || account !== mapTabAccount) return;
+  const version = mapTabVersion;
   try {
     const data = await call('/api/map/state' + (fresh ? '?fresh=1' : ''));
-    if (version !== worldMapVersion || account !== current) return;
-    worldMapLastFreshAt = fresh ? Date.now() : worldMapLastFreshAt;
-    worldMapApplyState(data);
-    if (data.scenarioId && worldMapLayout && Number(data.scenarioId) !== Number(worldMapLayout.scenarioId)) {
-      await refreshWorldMap(true);
+    if (version !== mapTabVersion || account !== current) return;
+    mapTabLastFreshAt = fresh ? Date.now() : mapTabLastFreshAt;
+    mapTabApplyState(data);
+    if (data.scenarioId && mapTabLayout && Number(data.scenarioId) !== Number(mapTabLayout.scenarioId)) {
+      await mapTabRefresh(true);
       return;
     }
-    worldMapSetEmpty('');
-    drawWorldMap();
+    mapTabSetEmpty('');
+    mapTabDrawWorld();
   } catch (error) {
-    worldMapSetStatus('地图状态读取失败：' + error.message);
+    mapTabSetStatus('地图状态读取失败：' + error.message);
   }
 }
 
-async function refreshWorldMap(force = false) {
+async function mapTabRefresh(force = false) {
   bindWorldMap();
   startWorldMapTimers();
   const account = current;
   if (!account) {
-    worldMapSetEmpty('请先在顶部选择账号');
-    worldMapSetStatus('');
+    mapTabSetEmpty('请先在顶部选择账号');
+    mapTabSetStatus('');
     return;
   }
-  if (account !== worldMapAccount) {
-    worldMapAccount = account;
-    worldMapLayout = null;
-    worldMapLive = null;
-    worldMapLastFreshAt = 0;
-    worldMapWarChoices = new Map();
+  if (account !== mapTabAccount) {
+    mapTabAccount = account;
+    mapTabLayout = null;
+    mapTabLive = null;
+    mapTabLastFreshAt = 0;
+    mapTabWarChoices = new Map();
   }
-  const version = ++worldMapVersion;
-  worldMapLoading = true;
-  worldMapSetEmpty('正在加载世界地图…');
+  const version = ++mapTabVersion;
+  mapTabLoading = true;
+  mapTabSetEmpty('正在加载世界地图…');
   try {
-    if (!worldMapLayout || force) {
+    if (!mapTabLayout || force) {
       const layout = await call('/api/map/layout');
-      if (version !== worldMapVersion || account !== current) return;
+      if (version !== mapTabVersion || account !== current) return;
       applyWorldMapLayout(layout);
     }
-    const fresh = force || Date.now() - worldMapLastFreshAt >= 30000;
+    const fresh = force || Date.now() - mapTabLastFreshAt >= 30000;
     const data = await call('/api/map/state' + (fresh ? '?fresh=1' : ''));
-    if (version !== worldMapVersion || account !== current) return;
-    if (fresh) worldMapLastFreshAt = Date.now();
-    worldMapApplyState(data);
-    worldMapSetEmpty('');
-    if (!worldMapView.userAdjusted) fitWorldMap();
-    drawWorldMap();
+    if (version !== mapTabVersion || account !== current) return;
+    if (fresh) mapTabLastFreshAt = Date.now();
+    mapTabApplyState(data);
+    mapTabSetEmpty('');
+    if (!mapTabView.userAdjusted) fitWorldMap();
+    mapTabDrawWorld();
   } catch (error) {
-    worldMapSetEmpty('世界地图加载失败：' + error.message);
-    worldMapSetStatus('加载失败');
+    mapTabSetEmpty('世界地图加载失败：' + error.message);
+    mapTabSetStatus('加载失败');
   } finally {
-    worldMapLoading = false;
+    mapTabLoading = false;
   }
 }
 
-function worldMapHitAt(px, py) {
-  if (!worldMapLayout) return null;
-  const scale = worldMapView.scale;
-  const gx = (px - worldMapView.tx) / scale;
-  const gy = (py - worldMapView.ty) / scale;
-  if (gx < 0 || gy < 0 || gx >= worldMapLayout.columns || gy >= worldMapLayout.rows) return null;
+function mapTabHitAt(px, py) {
+  if (!mapTabLayout) return null;
+  const scale = mapTabView.scale;
+  const gx = (px - mapTabView.tx) / scale;
+  const gy = (py - mapTabView.ty) / scale;
+  if (gx < 0 || gy < 0 || gx >= mapTabLayout.columns || gy >= mapTabLayout.rows) return null;
 
   const near = (point) => {
-    const screen = worldMapScreen(point);
+    const screen = mapTabScreen(point);
     return Math.hypot(screen.x - px, screen.y - py) <= 12;
   };
-  if (worldMapLayerOn('myFleets')) {
-    for (const fleet of worldMapLive?.fleets ?? []) {
-      const head = worldMapHead(fleet.track);
+  if (mapTabLayerOn('myFleets')) {
+    for (const fleet of mapTabLive?.fleets ?? []) {
+      const head = mapTabHead(fleet.track);
       if (head && near(head)) return { kind: 'fleet', fleet };
     }
   }
-  if (worldMapLayerOn('allyFleets') || worldMapLayerOn('enemyFleets')) {
-    for (const fleet of worldMapLive?.worldFleets ?? []) {
-      if (fleet.kind === 'ally' && !worldMapLayerOn('allyFleets')) continue;
-      if (fleet.kind === 'enemy' && !worldMapLayerOn('enemyFleets')) continue;
-      const head = worldMapHead(fleet.track);
+  if (mapTabLayerOn('allyFleets') || mapTabLayerOn('enemyFleets')) {
+    for (const fleet of mapTabLive?.worldFleets ?? []) {
+      if (fleet.kind === 'ally' && !mapTabLayerOn('allyFleets')) continue;
+      if (fleet.kind === 'enemy' && !mapTabLayerOn('enemyFleets')) continue;
+      const head = mapTabHead(fleet.track);
       if (head && near(head)) return { kind: 'fleet', fleet };
     }
   }
-  const cargo = worldMapLive?.trade?.cargo;
-  if (worldMapLayerOn('trade') && cargo?.track && near(worldMapHead(cargo.track))) {
+  const cargo = mapTabLive?.trade?.cargo;
+  if (mapTabLayerOn('trade') && cargo?.track && near(mapTabHead(cargo.track))) {
     return { kind: 'cargo', cargo, track: cargo.track, own: true };
   }
-  if (worldMapLayerOn('allyTrade')) {
-    const ownGuildIdx = Number(worldMapLive?.ownGuildIdx) || 0;
-    for (const ship of worldMapLive?.trade?.worldCargo ?? []) {
+  if (mapTabLayerOn('allyTrade')) {
+    const ownGuildIdx = Number(mapTabLive?.ownGuildIdx) || 0;
+    for (const ship of mapTabLive?.trade?.worldCargo ?? []) {
       if (!ownGuildIdx || Number(ship.guildIdx) !== ownGuildIdx) continue;
-      const head = worldMapHead(ship.track);
+      const head = mapTabHead(ship.track);
       if (head && near(head)) return { kind: 'cargo', cargo: ship, track: ship.track, own: false };
     }
   }
-  if (worldMapLayerOn('objects')) {
-    const merchantShip = worldMapLive?.merchantShip;
+  if (mapTabLayerOn('objects')) {
+    const merchantShip = mapTabLive?.merchantShip;
     if (merchantShip?.cell && near(merchantShip.cell)) {
       return { kind: 'object', object: { kind: 'merchantShip', point: merchantShip } };
     }
-    for (const [kind, list] of Object.entries(worldMapLayout.objects ?? {})) {
+    for (const [kind, list] of Object.entries(mapTabLayout.objects ?? {})) {
       // 静态宝藏位只是货轮停靠点，悬停也不当作对象命中；
       // boss 候选位里只有今日 gridIdx 命中的那只在地图上存在。
       if (kind === 'treasure') continue;
       const points = Array.isArray(list) ? list : (list ? [list] : []);
       for (const point of points) {
-        if (kind === 'boss' && Number(point?.gridIdx) !== Number(worldMapLive?.worldBoss?.gridIdx)) continue;
+        if (kind === 'boss' && Number(point?.gridIdx) !== Number(mapTabLive?.worldBoss?.gridIdx)) continue;
         if (point?.cell && near(point.cell)) return { kind: 'object', object: { kind, point } };
       }
     }
   }
-  const city = worldMapCityAtCell({ x: gx, y: gy });
+  const city = mapTabCityAtCell({ x: gx, y: gy });
   if (city) return { kind: 'city', city };
   return null;
 }
 
 function bindWorldMap() {
   const canvas = $('map-canvas');
-  if (!canvas || canvas.dataset.worldMapBound === '1') return;
-  canvas.dataset.worldMapBound = '1';
+  if (!canvas || canvas.dataset.mapTabBound === '1') return;
+  canvas.dataset.mapTabBound = '1';
 
   for (const input of document.querySelectorAll('[data-map-layer]')) {
-    worldMapLayers[input.dataset.mapLayer] = input.checked !== false;
+    mapTabLayers[input.dataset.mapLayer] = input.checked !== false;
     input.onchange = () => {
-      worldMapLayers[input.dataset.mapLayer] = input.checked;
-      worldMapStatic = { key: '', canvas: null };
-      drawWorldMap();
+      mapTabLayers[input.dataset.mapLayer] = input.checked;
+      mapTabStatic = { key: '', canvas: null };
+      mapTabDrawWorld();
     };
   }
 
   const refresh = $('map-refresh');
-  if (refresh) refresh.onclick = () => { void refreshWorldMap(true); };
+  if (refresh) refresh.onclick = () => { void mapTabRefresh(true); };
   const fit = $('map-fit');
-  if (fit) fit.onclick = () => { fitWorldMap(); worldMapStatic = { key: '', canvas: null }; drawWorldMap(); };
+  if (fit) fit.onclick = () => { fitWorldMap(); mapTabStatic = { key: '', canvas: null }; mapTabDrawWorld(); };
   const focus = $('map-focus');
-  if (focus) focus.onclick = () => { focusWorldMapFleets(); worldMapStatic = { key: '', canvas: null }; drawWorldMap(); };
+  if (focus) focus.onclick = () => { focusWorldMapFleets(); mapTabStatic = { key: '', canvas: null }; mapTabDrawWorld(); };
   const warSave = $('map-war-save');
   if (warSave) warSave.onclick = () => { void saveWorldMapWarSettings(); };
 
   canvas.addEventListener('wheel', (event) => {
-    if (!worldMapLayout) return;
+    if (!mapTabLayout) return;
     event.preventDefault();
     const rect = canvas.getBoundingClientRect();
     const mx = event.clientX - rect.left;
     const my = event.clientY - rect.top;
-    const before = { x: (mx - worldMapView.tx) / worldMapView.scale, y: (my - worldMapView.ty) / worldMapView.scale };
-    const scale = Math.min(160, Math.max(8, worldMapView.scale * (event.deltaY < 0 ? 1.12 : 1 / 1.12)));
-    worldMapView = {
-      ...worldMapView, scale, userAdjusted: true,
+    const before = { x: (mx - mapTabView.tx) / mapTabView.scale, y: (my - mapTabView.ty) / mapTabView.scale };
+    const scale = Math.min(160, Math.max(8, mapTabView.scale * (event.deltaY < 0 ? 1.12 : 1 / 1.12)));
+    mapTabView = {
+      ...mapTabView, scale, userAdjusted: true,
       tx: mx - before.x * scale,
       ty: my - before.y * scale,
     };
-    worldMapStatic = { key: '', canvas: null };
-    drawWorldMap();
+    mapTabStatic = { key: '', canvas: null };
+    mapTabDrawWorld();
   }, { passive: false });
 
   // Pointer Events 统一鼠标与触摸；粗指针默认放行页面滚动（pan-y），点“移动地图”后锁定画布拖拽。
@@ -1233,50 +1233,50 @@ function bindWorldMap() {
   canvas.addEventListener('pointerdown', (event) => {
     if (event.pointerType !== 'mouse' && !mapTouchPan) return;
     canvas.setPointerCapture(event.pointerId);
-    worldMapDragMoved = false;
-    worldMapDrag = { x: event.clientX, y: event.clientY, tx: worldMapView.tx, ty: worldMapView.ty };
+    mapTabDragMoved = false;
+    mapTabDrag = { x: event.clientX, y: event.clientY, tx: mapTabView.tx, ty: mapTabView.ty };
   });
   canvas.addEventListener('pointermove', (event) => {
     const rect = canvas.getBoundingClientRect();
     const mx = event.clientX - rect.left;
     const my = event.clientY - rect.top;
-    if (worldMapDrag) {
-      const dx = event.clientX - worldMapDrag.x;
-      const dy = event.clientY - worldMapDrag.y;
-      if (Math.abs(dx) + Math.abs(dy) > 2) worldMapDragMoved = true;
-      worldMapView = { ...worldMapView, tx: worldMapDrag.tx + dx, ty: worldMapDrag.ty + dy, userAdjusted: true };
-      worldMapStatic = { key: '', canvas: null };
-      drawWorldMap();
+    if (mapTabDrag) {
+      const dx = event.clientX - mapTabDrag.x;
+      const dy = event.clientY - mapTabDrag.y;
+      if (Math.abs(dx) + Math.abs(dy) > 2) mapTabDragMoved = true;
+      mapTabView = { ...mapTabView, tx: mapTabDrag.tx + dx, ty: mapTabDrag.ty + dy, userAdjusted: true };
+      mapTabStatic = { key: '', canvas: null };
+      mapTabDrawWorld();
       return;
     }
     if (event.pointerType !== 'mouse') return;
-    worldMapHover = worldMapHitAt(mx, my);
+    mapTabHover = mapTabHitAt(mx, my);
     positionWorldMapTooltip(mx, my);
-    drawWorldMap();
+    mapTabDrawWorld();
   });
-  const endDrag = () => { worldMapDrag = null; };
+  const endDrag = () => { mapTabDrag = null; };
   canvas.addEventListener('pointerup', endDrag);
   canvas.addEventListener('pointercancel', endDrag);
   canvas.addEventListener('mouseleave', () => {
     endDrag();
-    worldMapHover = null;
+    mapTabHover = null;
     positionWorldMapTooltip(0, 0);
-    drawWorldMap();
+    mapTabDrawWorld();
   });
   canvas.addEventListener('click', () => {
-    if (worldMapDragMoved) return;
-    worldMapSelected = worldMapHover;
-    renderWorldMapDetail(worldMapSelected);
-    drawWorldMap();
+    if (mapTabDragMoved) return;
+    mapTabSelected = mapTabHover;
+    renderWorldMapDetail(mapTabSelected);
+    mapTabDrawWorld();
   });
 
   window.addEventListener('resize', () => {
-    if (!worldMapVisible()) return;
-    if (!worldMapView.userAdjusted) fitWorldMap();
-    worldMapStatic = { key: '', canvas: null };
-    drawWorldMap();
+    if (!mapTabVisible()) return;
+    if (!mapTabView.userAdjusted) fitWorldMap();
+    mapTabStatic = { key: '', canvas: null };
+    mapTabDrawWorld();
   });
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden && worldMapVisible()) startWorldMapTimers();
+    if (!document.hidden && mapTabVisible()) startWorldMapTimers();
   });
 }

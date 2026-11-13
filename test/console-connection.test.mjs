@@ -833,10 +833,11 @@ function pageFixture({ looping = false } = {}) {
     const value = {
       disabled: false,
       className: '',
-      style: {},
+      style: { setProperty: () => {} },
       dataset: {},
       value: '',
       valueAsNumber: 0,
+      options: [],
       checked: false,
       hidden: false,
       parentNode: null,
@@ -857,6 +858,7 @@ function pageFixture({ looping = false } = {}) {
       contains(child) { for (let node = child; node; node = node.parentNode) if (node === this) return true; return false; },
       setAttribute(name, attributeValue) { attributes.set(name, String(attributeValue)); },
       getAttribute(name) { return attributes.get(name) ?? null; },
+      removeAttribute(name) { attributes.delete(name); },
       querySelectorAll(selector) {
         const descendants = [];
         const visit = item => { for (const child of item.children ?? []) { descendants.push(child); visit(child); } };
@@ -904,10 +906,13 @@ function pageFixture({ looping = false } = {}) {
   // 页面进度组件会监听可见性变化；夹具提供浏览器同名接口以便脚本加载时完成事件绑定。
   const document = {
     hidden: false,
+    // trackCall 用 body 标记加载态；夹具只需让它接受属性读写。
+    body: element(),
     getElementById: node,
     createElement: element,
     createTextNode: text => ({ textContent: text, parentNode: null }),
     querySelectorAll: selector => elements.filter(value => matchesSelector(value, selector)),
+    querySelector: selector => elements.filter(value => matchesSelector(value, selector))[0] ?? null,
     addEventListener(type, listener) { documentListeners.set(type, listener); },
     emit(type) { documentListeners.get(type)?.({ type, target: document }); },
   };
@@ -917,6 +922,8 @@ function pageFixture({ looping = false } = {}) {
     document,
     // 进度组件会管理装备制作的延迟刷新；夹具不调度计时器，只接受清理和创建调用。
     Option: function () {}, setInterval: () => {}, setTimeout: () => 0, clearTimeout: () => {},
+    // 新壳页头高度用 ResizeObserver 观测；夹具不布局，只接受注册。
+    ResizeObserver: class { observe() {} unobserve() {} disconnect() {} },
     // 模拟本地 HTTP 响应，不启动真实浏览器，也不使用磁盘账号。
     fetch: async (url, options = {}) => {
       const route = url.split('?')[0];
