@@ -5,6 +5,7 @@ const task = 'guildWelfare';
 const title = '联盟福利礼包';
 const claiming = new WeakSet();
 const lastClaims = new WeakMap();
+const aidClaims = new WeakMap();
 const skipped = reason => ({ label: title, skipped: true, reason });
 
 // Guild/player IDs are int64, so don't identify accounts by a rounded double.
@@ -47,7 +48,7 @@ async function guildStatus(client, config, player) {
 
 export async function readGuild(client, config, player) {
   const { pending, ...status } = await guildStatus(client, config, player);
-  const view = { ...status, requests: [] };
+  const view = { ...status, requests: [], myRequests: [], myAidCount: null };
   if (status.state !== 'member') return view;
   try {
     const reply = await client.request('GuildAidListRequest', { type: 0 }, 'GuildAidListResponse');
@@ -64,7 +65,64 @@ export async function readGuild(client, config, player) {
     if (isNoGuild(client, error)) return { ...notJoined(), requests: [] };
     view.aidError = error.message;
   }
+  try {
+    view.myRequests = await readMyGuildAid(client, config, player, status.id);
+    view.myAidCount = view.myRequests.filter(row => row.ready).length;
+    view.myAidPending = view.myRequests.some(row => row.ready && aidClaims.get(client)?.has(row.id));
+  } catch (error) {
+    view.myAidError = error.message;
+  }
   return view;
+}
+
+async function readMyGuildAid(client, config, player, guildId) {
+  const reply = await client.request('MyGuildAidRequest', { type: 0 }, 'MyGuildAidResponse');
+  if (idText(player.guildId) !== guildId) throw new Error('联盟信息已变化，请重新查看');
+  if (!Array.isArray(reply?.aids)) throw new Error('服务器未返回我的求助列表');
+  const now = Math.floor((Date.now() + (client.serverClockOffsetMs || 0)) / 1000);
+  const rows = reply.aids.map(row => {
+    const id = idText(row.reqId);
+    if (!id || !/^[1-9]\d*$/.test(id) || !row.reqItemId) throw new Error('无法完整确认个人求助记录');
+    const ready = !!row.helper && idText(row.helper.playerId) !== '0';
+    if (ready && !idText(row.helper.playerId)) throw new Error('无法确认个人求助的协助者');
+    return { id, itemId: row.reqItemId, material: displayMaterial(config, row.reqItemId), quantity: 1, endTime: row.endTime,
+      helper: ready ? row.helper.nickname || '联盟成员' : '', ready,
+      status: ready ? '待领取' : row.endTime > now ? '等待援助' : '已过期' };
+  });
+  if (new Set(rows.map(row => row.id)).size !== rows.length) throw new Error('个人求助记录重复，请刷新后再试');
+  const pending = aidClaims.get(client);
+  if (pending) for (const id of pending) if (!rows.some(row => row.id === id && row.ready)) pending.delete(id);
+  return rows;
+}
+
+export async function claimMyGuildAid(client, config, { player, enabled = () => true, beforeSend } = {}) {
+  if (!enabled()) throw new Error('账号已暂停');
+  const status = await guildStatus(client, config, player);
+  if (status.state !== 'member') throw new Error(status.reason);
+  const before = await readMyGuildAid(client, config, player, status.id);
+  const ready = before.filter(row => row.ready);
+  if (!ready.length) return { ok: true, count: 0, label: '目前没有待领取的求助物资' };
+  const pending = aidClaims.get(client) ?? new Set();
+  aidClaims.set(client, pending);
+  if (ready.some(row => pending.has(row.id))) throw new Error('上次领取结果仍待确认，请稍后刷新，暂不重复领取');
+  if (!enabled() || idText(player.guildId) !== status.id) throw new Error('账号或联盟状态已变化');
+  beforeSend?.(ready.map(row => row.id), ready);
+  ready.forEach(row => pending.add(row.id));
+  try {
+    // 此协议仅有援助类型，没有单条reqId；一次领取当前全部个人求助物资。
+    await client.sendWatch('GotMyGuildAidRequest', { type: 0 }, { window: 400 });
+  } catch (error) {
+    if (error.notSent === true || error.prompt && error.request === 'GotMyGuildAidRequest') ready.forEach(row => pending.delete(row.id));
+    // Let callers cancel their own budget only for this write's unsent error,
+    // never for a later readMyGuildAid request that could not be sent.
+    if (error.notSent === true) error.guildAidClaimNotSent = true;
+    throw error;
+  }
+  if (!enabled()) throw new Error('领取请求已发送，账号状态已变化，请重新连接后核对结果');
+  const after = await readMyGuildAid(client, config, player, status.id);
+  const count = ready.filter(row => !after.some(item => item.id === row.id)).length;
+  return { ok: count === ready.length, count, label: count === ready.length
+    ? '已领取 ' + count + ' 份求助物资' : '已确认领取 ' + count + ' 份，其余结果待确认，请稍后刷新' };
 }
 
 // 盟友名册（巨轮跟随模式用）：只列可跟随的本盟成员，BLACK 黑名单分组除外。

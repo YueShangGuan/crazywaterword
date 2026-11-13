@@ -1127,3 +1127,30 @@ test('console: global notification settings are shared by all accounts', async t
   assert.deepEqual(saved.value.settings, settings);
   assert.deepEqual((await api('/api/notify', undefined, 'connection-b')).value.settings, settings);
 });
+
+/** 迁移冒烟：新壳在手机断言的导航骨架存在，地图/自动化两个回插 tab 可激活且触发各自加载入口。 */
+test('migration smoke: reshelled page keeps bottom tabs and activates map/automation', async () => {
+  assert.match(PAGE, /name="viewport" content="width=device-width/);
+  assert.match(PAGE, /<nav id="tabs" aria-label="功能导航">/);
+  assert.match(PAGE, /data-tab="map"/);
+  assert.match(PAGE, /data-tab="automation"/);
+  assert.match(PAGE, /<section id="tab-map" class="hidden">/);
+  assert.match(PAGE, /<section id="tab-automation" class="hidden">/);
+  const { context } = pageFixture();
+  await vm.runInContext(`(async () => {
+    // 只验证激活分发与加载入口接线；数据渲染由对应路由测试覆盖。
+    let mapCalls = 0, autoCalls = 0;
+    mapTabRefresh = () => { mapCalls++; };
+    refreshProgression = () => {};
+    loadAutomation = () => { autoCalls++; return Promise.resolve(); };
+    gsLoad = () => Promise.resolve();
+    const mapButton = document.createElement('button');
+    mapButton.dataset.tab = 'map';
+    activateConsolePage(mapButton);
+    if (mapCalls !== 1) throw new Error('地图 tab 未触发 mapTabRefresh');
+    const autoButton = document.createElement('button');
+    autoButton.dataset.tab = 'automation';
+    activateConsolePage(autoButton);
+    if (autoCalls !== 1) throw new Error('自动化 tab 未触发 loadAutomation');
+  })()`, context);
+});

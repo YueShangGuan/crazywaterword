@@ -245,7 +245,7 @@ function huntKey(session, parts) {
   return createHmac('sha256', session.secret).update(JSON.stringify([session.revision, ...parts])).digest('hex');
 }
 
-async function inspectHunt(client, config, player, enterMap = false) {
+export async function inspectHunt(client, config, player, enterMap = false) {
   const session = huntSession(client);
   const world = normalize(player?.worldId);
   const tables = config?.tables ?? {};

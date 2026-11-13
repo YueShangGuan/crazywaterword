@@ -4,10 +4,10 @@ import zlib from 'node:zlib';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { GameClient, toNumber } from './client.mjs';
-import { challengeTrial, trialProgress } from './trials.mjs';
+import { challengeTrial, trialProgress, createTrialTask } from './trials.mjs';
 import { readHeroEquipment, equipHeroEmptySlots, enhanceHeroEquipment, uidText } from './hero-equipment.mjs';
 import { readEquipmentCrafting, startEquipmentCraft, collectEquipmentCraft } from './equipment-crafting.mjs';
-import { readGuild, claimGuildWelfare } from './guild.mjs';
+import { readGuild, readGuildMembers, claimGuildWelfare, claimMyGuildAid } from './guild.mjs';
 import { readFleetFormations, initializeFleetFormation } from './fleet-formation.mjs';
 import { readLineups, applyLineup } from './lineups.mjs';
 import { loadProtocol } from './proto.mjs';
@@ -29,15 +29,31 @@ import { surveyDailies, runDailies, formatSurvey } from './dailies.mjs';
 import { surveyTasks, runTasks, formatTaskPlan } from './tasks.mjs';
 import { makeTypeResolver, weekFactoryInfo, surveyWorld, planWorld, runWorldRound, submitResidentOrder, formatWorldPlan, formatFieldReport, loadMapAsset } from './world.mjs';
 import { buildMapLayout, buildWorldMapState, readWorldMapState, cityNameMap, forceInfoMap } from './world-map.mjs';
-import { dispatchCityWarFleet } from './city-war.mjs';
+import { dispatchCityWarFleet, readCityWar, cityWarReservedFleets } from './city-war.mjs';
 import { runLoop, formatLoopRound, formatLoopStep } from './loop.mjs';
+// UI 迁移阶段 3a：上游外壳页面会调用、而用户侧尚未引入的模块。
+import { readWorldOverview } from './world-overview.mjs';
+import { readWorldTarget } from './world-target.mjs';
+import { resourceFieldRows, resourceFieldTotals } from './resource-fields.mjs';
+import { readGuildTech, upgradeGuildTech } from './guild-tech.mjs';
+import { createGuildMutualTask, readMutualOptions } from './guild-mutual.mjs';
+import { readTrialSweeps, executeTrialSweep } from './trial-sweeps.mjs';
+import { createPirateAdvanceTask, runSinglePirateHunt } from './pirate-advance.mjs';
+import { readActivityStatistics } from './activity-statistics.mjs';
+import { activityRankCatalog, readActivityRanking } from './activity-rankings.mjs';
+import { createPhoneLogin } from './phone-login.mjs';
+import { dailySingleState, addDailyOptions, runDailySingle } from './daily-single.mjs';
+import { runWeekOrder } from './activities.mjs';
+import { createActionGuard } from './automation-policy.mjs';
+import { watchBasePushes, surveyBaseAutomation } from './base-automation.mjs';
+import { reserveDispatch } from './fleet-availability.mjs';
 import { describeLogError } from './log-errors.mjs';
 import { operationLabels } from './operation-labels.mjs';
 import { automationTasks, defaultFishingGoldReserve, defaultCompassSpinCount, maxCompassSpinCount, taskSettings, worldTaskKey } from './automation.mjs';
 import { rewardSchedule } from './reward-schedule.mjs';
 import { normalizeReconnect, parseReconnect, reconnectDelaySeconds, recoveryDecision } from './reconnect.mjs';
 import { createNotifier, loadNotifySettings, notifyEvents, parseNotifySettings, saveNotifySettings, webhookFormats } from './notify.mjs';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { incomeView, readIncomeSnapshot, recordIncome } from './income-report.mjs';
 import { activityAvailability } from './activity-availability.mjs';
 import { createUsageLedger, defaultSettings, loadAutomationSettings, saveAutomationSettings, validateSettings, settingsCatalog, settingsFromNative,
@@ -54,8 +70,12 @@ import { runAutomation, automationStatus, stopAutomation } from './automation/se
 import { loadSettings, saveSettings, loadLedger, businessDate, accountDirectory, writeJson, LABELS, MODULES, selectModules, selectLoopModules } from './automation/settings.mjs';
 import { automationFormOptions, guildShipMaterialOptions } from './automation/form-options.mjs';
 import { appendMessage, createMessageStore, loadInitialMessages, messagesFromPush, snapshotMessages } from './messages.mjs';
+import { automationControlView, setAutomationControl } from './automation-controls.mjs';
+import { runtimeProgress } from './runtime-progress.mjs';
 
 const LOG_LIMIT = 400;
+// 供页面「当前服务加载时间」展示：进程本次启动时间。
+const SERVER_STARTED_AT = Date.now();
 const CACHE_REFRESH_MS = 30_000;
 const CORE_CACHE_QUERIES = new Set([
   'AllItemRequest', 'AllResourceRequest', 'AllHeroRequest', 'GetFormationRequest',
@@ -215,6 +235,54 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog = null }
       session.usageLedger = createUsageLedger(session.id, { now: () => Date.now() + (session.client?.serverClockOffsetMs ?? 0) });
     }
     return session.usageLedger;
+  }
+  // 上游路由体的习惯叫法；与 sessionUsageLedger 是同一个账本。
+  const usageFor = sessionUsageLedger;
+
+  /** Read-only 交错读：连接空闲时插队执行，否则退回写队列，保证不与写操作交叉。 */
+  function readJob(session, work) {
+    const client = session.client, generation = session.generation;
+    if (!session.queueTail || !client?.connected || !client.interleaveRead) return enqueue(session, work);
+    return client.interleaveRead(() => {
+      if (session.paused || generation !== session.generation) throw new Error('账号已暂停，已取消排队操作');
+      return work();
+    });
+  }
+
+  /** 城战接续开启时把选中的舰队从出海任务里预留出来，避免手动派遣与自动化抢船。 */
+  async function refreshFleetReservations(session, settings) {
+    const client = session.client, p = settings.cityWar;
+    if (!client) return;
+    if (!p?.enabled || !p.reserveDuringWar) { reserveDispatch(client, 'cityWar', []); return; }
+    const snapshot = await readCityWar(client, protocol, loadConfigSafe(), session.player, p);
+    reserveDispatch(client, 'cityWar', snapshot.reason ? p.fleetIds : cityWarReservedFleets(snapshot, settings), Date.now() + 60000);
+  }
+
+  function actionGuard(session, client) {
+    const generation = session.generation;
+    return createActionGuard(client, () => session.preferences, usageFor(session), {
+      player: session.player,
+      enabled: () => !session.paused && session.generation === generation && session.client === client && client.connected,
+    });
+  }
+
+  function mutualView(session) {
+    const ledger = usageFor(session), usage = ledger.snapshot();
+    return { ...session.mutualAid.view(), day: usage.day, dailyUsed: usage.counters.guildAidGifts ?? 0,
+      pendingGifts: ledger.pendingCounters().guildAidGifts ?? 0 };
+  }
+
+  // ---- 手机号登录（益世界账号） ----------------------------------------------
+  const pendingPhoneLogins = new Map();
+  const smsSendAt = new Map();
+  let phoneLoginBusy = false;
+  const maskPhone = (value) => {
+    const phone = String(value ?? '');
+    return phone.length >= 7 ? phone.slice(0, 3) + '****' + phone.slice(-4) : phone;
+  };
+  function prunePhonePending() {
+    const cutoff = Date.now() - 30 * 60 * 1000;
+    for (const [id, entry] of pendingPhoneLogins) if (entry.createdAt < cutoff) pendingPhoneLogins.delete(id);
   }
 
   function adoptPreferences(session, entry) {
@@ -624,7 +692,13 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog = null }
       client: null,
       connecting: null,
       player: null,
+      pirateAdvance: createPirateAdvanceTask(),
       stages: createStageTask(),
+      trials: new Map(),
+      mutualAid: createGuildMutualTask(),
+      dailySingle: dailySingleState(),
+      mapRead: null,
+      activityStatistics: null,
       busy: null,
       claiming: null,
       heroJob: null,
@@ -1200,10 +1274,15 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog = null }
     } catch (error) {
       mapError = error.message;
     }
-    const fields = { ...survey.resFields, text: formatFieldReport(survey, map, mapError) };
+    // 资源田明细：主城动态等级需要联盟抽象表；读取失败只降级为未同步，不阻断海面页。
+    let guilds = null;
+    try { guilds = (await instance.request('AllGuildAbstractionRequest', {}, 'AllGuildAbstractionResponse')).guilds; } catch { /* 主城动态等级读取失败时显示未同步。 */ }
+    const fields = { ...survey.resFields, text: formatFieldReport(survey, map, mapError), rows: resourceFieldRows(config, session.player, survey.resFields, guilds) };
+    fields.totals = resourceFieldTotals(survey.resFields, fields.rows);
     const typeNames = new Map(config?.tables?.BuildingCfg?.data.map(row => [row.buildingType, row.name]));
     const now = Date.now() / 1000;
     return {
+      serverNow: survey.serverNow,
       population: `${survey.population}/${survey.maxPopulation}`,
       futurePopulation: survey.futurePopulation > survey.population ? survey.futurePopulation : null,
       farms: survey.buildings.filter(b => b.type === '农田').map(b => ({
@@ -1265,7 +1344,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog = null }
   async function dailies(session, account) {
     const instance = await ensureConnected(session, account);
     const survey = await surveyDailies(instance, protocol, { config: loadConfigSafe(), player: session.player });
-    return { tasks: survey.tasks.map((entry) => ({ ...entry, task: { ...entry.task } })), chests: survey.chests, gift: survey.gift, ruby: survey.ruby, text: formatSurvey(survey) };
+    // addDailyOptions 为每条可执行任务生成一次性 token，供「完成单项日常」接口核对。
+    return { ...addDailyOptions(survey, session.dailySingle), tasks: survey.tasks.map((entry) => ({ ...entry, task: { ...entry.task } })), chests: survey.chests, gift: survey.gift, ruby: survey.ruby, text: formatSurvey(survey) };
   }
 
   // ---- 从电脑微信采集登录 ---------------------------------------------------
@@ -1495,8 +1575,20 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog = null }
         const codes = parseGiftCodes(payload.codes);
         if (!codes.length) throw new Error('请至少输入一个兑换码（使用逗号或换行分隔）');
         if (codes.length > 100) throw new Error('每批 1 至 100 个不同的礼包码');
+        // 上游礼包页会显式传 accounts；旧批量面板不传，视为全部账号。暂停账号直接拒绝并回显原因。
+        const requested = Array.isArray(payload.accounts) && payload.accounts.length ? [...new Set(payload.accounts)] : null;
+        const store = loadStore();
+        const results = [];
+        const accounts = [];
+        for (const account of requested ? requested.map(id => store.accounts.find(item => item.id === id)) : store.accounts) {
+          if (!account) { results.push({ id: '未知账号', title: '未知账号', accepted: false, error: '账号不存在' }); continue; }
+          const title = describeAccount(account).title;
+          if (account.automation?.paused) { results.push({ id: account.id, title, accepted: false, error: '账号已暂停托管' }); continue; }
+          results.push({ id: account.id, title, accepted: true });
+          accounts.push(account);
+        }
+        if (requested && !accounts.length) throw new Error(results.map(r => r.title + '：' + r.error).join('；'));
         // Freeze both the account order and code order before asynchronous queue waits begin.
-        const accounts = [...loadStore().accounts];
         const batch = { id: `gift-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` };
         giftCodeBatch = batch;
         batch.promise = Promise.resolve().then(() => runGiftCodeBatch(batch, codes, accounts))
@@ -1505,7 +1597,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog = null }
             emitGiftRedeemLog('error', null, batch, 'summary', `本批异常中止：${reason}`, { reason });
           })
           .finally(() => { if (giftCodeBatch === batch) giftCodeBatch = null; });
-        json({ started: true, batchId: batch.id, codes });
+        json({ started: true, batchId: batch.id, codes, accepted: accounts.length, results });
         return;
       }
 
@@ -1834,32 +1926,45 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog = null }
         json(await progressionJob(session, account, route, null, client => pirateBoard(client, loadConfigSafe(), session.player)));
         return;
       }
-      if (route === 'GET /api/trials' || route === 'GET /api/equipment' || route === 'GET /api/guild' || route === 'GET /api/pirates/hunt' || route === 'GET /api/fleets/formation') {
+      if (route === 'GET /api/guild/tech' || route === 'GET /api/trials' || route === 'GET /api/equipment' || route === 'GET /api/guild' || route === 'GET /api/pirates/hunt' || route === 'GET /api/fleets/formation') {
         const { account, session } = scoped_(parsed);
         json(await progressionJob(session, account, route, null, async client => {
           const config = loadConfigSafe(), player = session.player;
+          if (route === 'GET /api/guild/tech') return readGuildTech(client, config, player, { ledger: usageFor(session) });
           if (route === 'GET /api/equipment') return readHeroEquipment(client, config, player.level);
           if (route === 'GET /api/guild') {
             const guild = await readGuild(client, config, player);
+            guild.mutualAid = mutualView(session);
             if (guild.aidError) emit(session, 'warn', '读取联盟求助失败：' + guild.aidError);
+            if (guild.myAidError) emit(session, 'warn', '读取我的求助失败：' + guild.myAidError);
             return guild;
           }
           if (route === 'GET /api/fleets/formation') return readFleetFormations(client, config, player);
           if (route === 'GET /api/pirates/hunt') return pirateHuntOptions(client, config, player);
           const rows = await trialProgress(client, config, player.level);
+          for (const row of rows) row.task = session.trials.get(row.raidId)?.view() ?? { running: false, reason: '尚未开启', wins: 0, failures: 0 };
+          const sweepSettings = settingsView(session).settings, ledger = usageFor(session);
+          for (const row of rows) row.sweeps = await readTrialSweeps(client, protocol, config, player, sweepSettings, row.raidId, {
+            channel: { clientInfo: account.login?.eworldClientInfo, language: account.login?.language },
+            usage: ledger.snapshot(), records: ledger.keyRecords(), pendingDiamonds: ledger.pendingCounters().diamonds ?? 0 });
           for (const row of rows.filter(r => r.failed)) emit(session, 'warn', row.name + '：' + row.reason);
           return rows;
-        }));
+        }, { read: true }));
         return;
       }
-      if (route === 'POST /api/equipment/wear' || route === 'POST /api/equipment/enhance' || route === 'POST /api/guild/welfare' || route === 'POST /api/pirates/hunt' || route === 'POST /api/fleets/formation') {
+      if (route === 'POST /api/guild/tech/upgrade' || route === 'POST /api/equipment/wear' || route === 'POST /api/equipment/enhance' || route === 'POST /api/guild/welfare' || route === 'POST /api/guild/aid/claim' || route === 'POST /api/pirates/hunt' || route === 'POST /api/fleets/formation') {
         const { account, session } = scoped_(parsed);
         const payload = jsonBody();
         needConfirm(payload);
         const label = operationLabels[parsed.pathname];
-        const key = JSON.stringify([route, payload.heroId, payload.uid, payload.expectedLevel, payload.maxCost, payload.targetKey, payload.fleetKey, payload.buildingId, payload.previewKey]);
+        const key = JSON.stringify([route, payload.techId, payload.heroId, payload.uid, payload.expectedLevel, payload.maxCost, payload.targetKey, payload.fleetKey, payload.buildingId, payload.previewKey]);
         json(await progressionJob(session, account, key, label, async (client, enabled) => {
           const config = loadConfigSafe(), player = session.player;
+          if (route === 'POST /api/guild/tech/upgrade') {
+            const result = await upgradeGuildTech(client, config, player, { ...payload, enabled, ledger: usageFor(session) });
+            emit(session, 'info', result.label);
+            return result;
+          }
           if (route === 'POST /api/equipment/wear') {
             const result = await equipHeroEmptySlots(client, config, player.level, payload.heroId, enabled);
             for (const line of result.lines) emit(session, 'info', line);
@@ -1875,15 +1980,245 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog = null }
             emit(session, 'info', result.skipped ? result.reason : result.label);
             return result;
           }
+          if (route === 'POST /api/guild/aid/claim') {
+            const result = await claimMyGuildAid(client, config, { player, enabled });
+            emit(session, result.ok ? 'info' : 'warn', result.label);
+            return result;
+          }
           if (route === 'POST /api/fleets/formation') {
             const result = await initializeFleetFormation(client, config, player, { ...payload, enabled });
             emit(session, 'info', result.label);
             return result;
           }
-          const result = await startPirateHunt(client, config, player, { ...payload, enabled, report: entry => emit(session, 'info', typeof entry === 'string' ? entry : entry.label, { pirateUpdated: true }) });
+          // 首杀是派舰写操作：先按城战接续设置预留舰队，避免与自动化抢船。
+          await refreshFleetReservations(session, settingsView(session).settings);
+          const result = await runSinglePirateHunt(client, config, player, { ...payload, enabled, getSettings: () => settingsView(session).settings, ledger: usageFor(session), report: entry => emit(session, 'info', typeof entry === 'string' ? entry : entry.label, { pirateUpdated: true }) });
           emit(session, 'info', result.label);
           return result;
         }));
+        return;
+      }
+      // ---- UI 迁移阶段 3a：上游外壳所需的路由（保持上游语义） ----------------
+      if (route === 'GET /api/material-sources') {
+        const config = loadConfigSafe();
+        if (!config) throw new Error('缺少游戏材料配置');
+        json(config.tables.ItemJumpCfg.data.map(r => ({ name: displayMaterial(config, r.id), sources: config.materialSources(r.id) }))
+          .filter(r => r.name !== '未知材料' && r.sources.length));
+        return;
+      }
+      if (route === 'GET /api/pirates/advance') { json(scoped_(parsed).session.pirateAdvance.view()); return; }
+      if (route === 'POST /api/pirates/advance/start' || route === 'POST /api/pirates/advance/stop') {
+        const payload = jsonBody(); needConfirm(payload); const { session, account } = scoped_(parsed);
+        if (route.endsWith('/stop')) { json(session.pirateAdvance.stop()); return; }
+        if (session.paused) throw new Error('账号已暂停，请先恢复托管');
+        const options = settingsView(session).settings.pirateHunt;
+        const generation = session.generation;
+        let lastReason = '';
+        json(session.pirateAdvance.start(options, async () => {
+          const client = await ensureConnected(session, account);
+          return { client, player: session.player, config: loadConfigSafe(), ledger: usageFor(session), getSettings: () => settingsView(session).settings,
+            enabled: () => !session.paused && session.generation === generation && session.client === client && client.connected,
+            prepareDispatch: () => refreshFleetReservations(session, settingsView(session).settings),
+            schedule: work => enqueue(session, work) };
+        }, state => { if (state.reason !== lastReason) { emit(session, 'info', '海盗首杀 · ' + state.reason + '（已首杀' + state.wins + '级，本次汽油' + state.spent + '）'); lastReason = state.reason; } }));
+        return;
+      }
+      if (route === 'GET /api/guild/mutual') { json(mutualView(scoped_(parsed).session)); return; }
+      if (route === 'GET /api/guild/mutual/options') {
+        const { session, account } = scoped_(parsed);
+        json(await progressionJob(session, account, route, null, client => readMutualOptions(client, loadConfigSafe(), session.player), { read: true })); return;
+      }
+      if (route === 'POST /api/guild/mutual/start' || route === 'POST /api/guild/mutual/stop') {
+        const payload = jsonBody(); needConfirm(payload); const { session, account } = scoped_(parsed);
+        if (route.endsWith('/stop')) { json(session.mutualAid.stop()); return; }
+        if (session.paused) throw new Error('账号已暂停，请先恢复托管');
+        const generation = session.generation;
+        json(session.mutualAid.start(payload, async () => {
+          const client = await ensureConnected(session, account), player = session.player;
+          return { client, player, config: loadConfigSafe(), ledger: usageFor(session), schedule: work => enqueue(session, work),
+            enabled: () => !session.paused && session.generation === generation && session.client === client && session.player === player && client.connected };
+        }, state => emit(session, state.failed || state.pending ? 'warn' : 'info', `联盟互助 · ${state.reason}（本轮发起${state.published}条，已确认赠送${state.sent}次，领取${state.received}份）`)));
+        return;
+      }
+      if (route === 'POST /api/trials/sweep') {
+        const payload = jsonBody(); needConfirm(payload);
+        const { session, account } = scoped_(parsed);
+        if (!['paid', 'ad'].includes(payload.mode) || !payload.expected || !Number.isSafeInteger(payload.expected.cost)) throw new Error('请刷新试炼状态并核对扫荡方式与费用');
+        if (session.trials.get(payload.raidId)?.view().running) throw new Error('该副本正在连续推关，请先停止后再扫荡');
+        json(await progressionJob(session, account, JSON.stringify([route, payload.raidId, payload.mode, payload.expected]), '试炼扫荡', async (client, enabled) => {
+          const initial = settingsView(session).settings;
+          const result = await executeTrialSweep(client, protocol, loadConfigSafe(), session.player, payload.raidId, payload.mode, {
+            getSettings: () => session.preferences ?? initial, ledger: usageFor(session), enabled, expected: payload.expected, manual: true,
+            channel: { clientInfo: account.login?.eworldClientInfo, language: account.login?.language } });
+          emit(session, result.ok || result.skipped ? 'info' : 'error', `试炼 · ${result.title || '扫荡'}：${result.note || result.reason || result.error}`);
+          return result;
+        })); return;
+      }
+      if (route === 'GET /api/trials/tasks') {
+        json(Object.fromEntries([...scoped_(parsed).session.trials].map(([id, task]) => [id, task.view()]))); return;
+      }
+      if (route === 'POST /api/trials/start' || route === 'POST /api/trials/stop') {
+        const payload = jsonBody(); needConfirm(payload);
+        const { session, account } = scoped_(parsed), config = loadConfigSafe();
+        const raid = config?.tables?.TrialRaidCfg?.data?.find(r => r.raidId === payload.raidId);
+        if (!raid) throw new Error('请选择有效试炼副本');
+        if (route.endsWith('/stop')) { json(session.trials.get(payload.raidId)?.stop() ?? { running: false }); return; }
+        if (session.paused) throw new Error('账号已暂停，请先恢复托管');
+        let task = session.trials.get(payload.raidId);
+        if (!task) { task = createTrialTask(payload.raidId); session.trials.set(payload.raidId, task); }
+        const generation = session.generation;
+        json(task.start(payload, async () => {
+          const client = await ensureConnected(session, account);
+          return { client, player: session.player, config, schedule: work => enqueue(session, work),
+            enabled: () => !session.paused && session.generation === generation && session.client === client && client.connected };
+        }, state => emit(session, state.failed ? 'error' : 'info', `试炼 · ${raid.title}：${state.reason}（通过${state.wins}关，连续失败${state.failures}次）`)));
+        return;
+      }
+      if (route === 'GET /api/activity-statistics') {
+        const { account, session } = scoped_(parsed);
+        const result = await progressionJob(session, account, route, null, async client => {
+          const cached = session.activityStatistics;
+          if (parsed.searchParams.get('refresh') !== '1' && cached?.client === client && Date.now() - cached.at < 60000) return cached.value;
+          const value = await readActivityStatistics(client, loadConfigSafe(), session.player, usageFor(session));
+          session.activityStatistics = { client, at: Date.now(), value }; return value;
+        }, { read: true }); json(result); return;
+      }
+      if (route === 'GET /api/activity-ranks' || route === 'GET /api/activity-ranks/view') {
+        const { account, session } = scoped_(parsed);
+        const result = await progressionJob(session, account, route + ':' + (parsed.searchParams.get('key') || 'catalog') + ':' + (parsed.searchParams.get('page') || 1), null, client => route.endsWith('/view') ? readActivityRanking(client, loadConfigSafe(), session.player, parsed.searchParams.get('key'), Number(parsed.searchParams.get('page') || 1)) : { tabs: activityRankCatalog(client, loadConfigSafe(), session.player).map(({ key, label }) => ({ key, label })) }, { read: true });
+        json(result); return;
+      }
+      if (route === 'POST /api/week-order/buy' || route === 'POST /api/week-order/submit') {
+        const payload = jsonBody(); needConfirm(payload);
+        const { account, session } = scoped_(parsed), action = route.endsWith('/buy') ? 'buy' : 'submit';
+        const result = await progressionJob(session, account, route + ':' + payload.orderKey + ':' + String(payload.itemId || ''), null,
+          (client, enabled) => runWeekOrder(client, loadConfigSafe(), session.preferences, usageFor(session), enabled, action, payload, { player: session.player }));
+        emit(session, 'info', '周订单 · ' + result.message); json(result); return;
+      }
+      if (route === 'POST /api/dailies/single') {
+        const payload = jsonBody();
+        needConfirm(payload);
+        if (typeof payload.token !== 'string') throw new Error('请先刷新日常并选择一项操作');
+        const { account, session } = scoped_(parsed);
+        json(await progressionJob(session, account, route + ':' + payload.token, '完成单项日常', async (client, enabled) => {
+          const result = await runDailySingle(client, protocol, { state: session.dailySingle, token: payload.token, paid: payload.paid === true,
+            config: loadConfigSafe(), player: session.player, settings: session.preferences, guard: actionGuard(session, client), enabled });
+          emit(session, result.ok ? 'info' : 'warn', result.label);
+          return result;
+        }));
+        return;
+      }
+      if (route === 'GET /api/world/target') {
+        const { session } = scoped_(parsed);
+        if (!session.client?.connected || session.paused) throw Error('请先连接当前账号，再读取目标详情');
+        const result = await readJob(session, () => readWorldTarget(session.client, protocol, loadConfigSafe(), session.player, settingsView(session).settings, usageFor(session), { layer: parsed.searchParams.get('layer'), key: parsed.searchParams.get('key'), pirateSpent: session.pirateAdvance.view().running ? session.pirateAdvance.view().spent : 0 }));
+        json(result); return;
+      }
+      if (route === 'GET /api/world/overview') {
+        const { session } = scoped_(parsed);
+        if (!session.client?.connected || session.paused) throw new Error('请先连接当前账号，再读取世界概览');
+        if (!session.mapRead) { const job = readJob(session, () => readWorldOverview(session.client, loadConfigSafe(), session.player, settingsView(session).settings, usageFor(session), { pirateSpent: session.pirateAdvance.view().spent ?? 0 })).finally(() => { if (session.mapRead === job) session.mapRead = null; }); session.mapRead = job; }
+        json(await session.mapRead); return;
+      }
+      if (route === 'POST /api/logs/clear') {
+        needConfirm(jsonBody());
+        const { session } = scoped_(parsed);
+        const cleared = { before: logId, at: Date.now() };
+        session.log.length = 0;
+        session.logClearBefore = cleared.before;
+        session.logClearAt = cleared.at;
+        for (const stream of streams) {
+          if (stream.account === session.id) stream.write(`event: logs-cleared\ndata: ${JSON.stringify(cleared)}\n\n`);
+        }
+        json(cleared);
+        return;
+      }
+      if (route === 'POST /api/accounts/phone-login') {
+        const payload = jsonBody();
+        needConfirm(payload);
+        if (phoneLoginBusy) throw new Error('已有手机号登录正在进行，请稍候');
+        phoneLoginBusy = true;
+        try {
+          prunePhonePending();
+          const phone = String(payload.phone ?? '').trim();
+          const password = String(payload.password ?? '');
+          const code = String(payload.code ?? '').trim();
+          if (!phone) throw new Error('请输入手机号或账号');
+          if (!password && !code) throw new Error('请输入密码或短信验证码');
+          const client = createPhoneLogin();
+          const result = password
+            ? await client.loginWithPassword(phone, password)
+            : await client.loginWithSms(phone, code);
+          const game = await client.gameLogin(result);
+          const credential = client.credential(game, { account: phone });
+          const openId = credential.login.eworldParams.openId;
+          const store = loadStore();
+          const existing = store.accounts.find((account) => account.id === openId);
+          const id = randomUUID();
+          pendingPhoneLogins.set(id, { credential, phone, createdAt: Date.now() });
+          json({
+            ok: true,
+            id,
+            openId,
+            uid: game.uid,
+            ucCode: 'ewan',
+            matched: Boolean(existing),
+            existingTitle: existing ? describeAccount(existing).title : null,
+            userName: result.ewan?.userName ?? null,
+            phone: maskPhone(phone),
+          });
+        } finally {
+          phoneLoginBusy = false;
+        }
+        return;
+      }
+      if (route === 'POST /api/accounts/phone-login/send-code') {
+        const payload = jsonBody();
+        needConfirm(payload);
+        const phone = String(payload.phone ?? '').trim();
+        if (!/^1[3-9]\d{9}$/.test(phone)) throw new Error('手机号格式不正确');
+        const last = smsSendAt.get(phone) ?? 0;
+        if (Date.now() - last < 60000) throw new Error('验证码已发送，请 60 秒后再试');
+        const client = createPhoneLogin();
+        const result = await client.requestSmsCode(phone);
+        smsSendAt.set(phone, Date.now());
+        json({ ok: true, validatecode: result?.validatecode ?? '', cooldown: 60 });
+        return;
+      }
+      if (route === 'POST /api/accounts/phone-login/save') {
+        const payload = jsonBody();
+        needConfirm(payload);
+        prunePhonePending();
+        const pending = pendingPhoneLogins.get(String(payload.id ?? ''));
+        if (!pending) throw new Error('登录结果已过期，请重新登录');
+        const store = loadStore();
+        const openId = pending.credential.login.eworldParams.openId;
+        const existing = store.accounts.find((account) => account.id === openId);
+        const { account, created } = upsertAccount(store, pending.credential, {
+          label: existing?.label ?? (/^1\d{10}$/.test(pending.phone) ? `手机 ${maskPhone(pending.phone)}` : pending.phone),
+        });
+        setActive(store, account.id);
+        saveStore(store);
+        pendingPhoneLogins.delete(String(payload.id));
+        emit(null, 'info', `${created ? '手机号登录已新增' : '手机号登录已更新'}账号 ${describeAccount(account).title}`);
+        json({ ok: true, account: describeAccount(account, { active: true }) });
+        return;
+      }
+      if (route === 'POST /api/accounts/phone-login/cancel') {
+        const payload = jsonBody();
+        if (payload.id) pendingPhoneLogins.delete(String(payload.id));
+        json({ ok: true });
+        return;
+      }
+      if (route === 'GET /api/settings/players') {
+        const { session } = scoped_(parsed);
+        if (!session.client?.connected || session.paused) throw new Error('请先连接当前账号，再读取盟友名单');
+        const client = session.client;
+        const members = await enqueue(session, async () => {
+          if (session.client !== client || !client.connected || session.paused) throw new Error('账号连接已变化，请重新读取盟友名单');
+          return readGuildMembers(client, loadConfigSafe(), session.player);
+        });
+        json(members);
         return;
       }
       if (route === 'GET /api/lineups') {
@@ -2382,7 +2717,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog = null }
         const claimed = results
           .filter((entry) => entry.ok && (entry.request === 'DrawDailyTaskRewardRequest' || entry.id === 'activityChest' || entry.id === 'freeDailyPack'))
           .map((entry) => entry.note);
-        json({ results, claimed, ms: Date.now() - started, tasks: after.tasks, chests: after.chests, gift: after.gift, ruby: after.ruby });
+        json({ results, claimed, ms: Date.now() - started, ...addDailyOptions(after, session.dailySingle), tasks: after.tasks, chests: after.chests, gift: after.gift, ruby: after.ruby });
         return;
       }
       if (route === 'POST /api/tasks/run') {
@@ -2551,6 +2886,17 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog = null }
         json({ fishingGoldReserve });
         return;
       }
+      if (route === 'POST /api/loop/control') {
+        // 上游外壳挂机页开关：写上游形状配置（revision CAS），双轨中的 settings 轨。
+        const payload = jsonBody(); needConfirm(payload); const { session } = scoped_(parsed);
+        const current = settingsView(session);
+        if (payload.revision !== current.revision) throw new SettingsError({ revision: '配置已变化，请刷新挂机设置后再操作' });
+        if (payload.enabled === true && current.rules.hiddenFields.includes(payload.key)) throw new Error('该活动已下线，重新开放后可启用');
+        const next = setAutomationControl(current.settings, payload.key, payload.enabled);
+        adoptPreferences(session, saveAutomationSettings(session.id, next, { revision: current.revision, catalog: current.catalog }));
+        if (session.client) for (const task of automationTasks) rewardSchedule(session.client).clearTask(task.key);
+        emit(session, 'info', '挂机设置已保存，下次检查使用新设置'); json(loopView(session)); return;
+      }
       if (route === 'POST /api/loop/task') {
         const payload = jsonBody();
         needConfirm(payload);
@@ -2704,7 +3050,22 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog = null }
   function loopView(session) {
     const loop = session.loop;
     const rewards = session.client ? rewardSchedule(session.client) : null;
+    const displayUsage = usageFor(session).snapshot();
+    // 上游外壳的挂机页/总览按 controls 渲染开关与受限说明；观察值接线在阶段 3b 补齐，
+    // 这里先保证 enabled/blockedBy/group 正确，检查状态显示「本次连接尚无检查结果」。
+    const controls = automationControlView(settingsView(session).settings).map(control => {
+      const aliases = { 'factory.produce': 'startProduce', 'factory.cooperateNative': 'nativeProduce', 'factory.gain': 'collect', 'factory.speedUp': 'speedUp', 'building.build': 'build', 'building.upgrade': 'upgrade', 'building.finish': 'finishUpgrade', 'resident.enabled': 'finishOrder', 'resident.reroll': 'denyOrder', 'farm.enabled': 'farm', 'radar.enabled': '联盟情报', 'treasure.enabled': '万吨巨轮', 'cityWar.enabled': '城战接续', 'forge.enabled': '装备锻造', 'antique.enabled': '藏品养成', 'dailies.claimTasks': 'dailyRewards', 'dailies.claimDailyChest': 'chests', 'dailies.claimWeeklyChest': 'chests', 'dailies.claimGift': 'gift', 'resident.rewards': 'orderDaily', 'trials.paid': 'trialPaidSweep', 'trials.ads': 'trialAdSweep' };
+      const key = control.taskKey || aliases[control.key] || control.key;
+      const observed = rewards?.status ? rewards.status(key) : null;
+      let state = observed;
+      if (state?.checkedAt && beijingDay(state.checkedAt * 1000) !== displayUsage.day) state = null;
+      state ??= { text: control.group === '总控制' ? '控制项，不单独执行' : control.key.endsWith('.enabled') && ['building', 'factory', 'heroes', 'pet'].includes(control.key.split('.')[0]) ? '分组控制，具体动作状态见下方子项' : '本次连接尚无检查结果', state: 'unseen', checkedAt: null };
+      return { ...control, observation: state, ...runtimeProgress(control, state, displayUsage, { running: loop.running, connected: !!session.client?.connected, now: Date.now() + (session.client?.serverClockOffsetMs || 0) }), nextCheck: loop.running && session.client?.connected && control.enabled && !control.blockedBy.length ? rewards?.nextCheck(key) ?? null : null, stale: !loop.running || !session.client?.connected };
+    });
     return {
+      runVersion: SERVER_STARTED_AT,
+      controls,
+      fleetMaintenance: loop.fleetMaintenance ?? { rows: [], reason: '等待首次检查', enabled: false },
       running: loop.running,
       stopping: !!loop.controller?.signal.aborted,
       tasks: automationTasks.map(({ key, label, group }) => ({
@@ -2714,6 +3075,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog = null }
       reconnect: loop.reconnect,
       recovery: session.recovery ? { kind: session.recovery.kind, attempts: session.recovery.attempts,
         nextAt: session.recovery.nextAt, reason: session.recovery.reason } : null,
+      settingsRevision: session.preferencesRevision,
       rounds: loop.rounds,
       completed: loop.completed,
       everyMs: loop.everyMs,
