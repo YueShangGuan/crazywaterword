@@ -22,6 +22,8 @@ const { placementsFor } = await import('../src/automation/snap.mjs');
 const { scheduleProduction } = await import('../src/automation/production.mjs');
 const { expeditionHealth, passReady } = await import('../src/automation/battle.mjs');
 const { snowball, chooseAction } = await import('../src/automation/snowball.mjs');
+const { activities } = await import('../src/automation/welfare.mjs');
+const { edict } = await import('../src/automation/activity.mjs');
 const { GameClient, isCredentialExpired } = await import('../src/client.mjs');
 const { describeLogError } = await import('../src/log-errors.mjs');
 const { PAGE } = await import('../src/page.mjs');
@@ -389,9 +391,9 @@ function edictFixture({ session = null, tickets = 3, dryRun = false } = {}) {
   return f;
 }
 
-/** 离线执行一次活动；释放连接监听器，且不创建 WebSocket 或读取真实账号配置。 */
+/** 离线执行一次酆都捞尸人历史实现；释放连接监听器，且不创建 WebSocket 或读取真实账号配置。 */
 async function runEdict(f) {
-  try { await f.ctx.refreshStock(); await HANDLERS.activity(f.ctx, f.settings.modules.activity); return f; }
+  try { await f.ctx.refreshStock(); await edict(f.ctx, await activities(f.ctx)); return f; }
   finally { f.ctx.dispose(); }
 }
 
@@ -956,8 +958,8 @@ test('automation form options: material selectors use only their configured sour
 
 // 下架活动只能改变控制台归类，原模块设置路径必须继续存在，才能读取和保存玩家已有配置。
 test('automation UI: off-sale activity entries are grouped as historical without changing settings paths', () => {
-  assert.match(PAGE, /HISTORICAL_ACTIVITY_KEYS = \['midAutumn', 'blindBox', 'catcher', 'workshop', 'blessing'\]/);
-  assert.match(PAGE, /CURRENT_ACTIVITY_KEYS = \['enabled', 'edict', 'weekOrder', 'weekLottery', 'snowball'\]/);
+  assert.match(PAGE, /HISTORICAL_ACTIVITY_KEYS = \['midAutumn', 'blindBox', 'catcher', 'workshop', 'blessing', 'edict', 'snowball'\]/);
+  assert.match(PAGE, /CURRENT_ACTIVITY_KEYS = \['enabled', 'weekOrder', 'weekLottery'\]/);
   assert.match(PAGE, /抓捕（海底捞月）/);
   assert.match(PAGE, /历史活动（已下架）/);
   assert.match(PAGE, /settingFields\(data\.settings\.modules\.activity\[key\],\['modules','activity',key\],group\)/);
@@ -2505,17 +2507,15 @@ test('edict: preview never writes, invents new state or plans a premature guess'
   }
 });
 
-test('edict: both the activity parent switch and the edict switch gate the service', async () => {
-  for (const parentEnabled of [false, true]) {
-    const f = edictFixture();
-    f.settings.modules.activity.enabled = parentEnabled;
-    f.settings.modules.activity.edict.enabled = !parentEnabled;
-    try {
-      const result = await runAutomation({ ...f.args, selector: 'activity', initialPushes: f.ctx.pushes });
-      assert.equal(result.error, null);
-      assert.equal(f.client.calls.filter(call => call.name.startsWith('Edict')).length, 0);
-    } finally { f.ctx.dispose(); }
-  }
+test('off-sale edict and snowball: the activity module never dispatches them even with every switch on', async () => {
+  const f = edictFixture();
+  f.settings.modules.activity.snowball = { enabled: true, minEnergy: 100, autoStart: false };
+  try {
+    const result = await runAutomation({ ...f.args, selector: 'activity', initialPushes: f.ctx.pushes });
+    assert.equal(result.error, null);
+    assert.equal(f.client.calls.filter(call => call.name.startsWith('Edict')).length, 0);
+    assert.equal(f.client.calls.filter(call => call.name.startsWith('Snowball')).length, 0);
+  } finally { f.ctx.dispose(); }
 });
 
 test('activity: blind-box start/open/finish state advances exactly once per box', async () => {
@@ -5295,7 +5295,7 @@ test('trade: buys cheaper lower level stock; only higher levels are blocked', as
 });
 
 test('guild order and tech: daily cap stops recruitment, technology uses remaining current points', async () => {
-  const f = await moduleRun('guild', { order: { enabled: 'always', cityIds: [3], dailyLimit: 1 }, tech: { enabled: true, items: [4] } }, ({ ctx, client }) => {
+  const f = await moduleRun('guild', { order: { enabled: true, cityIds: [3], dailyLimit: 1 }, tech: { enabled: true, items: [4] } }, ({ ctx, client }) => {
     table(ctx, 'GuildTechCfg', [{ techId: 4, season: 0, techPointCost: 10, techPointCostGrowth: 5 }]); client.items.set('公会科技点', 15); client.items.set('木材', 1);
   }, { states: {
     GuildInfoRequest: { guild: { guildId: '1' } }, GuildCityInfoRequest: { cities: [{ cityId: 3, recommended: true }] }, CounterInfoRequest: { counters: [{ type: 'DAILY_FINISH_GUILD_ORDER', num: '0' }] }, GuildOrderRequest: { order: { requirements: [{ type: 0, id: '木材', num: '1' }] } }, GuildTechInfoRequest: { tech: [{ techId: 4, level: 1 }, { techId: 5, level: 1 }] },
@@ -5305,6 +5305,46 @@ test('guild order and tech: daily cap stops recruitment, technology uses remaini
   } });
   assert.equal(f.client.calls.filter(c => c.name === 'FinishGuildOrderRequest').length, 1);
   assert.deepEqual(f.client.calls.filter(c => c.name === 'UpgradeGuildTechRequest').map(c => c.body.techId), [4]); assert.equal(f.client.items.get('公会科技点'), 0);
+});
+
+for (const [day, expected] of [
+  ['2026-11-16', 3], // 周一按 mondayLimit 执行
+  ['2026-11-17', 1], // 其他日期仍按 dailyLimit 执行
+]) test(`guild order monday quota: ${day} stops at ${expected}`, async () => {
+  const f = await moduleRun('guild', { order: { enabled: true, cityIds: [3], dailyLimit: 1, mondayLimit: 3 } }, ({ ctx, client }) => {
+    client.items.set('木材', 10);
+  }, { now: () => Date.parse(`${day}T12:00:00+08:00`), states: {
+    GuildInfoRequest: { guild: { guildId: '1' } }, GuildCityInfoRequest: { cities: [{ cityId: 3, recommended: true }] }, CounterInfoRequest: { counters: [{ type: 'DAILY_FINISH_GUILD_ORDER', num: '0' }] }, GuildOrderRequest: { order: { requirements: [{ type: 0, id: '木材', num: '1' }] } },
+  }, handlers: {
+    FinishGuildOrderRequest: async (_, response, client) => {
+      const counter = client.states.CounterInfoRequest.counters[0];
+      counter.num = String(Number(counter.num) + 1);
+      client.items.set('木材', client.items.get('木材') - 1);
+      return {};
+    },
+  } });
+  assert.equal(f.client.calls.filter(c => c.name === 'FinishGuildOrderRequest').length, expected);
+});
+
+test('guild order switch migration: date enums revert to a boolean switch and mondayLimit fills from the template', () => {
+  const legacy = defaultSettings();
+  legacy.modules.guild.order.enabled = 'monday';
+  delete legacy.modules.guild.order.mondayLimit;
+  const file = path.join(accountDirectory('guild-order-migration'), 'settings.json');
+  writeJson(file, legacy);
+  const migrated = loadSettings('guild-order-migration');
+  assert.equal(migrated.modules.guild.order.enabled, true);
+  assert.equal(migrated.modules.guild.order.mondayLimit, 20);
+  assert.equal(JSON.parse(fs.readFileSync(file)).modules.guild.order.enabled, true);
+  writeJson(file, { ...legacy, modules: { ...legacy.modules, guild: { ...legacy.modules.guild, order: { ...legacy.modules.guild.order, enabled: 'off' } } } });
+  assert.equal(loadSettings('guild-order-migration').modules.guild.order.enabled, false);
+  // 当前契约：募兵开关只接受布尔，旧字符串枚举不再通过保存校验。
+  for (const value of ['off', 'always', 'monday']) {
+    const settings = defaultSettings(); settings.modules.guild.order.enabled = value;
+    assert.throws(() => validateSettings(settings));
+  }
+  const unlimited = defaultSettings(); unlimited.modules.guild.order.mondayLimit = 0;
+  assert.equal(validateSettings(unlimited).modules.guild.order.mondayLimit, 0);
 });
 
 test('welfare: existing valid entitlements and free rewards claim once; expired cards are untouched', async () => {
@@ -5613,6 +5653,11 @@ test('competition UI: exact enum choices and explanations, supplemental and Thur
   assert.match(settingCopy(['modules','pet','dailyBreedForPass'], 'dailyBreedForPass').note, /独立于普通宠物/);
   assert.deepEqual(Object.keys(defaultSettings().modules.pet).slice(0, 2), ['enabled','dailyBreedForPass']);
   const keys = Object.keys(defaultSettings().modules.resident); assert.equal(keys.indexOf('thursdayMinGold'), keys.indexOf('minGold') + 1);
+  // 募兵执行模式已改回布尔开关，周一总额度必须紧跟每日总额度展示。
+  assert.ok(!('modules.guild.order.enabled' in choices));
+  assert.match(settingCopy(['modules','guild','order','enabled'], 'enabled').note, /不限星期/);
+  assert.match(settingCopy(['modules','guild','order','mondayLimit'], 'mondayLimit').note, /周一（上海时间）当天使用的额度/);
+  const orderKeys = Object.keys(defaultSettings().modules.guild.order); assert.equal(orderKeys.indexOf('mondayLimit'), orderKeys.indexOf('dailyLimit') + 1);
 });
 
 
@@ -5646,8 +5691,8 @@ test('demand sources: preserve guild identity and share stock once, crop shortag
   assert.equal(crops.length, 1); assert.equal(crops[0].lack, 5); f.ctx.dispose();
 });
 
-test('legacy task entry: guild and ordinary pet/equipment cannot bypass off-day modes', async () => {
-  const f = fixture(); f.settings.modules.guild.enabled = true; f.settings.modules.guild.order.enabled = 'monday';
+test('legacy task entry: guild order follows the plain switch while pet/equipment keep their off-day modes', async () => {
+  const f = fixture(); f.settings.modules.guild.enabled = true; f.settings.modules.guild.order.enabled = false;
   f.settings.modules.pet.enabled = 'tuesday'; f.settings.modules.equip.enabled = 'friday';
   f.ctx.setModule('dailies');
   for (const step of [
@@ -5656,6 +5701,10 @@ test('legacy task entry: guild and ordinary pet/equipment cannot bypass off-day 
     { request: 'PickMadeEquipRequest', body: { buildingId: '1装备' } },
   ]) await assert.rejects(legacyAction(f.ctx, step), /执行日期/);
   assert.ok(!f.client.calls.some(row => ['FinishGuildOrderRequest','PetBreedRequest','PickMadeEquipRequest'].includes(row.name)));
+  // 募兵开关重新开启后，旧日常入口立即放行，不再受星期限制。
+  f.settings.modules.guild.order.enabled = true;
+  await legacyAction(f.ctx, { request: 'FinishGuildOrderRequest', body: { cityId: 1 } });
+  assert.ok(f.client.calls.some(row => row.name === 'FinishGuildOrderRequest'));
   f.ctx.dispose();
 });
 
@@ -5719,8 +5768,14 @@ test('competition UI: renderer produces real selects with correct values, labels
   assert.equal(pet[1].control.dataset.setting, 'modules.pet.dailyBreedForPass');
   const resident = scalarForm({ minGold: 20, thursdayMinGold: 90 }, ['modules','resident']);
   assert.equal(resident[1].control.dataset.setting, 'modules.resident.thursdayMinGold');
+  // 募兵执行模式已改回布尔开关：checkbox 渲染，后随每日与周一两个额度。
+  const order = scalarForm({ enabled: false, dailyLimit: 20, mondayLimit: 0 }, ['modules','guild','order']);
+  assert.equal(order[0].control.tag, 'input'); assert.equal(order[0].control.type, 'checkbox');
+  assert.equal(order[0].control.dataset.kind, 'boolean'); assert.equal(order[0].control.dataset.setting, 'modules.guild.order.enabled');
+  assert.equal(order[0].label.children[0].children[0].text, '开启');
+  assert.equal(order[1].control.dataset.setting, 'modules.guild.order.dailyLimit');
+  assert.equal(order[2].control.dataset.setting, 'modules.guild.order.mondayLimit'); assert.equal(order[2].control.type, 'number');
   for (const [path, field, day, title] of [
-    [['modules','guild','order'], 'enabled','monday','执行模式'],
     [['modules','equip'], 'enabled','friday','执行模式'],
     [['modules','antique'], 'upgrade','wednesday','自动升星'],
     [['modules','antique','suit'], 'activate','wednesday','激活'],

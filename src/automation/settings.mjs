@@ -55,7 +55,7 @@ export function defaultSettings() {
       museum: { enabled: false, collectRevenue: true, explore: false, factor: 1, maps: [], speedUp: false, speedUpDailyLimit: 0, speedUpKeepStock: 0 },
       battle: { enabled: false, maxActions: 50, stage: { enabled: false, samePowerRetryCount: 0, claimReward: true }, arena: { sweep: false, challenge: false }, trial: { heroExp: { challenge: false, rubySweep: false }, forge: { challenge: false, rubySweep: false }, petExp: { challenge: false, rubySweep: false } }, league: { challenge: false, reservePoints: 0, hangupReward: false, danReward: false, passReward: false }, expedition: { sweep: false, finalReward: false, freePass: false, challenge: false, challengeStopOnHeroDeath: true, challengeMinTeamHpPct: 40 } },
       world: { enabled: false, report: false, fleet: { repair: false, repairThresholds: [], repairSpeedUp: false, repairSpeedUpMinRemainSecs: 20 }, pirate: { attack: false, sweep: false, attackTypes: [], sweepTypes: [], dailySweepLimit: 10, attackTime: { start: '00:00', end: '00:00' } }, radar: { enabled: false, claim: true, kinds: [], fixed: false }, resField: { enabled: false, factory: 7, oasis: 3, tank: 0 }, chipMine: { enabled: false, hours: [], dailyCap: 0, fleets: [] }, treasureLoot: { enabled: false, hours: [], fleets: [] }, merchantShip: { enabled: false, retryMinutes: 0, rewardMaterials: [], fleets: [] }, cityWar: { enabled: false, online: false, reattack: false, fleets: [] }, worldBoss: { enabled: false, attackTimes: 1 }, limitedBoss: { enabled: false, challengeReward: false, fleets: [] }, trade: { enabled: false, claim: false, upgrade: false, speedUp: false, speedUpDailyLimit: 0, profitLimit: 0 } },
-      guild: { enabled: false, packs: { guild: false, title: false }, order: { enabled: 'off', dailyLimit: 20, cityIds: [] }, aid: { receive: false, ask: false, askItems: [], help: false, helpItems: [], helpNicknameKeywords: [], helpMinStock: 30, helpDailyLimit: 50 }, tech: { enabled: false, items: [] }, ship: { captain: false, crew: false, qualities: [], rewardItems: [], minWaterCoin: 0, forbiddenMaterials: [], relaxFilters: false } },
+      guild: { enabled: false, packs: { guild: false, title: false }, order: { enabled: false, dailyLimit: 20, mondayLimit: 20, cityIds: [] }, aid: { receive: false, ask: false, askItems: [], help: false, helpItems: [], helpNicknameKeywords: [], helpMinStock: 30, helpDailyLimit: 50 }, tech: { enabled: false, items: [] }, ship: { captain: false, crew: false, qualities: [], rewardItems: [], minWaterCoin: 0, forbiddenMaterials: [], relaxFilters: false } },
       welfare: { enabled: false, daily: true, weeklyLottery: false, uniqueLottery: false, dailyTask: true, growth: true, events: true, email: true },
       activity: { enabled: false, edict: { enabled: false }, midAutumn: { enabled: false, signIn: false, freeGift: false, activeReward: false }, blindBox: { enabled: false, freeGift: false, scoreReward: false, play: false, keepCards: 0 }, catcher: { enabled: false, play: false, repeat: false, sweep: false, passReward: false, keepHooks: 0, maxStage: 30, sweepStage: 0 }, workshop: { enabled: false, produce: false, gain: false, speedUp: false, keepStock: 10, keepClaws: 0, speedUpDailyLimit: 0 }, blessing: { enabled: false, boost: false, skinId: 0, boostTimes: 1, claimReward: false, keepKnots: 0 }, weekOrder: { enabled: false, buyMissingMaterials: false, minRubyStock: 0 }, weekLottery: { enabled: false, prize: false, maxDraws: 1 }, snowball: { enabled: false, minEnergy: 100, autoStart: false } },
       snap: { enabled: false, pve: false, pvpTrustee: false, giveUpPve: false, cancelMatchmaking: false, freeMatch: false, diamondMatch: false, diamondMatchDailyLimit: 0, matchWindows: [], passReward: false, maxMatches: 10 },
@@ -93,6 +93,21 @@ function migrateCompetitionSettings(value) {
     changed = true;
   }
   return { value: migrated, changed };
+}
+
+/**
+ * 募兵订单执行模式已从日期枚举改回布尔开关：off 视为关闭，always 与 monday 都
+ * 保留为开启；星期差异改由独立的周一额度表达，不再停留在执行模式里。
+ *
+ * @param {unknown} value 从账号 settings.json 读取的原始设置。
+ * @returns {{value: unknown, changed: boolean}} 可继续严格校验的设置及是否已迁移。
+ */
+function migrateGuildOrderSettings(value) {
+  const order = value?.modules?.guild?.order;
+  if (!order || typeof order.enabled === 'boolean') return { value, changed: false };
+  const migrated = structuredClone(value);
+  migrated.modules.guild.order.enabled = order.enabled !== 'off';
+  return { value: migrated, changed: true };
 }
 
 /**
@@ -262,9 +277,10 @@ export function loadSettings(accountId) {
   if (!fs.existsSync(file)) return defaultSettings();
   const legacy = migrateLegacyPirateSweepTypes(JSON.parse(fs.readFileSync(file, 'utf8')));
   const competition = migrateCompetitionSettings(legacy.value);
-  const settings = validateSettings(competition.value);
+  const guildOrder = migrateGuildOrderSettings(competition.value);
+  const settings = validateSettings(guildOrder.value);
   // 迁移后立即原子回写，后续读取和服务重启都只走当前唯一的设置契约。
-  if (legacy.changed || competition.changed) writeJson(file, settings);
+  if (legacy.changed || competition.changed || guildOrder.changed) writeJson(file, settings);
   return settings;
 }
 

@@ -18,7 +18,7 @@
 | world | world、world_ext | Fleet、Pirate、Radar、ChipMine、Treasure、City、Boss、Trade | 舰队争用、维修、配比、时段和当前城市交易 |
 | guild | guild | GuildPack、Order、Aid、Tech、Ship | 未入盟、互助库存、任职与补货 |
 | welfare | welfare | Daily、Growth、Login、Email、Activity | 未开放、已领取、成长与活动周期 |
-| activity / snap | activity、workshop、blessing、week_order、snap | Festival、BlindBox、Catcher、Workshop、Blessing、WeekOrder、Lottery、Snap | 活动结束、多步推进、钻石购买与匹配 |
+| activity / snap | activity、workshop、blessing、week_order、snap | Festival、BlindBox、Catcher、Workshop、Blessing、WeekOrder、Lottery、Snap | 活动结束、多步推进、钻石购买与匹配；酆都捞尸人与走江踏浪已下架，挂机流程与活动模块不再执行 |
 
 验收分层：固定数据业务测试、模拟 GameClient 网关、当前 game.js 编解码核对、本地网页检查。以上均不能代表真实游戏验收。
 
@@ -101,7 +101,7 @@
 | 贸易领奖、升级、加速 | sea666_world.py / run_trade_claim、run_trade_ops | world.trade；GotTradeReport、GotTradeAchievement、TradeCargoUpgrade、TradeSpeed、BattlePassGotReward | world.trade.enabled、claim、upgrade、speedUp、speedUpDailyLimit、profitLimit | 实际回包 GotTTradeReport；升级取 lv/upCost/upMoney；钻石升级也走预算；加速用海商王加速 |
 | 商情共享、买卖与迁船 | 最新抓包 / TradeCityReport、TradeGuildRadar、TradeMove | world.trade；TradeCityReport、TradeSell、TradeCity、TradeBuy、TradeGuildRadar、TradeMove | world.trade.enabled | 到港先确认城市商情已共享；卖空旧货后用贸易金币买满最低价商品；按货物数量×买入单价×0.3 优先送往紧缺城市，无匹配时避开船舱货物特产城市后随机迁船 |
 | 联盟礼包/职级奖 | sea666_guild.py / run_actions | guild.guild；GotGuildWelfarePack、GotGuildTitleReward | guild.packs.guild、title | 未入盟不发送后续请求；仅当前可领状态 |
-| 联盟募兵 | sea666_guild.py / run_actions | guild.orders；FinishGuildOrder | guild.order.enabled、dailyLimit、cityIds | 城市、冷却、每日次数与材料同时满足 |
+| 联盟募兵 | sea666_guild.py / run_actions | guild.orders；FinishGuildOrder | guild.order.enabled、dailyLimit、mondayLimit、cityIds | 城市、冷却、每日次数与材料同时满足；周一（上海时间）改用 mondayLimit |
 | 领取帮助/发起求助 | sea666_guild.py / run_actions | guild.aid；GotMyGuildAid、GuildAidAsk | guild.aid.receive、ask、askItems | 只领已完成帮助；只对指定且当前表存在的物品求助 |
 | 帮助盟友 | sea666_guild.py / run_actions | guild.aid；GuildAidHelp | guild.aid.help、helpItems、helpNicknameKeywords、helpMinStock、helpDailyLimit | 不帮自己/过期项；物品/昵称过滤；库存高于阈值才帮，日次数封顶 |
 | 联盟科技 | sea666_guild.py / run_actions | guild.guild；UpgradeGuildTech | guild.tech.enabled、items | 当前赛季/等级确定科技点费用；只升所选科技 |
@@ -124,7 +124,8 @@
 | 祝福与奖励 | sea666_blessing.py / run_blessing | activity.blessing；CelebrationDetail、CelebrationBoost、ClaimCelebrationReward | activity.blessing.enabled、boost、skinId、boostTimes、claimReward、keepKnots | 只投指定有效皮肤；用本期福运结；上限停止 |
 | 不差钱商人 | sea666_week_order.py / run_week_order | activity.weekOrder；WeekOrderInfo、CommonBuyGoods、FinishWeekOrder、WeekOrderGotFinal | activity.weekOrder.enabled、buyMissingMaterials、minRubyStock | 本期开放；整单缺料都有当前价才购买；全部预算通过；买后读库存再交单 |
 | 幸运转盘 | sea666_welfare.py / run_week_lottery | activity.lottery；WeekLotteryPrize、WeekLotteryTimesReward | activity.weekLottery.enabled、prize、maxDraws | 开启后可只领次数奖；prize 单独开启才耗现有币；本期阈值领奖 |
-| 走江踏浪 | 本次抓包 | activity.snowball；SnowballDetail、Start、Op、UseItem、ClaimReward | activity.snowball.enabled、minEnergy、autoStart | 五列优先、女伙伴优先合成、符文保命；默认 100 瓶启动，连续开局仅按剩余能量续局；每局符文各最多 5 张 |
+| 酆都捞尸人（酆都法旨） | 捞尸人联动抓包 | activity.edict；EdictInfo、EdictStart、EdictAsk、EdictGuess | activity.edict.enabled | 已下架：活动模块与挂机流程不再执行；历史设置迁入「历史活动（已下架）」留档，实现仅保留供查阅与离线测试 |
+| 走江踏浪 | 本次抓包 | activity.snowball；SnowballDetail、Start、Op、UseItem、ClaimReward | activity.snowball.enabled、minEnergy、autoStart | 已下架：活动模块与挂机流程不再执行；历史设置迁入「历史活动（已下架）」留档。历史规则：五列优先、女伙伴优先合成、符文保命；默认 100 瓶启动，连续开局仅按剩余能量续局；每局符文各最多 5 张 |
 | 卡牌 PVE/续局 | sea666_snap.py / run_pve | snap.playPve；SnapStart、SnapEndRound | snap.pve、maxMatches | 新局只用本期有效打牌券；已有局优先续；共同限制能量/区域/放置；结算后不发后续回合 |
 | 免费/钻石匹配 | sea666_snap.py / run_free_match | snap.snap；SnapStartMatchmaking | snap.freeMatch、diamondMatch、diamondMatchDailyLimit、matchWindows | 当前免费次数/钻石价/时段；日次数 0 禁止；统一预算 |
 | 真人对局、托管 | sea666_snap.py / run_free_match | snap.playPvp / trustee；SnapEndRound、SnapPvpToggleTrustee | snap.pvpTrustee | 默认按真实回合出牌，等 SCSnapPvpRoundResult；托管需显式开；回合键包含 matchId/round |

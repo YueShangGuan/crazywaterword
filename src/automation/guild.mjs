@@ -1,6 +1,6 @@
 import { amount, idString } from './context.mjs';
 import { costs, inWindows, mutate, repeat, skip, succeeded } from './common.mjs';
-import { modeActive, serverTime } from './schedule.mjs';
+import { serverTime, shanghaiWeekday } from './schedule.mjs';
 
 // 服务端以 DAILY_GUILD_AID 同时约束本账号的联盟求助额度；现场已确认每日上限为 20 次。
 const DAILY_GUILD_AID_LIMIT = 20;
@@ -11,7 +11,7 @@ export async function guild(ctx, options) {
   if (!amount(info.guild?.guildId)) return skip(ctx, '角色尚未加入联盟');
   if (options.packs.guild) await claimWelfare(ctx, info.guild?.welfarePack ?? []);
   if (options.packs.title && info.myTitle !== info.gotTitle) await mutate(ctx, 'GotGuildTitleRewardRequest', {}, 'GuildInfoRequest', s => [s.gotTitle, s.gotTitleTime]);
-  if (modeActive(options.order.enabled, serverTime(ctx))) await orders(ctx, options.order);
+  if (options.order.enabled) await orders(ctx, options.order);
   if (Object.values(options.aid).some(v => v === true)) await aid(ctx, options.aid);
   if (options.tech.enabled) {
     const techs = (await ctx.query('GuildTechInfoRequest')).tech ?? [];
@@ -56,19 +56,21 @@ function welfarePackSnapshot(packs) {
   return packs.map(pack => idString(pack.id)).sort().join(',');
 }
 
-/** 募兵订单按每日计数、城市筛选、冷却和共享库存决定是否提交。 */
+/** 募兵订单按每日计数、城市筛选、冷却和共享库存决定是否提交；周一额度单独生效。 */
 async function orders(ctx, options) {
   const city = (await ctx.query('GuildCityInfoRequest')).cities?.filter(c => !options.cityIds.length || options.cityIds.includes(c.cityId)).sort((a, b) => Number(b.recommended) - Number(a.recommended) || a.defenceNum - b.defenceNum)[0];
   if (!city) return skip(ctx, '没有符合设置的联盟城市');
   await repeat(ctx, 20, async () => {
-    if (!modeActive(options.enabled, serverTime(ctx))) return false;
+    if (!options.enabled) return false;
     const counters = (await ctx.query('CounterInfoRequest')).counters ?? [];
     const done = amount(counters.find(c => c.type === 'DAILY_FINISH_GUILD_ORDER')?.num);
-    if (options.dailyLimit > 0 && done >= options.dailyLimit) return false;
+    // 额度在每次提交前按当天星期重新选择，跨午夜进入周一时立即切换到周一额度。
+    const limit = shanghaiWeekday(serverTime(ctx)) === 'monday' ? options.mondayLimit : options.dailyLimit;
+    if (limit > 0 && done >= limit) return false;
     const order = (await ctx.query('GuildOrderRequest')).order;
     const expenses = costs(order?.requirements, ctx.protocol);
     if (!expenses.length || order.nextRefreshTime > ctx.now() / 1000 || !ctx.enough(expenses)) return false;
-    return succeeded(await ctx.action('FinishGuildOrderRequest', { cityId: city.cityId }, { expenses, allowed: () => modeActive(options.enabled, serverTime(ctx)) }));
+    return succeeded(await ctx.action('FinishGuildOrderRequest', { cityId: city.cityId }, { expenses, allowed: () => options.enabled }));
   });
 }
 

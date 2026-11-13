@@ -3,6 +3,7 @@ import { parseArgs } from 'node:util';
 import { GameClient } from './client.mjs';
 import { loadProtocol } from './proto.mjs';
 import { createConsole, openBrowser } from './server.mjs';
+import { formatConsoleLog } from './console-log.mjs';
 import { loadStore, saveStore, pickAccount, removeAccount, setActive, describeAccount, revealAccount, ACCOUNTS_PATH, LEGACY_CREDENTIALS_PATH } from './accounts.mjs';
 import { listWorlds, listGroup, enterWorld, describeRole } from './worlds.mjs';
 import { collectState, summarize, formatState } from './game.mjs';
@@ -905,7 +906,8 @@ async function main() {
   }
 
   const port = Number(process.env.CW_PORT ?? 17321);
-  const console_ = createConsole({ port });
+  // 控制台运行日志同步打到启动窗口；格式化会剥离 ANSI 转义与凭证类字段。
+  const console_ = createConsole({ port, onLog: entry => console.log(formatConsoleLog(entry)) });
   const url = await console_.listen();
   const browser = process.env.CW_NO_BROWSER ? null : openBrowser(url);
   console.log(`console: ${url}${browser ? ` (via ${browser})` : ''}`);

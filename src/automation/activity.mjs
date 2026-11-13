@@ -5,6 +5,7 @@ import { costs, mutate, repeat, skip, succeeded } from './common.mjs';
 import { activities } from './welfare.mjs';
 import { claimPass } from './battle.mjs';
 import { snowball } from './snowball.mjs';
+import { isActivityTaskAvailable } from '../activity-availability.mjs';
 
 /** 活动天数从上海日零点计算，跨午夜不依赖电脑时区。 */
 export function openDays(openTime, now) {
@@ -30,8 +31,12 @@ async function reward(ctx, request, body, key) {
 /** 仅执行本期正在开放的节庆活动，各子活动再校验自己的开放时间。 */
 export async function activity(ctx, options) {
   const all = await activities(ctx);
-  // 酆都玩法独立识别本期活动，不受历史中秋活动分支限制。
-  if (options.edict.enabled) await edict(ctx, all);
+  // 联动活动（酆都捞尸人、走江踏浪）按 activity-availability 数据驱动下线：
+  // 2026-11-12 到期即停，官方复开联动节庆（festival 子活动重新开放）时自动恢复执行。
+  if (options.edict.enabled) {
+    if (isActivityTaskAvailable('edict', ctx.client)) await edict(ctx, all);
+    else skip(ctx, '酆都捞尸人联动已下架，复开后自动恢复', '酆都捞尸人');
+  }
   const event = all?.festivalActivities?.find(f => (f.type === '中秋国庆活动' || f.type.includes('中秋')) && f.openTime <= ctx.now() / 1000 && f.closeTime > ctx.now() / 1000);
   if (event) {
     const id = idString(event.activityId);
@@ -62,7 +67,10 @@ export async function activity(ctx, options) {
   } else if (['midAutumn', 'blindBox', 'catcher', 'workshop', 'blessing'].some(k => options[k].enabled)) skip(ctx, '中秋活动未开放或已经结束');
   if (options.weekOrder.enabled) await weekOrder(ctx, options.weekOrder);
   if (options.weekLottery.enabled) await lottery(ctx, options.weekLottery);
-  if (options.snowball.enabled) await snowball(ctx, options.snowball);
+  if (options.snowball.enabled) {
+    if (isActivityTaskAvailable('snowballFree', ctx.client)) await snowball(ctx, options.snowball);
+    else skip(ctx, '走江踏浪联动已下架，复开后自动恢复', '走江踏浪');
+  }
 }
 
 /** 校验本局答案、四张显化状态和耐心；缺失状态不能作为未显化或正确答案处理。 */
@@ -77,8 +85,9 @@ function validEdictSession(session) {
     && session.patience > 0 && session.patience <= 100;
 }
 
-/** 每轮仅处理一局酆都法旨；先逐张显化，再用服务端本局答案竞猜并核对结算。 */
-async function edict(ctx, all) {
+/** 每轮仅处理一局酆都法旨；先逐张显化，再用服务端本局答案竞猜并核对结算。
+ *  是否执行由 activity-availability 数据驱动（到期即停、联动复开自动恢复）。 */
+export async function edict(ctx, all) {
   const event = all?.festivalActivities?.find(f => f.type === '捞尸人联动活动'
     && f.openTime <= ctx.now() / 1000 && f.closeTime > ctx.now() / 1000);
   if (!event) return skip(ctx, '酆都捞尸人活动未开放或已经结束', '酆都捞尸人');

@@ -1,6 +1,5 @@
 // 只为明确要求按跨服比拼日程执行的字段开放日期枚举，其余开关仍使用布尔值。
 export const EXECUTION_MODES = {
-  'modules.guild.order.enabled': 'monday',
   'modules.pet.enabled': 'tuesday',
   'modules.antique.activate': 'wednesday',
   'modules.antique.upgrade': 'wednesday',

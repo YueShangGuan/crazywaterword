@@ -9,14 +9,15 @@
 | 设置 | 允许值 / 含义 |
 | --- | --- |
 | `island.factory.mondayGuildPriority` | “周一优先联盟募兵”；仅与 `priorityProduce` 同时开启时生效 |
-| `guild.order.enabled` | `off` / `always` / `monday`，只约束募兵动作，仍需联盟总开关 |
+| `guild.order.enabled` | 布尔开关，只约束募兵动作，不限星期，仍需联盟总开关 |
+| `guild.order.dailyLimit`、`guild.order.mondayLimit` | 募兵每日额度；周一（上海时间）使用 `mondayLimit`，其他日期使用 `dailyLimit`，0 不设本地上限 |
 | `pet.enabled` | `off` / `always` / `tuesday`，约束整个常规宠物模块 |
 | `pet.dailyBreedForPass` | “每天培养一只”，位于宠物执行模式下方，独立于普通模式 |
 | `antique.activate`、`antique.upgrade`、`antique.suit.activate` | `off` / `always` / `wednesday`，仍需藏品总开关；`upgrade` 显示为“自动升星”，未增加经验升级 |
 | `resident.thursdayMinGold` | 位于普通最低金币奖励下方；周四替换 `minGold`，0 不限制金币 |
 | `equip.enabled` | `off` / `always` / `friday`，约束收取、制造、加速和分解，沿用原装备配方策略 |
 
-保存接口严格校验各字段自己的枚举。首次读取已保存设置时，相关布尔值一次性转换为 `off/always`；缺少周四金币门槛时复制原 `minGold`，随后原子回写。执行器只处理当前字符串契约。
+保存接口严格校验各字段自己的枚举。首次读取已保存设置时，相关布尔值一次性转换为 `off/always`；募兵订单开关反向迁移——已落盘的 `off` 变回 `false`，`always`/`monday` 变回 `true`；缺少周四金币门槛时复制原 `minGold`，随后原子回写。执行器只处理当前契约：宠物、藏品与装备为字符串日期枚举，募兵为布尔开关。
 
 周一优先级保留需求来源并传递到配方依赖。募兵先分配库存、在产和成品，再处理其他订单与普通补货；缺少部分原料时，已经分配的原料仍为募兵保留。准入阶段不会将同一份库存再次给普通任务。已有在产、自动生产与等待队列保护继续生效，未新增取消或抢占规则。此设置只影响备料，不自动开启募兵交单；其他日期严格恢复保存的来源集合与顺序。
 

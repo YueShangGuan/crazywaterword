@@ -5,7 +5,8 @@ export const MAX_SEQ = 2147483647;
 const HALF_SEQ = (MAX_SEQ - 1) / 2;
 const MEMBER_REQUESTS = new Set([
   'GuildInfoRequest', 'GotGuildWelfarePackRequest', 'GuildAidListRequest', 'GuildCityInfoRequest',
-  'GuildTechInfoRequest', 'GuildOrderRequest', 'TradeGuildRadarRequest',
+  'GuildTechInfoRequest', 'UpgradeGuildTechRequest', 'GuildOrderRequest', 'TradeGuildRadarRequest',
+  'GuildAidHelpRequest', 'GuildAidAskRequest', 'MyGuildAidRequest', 'GotMyGuildAidRequest', 'GotGuildTitleRewardRequest',
 ]);
 
 export const TICK_INTERVAL_MS = 1000;
@@ -208,7 +209,7 @@ export class GameClient extends EventEmitter {
       const entry = { name, responseName, resolve, reject, timer: null, order: this.sendOrder };
       entry.timer = setTimeout(() => {
         this.pending = this.pending.filter((item) => item !== entry);
-        reject(new Error(`timeout waiting for ${responseName} (sent ${name})`));
+        reject(new Error(`timeout waiting for ${[responseName].flat().join(' or ')} (sent ${name})`));
       }, timeout);
       this.pending.push(entry);
       this.sendOrder += 1;

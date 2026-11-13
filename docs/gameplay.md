@@ -702,7 +702,7 @@ VIP 免广告加速的抓包序列为：先发 `WatchAdvRequest{type:1, id}` 等
 | 联动活动签到 | `ClaimActivityDailyCheckInRewardRequest{activityId, checkId}`。客户端按开放日算当天，`signDay` 早于当天的是补签，服务端扣钻石（`dailyActive.checkRuby`）。工具只发当天的 `rewardId`，两个开放时间不在同一天时跳过，用回包 `checkId` 核对。 |
 | 联动活动活跃 | `ClaimActivityDailyActiveRewardRequest`，每次领下一档，回包 `claimedId` 递增。分数来自 `SCAllActivity` 和 `SCActivityActiveScoreUpdate`。 |
 | 联动每日免费礼包 | `ClaimDailyCombGiftRequest`、`ClaimFreeSelectGiftRequest` 只发 `price` 为 0 的礼包。没有响应类型，靠 `sendWatch` 和道具推送确认。服务端只在登录时下发状态，跨天按客户端 `dailyReset` 在本地清空。 |
-| 走江踏浪 | `SnowballDetailRequest` 读积分、档位和进行中的 session；`SnowballClaimRewardRequest` 领达标档位。开启自动对局后按 `SnowballDetailResponse.session` 续接或 `SnowballStartRequest{multiplier:1}` 开局，用 `SnowballOpRequest` 操作、`SnowballUseItemRequest` 使用火焰/冰冻符；每局结束重读详情确认积分与 session。默认至少 100 瓶能量才开局，连续开局开关只按剩余能量续局；不购买体力。 |
+| 走江踏浪（已下架） | `SnowballDetailRequest` 读积分、档位和进行中的 session；`SnowballClaimRewardRequest` 领达标档位。开启自动对局后按 `SnowballDetailResponse.session` 续接或 `SnowballStartRequest{multiplier:1}` 开局，用 `SnowballOpRequest` 操作、`SnowballUseItemRequest` 使用火焰/冰冻符；每局结束重读详情确认积分与 session。默认至少 100 瓶能量才开局，连续开局开关只按剩余能量续局；不购买体力。2026-11-12 起活动下架，挂机流程与活动模块不再执行，设置在「历史活动（已下架）」留档。 |
 | 抽奖 | `SpinCompassWheelRequest{num:1}` 只在 `CompassWheelInfoResponse.cost` 是抽奖券时发送，`WeekLotteryPrizeRequest{times:1}` 只在持有周转盘币时发送。各开关默认关闭。罗盘张数按账号设置，默认 10 张，周抽奖每轮最多 10 次。 |
 | 周活动奖励 | 累充 `WeekChargeGotRewardRequest`、升星 `WeekHeroStarGotRewardRequest`、芯片 `WeekChipGotFreeRequest`、翻牌 `GotUniqueLotteryFreeRequest`、周订单 `WeekOrderGotFinalRequest`。提交周订单 `FinishWeekOrderRequest` 接入材料预留，默认关闭。 |
 | VIP 每日奖励 | `GotVipDailyRewardRequest{vipLevel}`，只领不高于当前等级且未领的档位。 |

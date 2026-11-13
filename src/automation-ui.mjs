@@ -12,7 +12,6 @@ let pirateDailySweepMax = null;
 let automationClickGoldUnitPrice = null;
 // 每个字段只展示其允许的星期，保存契约与服务端严格枚举保持一致。
 const executionModes = {
-  'modules.guild.order.enabled': ['monday', '周一开启'],
   'modules.pet.enabled': ['tuesday', '周二开启'],
   'modules.antique.activate': ['wednesday', '周三开启'],
   'modules.antique.upgrade': ['wednesday', '周三开启'],
@@ -20,7 +19,7 @@ const executionModes = {
   'modules.equip.enabled': ['friday', '周五开启']
 };
 const automationLabels = {
-  season:'当前赛季',vipFreeAd:'VIP免广告',spending:'钻石消费',enabled:'开启',dailyLimit:'每日总额度',minRubyStock:'最低钻石保留量',clickGoldTimes:'钻石点金次数',modules:'各模块每日额度',adSpeedUp:'免广告加速（建造/生产）',
+  season:'当前赛季',vipFreeAd:'VIP免广告',spending:'钻石消费',enabled:'开启',dailyLimit:'每日总额度',mondayLimit:'周一总额度',minRubyStock:'最低钻石保留量',clickGoldTimes:'钻石点金次数',modules:'各模块每日额度',adSpeedUp:'免广告加速（建造/生产）',
   collect:'领取产物',finish:'自动竣工',build:'自动建造',upgrade:'自动升级',speedUp:'使用加速道具',disabledBuildings:'禁用建筑',factory:'工厂',gain:'领取成品',autoProduce:'自动生产',products:'工厂产品（建筑类型 → 产品）',disabledFactories:'禁用工厂',priorityProduce:'需求优先生产',proposedPriority:'需求顺序',speedUpForDemand:'为需求加速',
   harvest:'收割',plant:'种植',cropPriorities:'作物优先级（数字越小越优先）',cropKeepStock:'作物库存水位',priorityPlant:'订单需求优先',seedOnDemand:'缺种子时安排生产',speedUpMaxActions:'每轮最多加速次数',orderReward:'领取订单档位奖',blockedMaterials:'禁止交单材料',skipCropOrders:'跳过作物订单',minExp:'最低经验奖励',minGold:'最低金币奖励',dailyCap:'每日次数上限（0 不设本地上限）',fill:'装填货船',reward:'领取奖励',optionIndex:'选择选项（1 或 2）',
   fishing:'钓鱼',maxFishCasts:'每轮最多钓鱼次数',floater:'拾取浮漂',floaterCollectWhenFull:'满仓仍收取浮漂',openChests:'使用钥匙开箱',maxChests:'每轮最多开箱次数',diving:'潜水',divingEach:'每种潜水材料数量',salvage:'拾荒',salvageEach:'每种拾荒材料数量',enhance:'采集强化',enhanceTargetLevel:'强化目标等级',claim:'领取',levelUp:'升级',levelReward:'领取等级奖励',claimAfterHours:'累计挂机几小时后领取',
@@ -93,7 +92,9 @@ const automationSettingCopy = {
   'modules.battle.league.challenge': { note:'按服务端列表从上到下优先选择：先要求总战力较低，再要求两支舰队均严格占优，并自动调整为强队对强队；战斗回包必须两局全胜。当前四人均无稳赢时，仅在服务端 refreshTimes=1 且刷新后钻石余额不变时使用一次免费刷新；刷新后仍无稳赢，才会强打对方弱队、弱打对方强队，且一胜一负后本方 finalScore 不低于 score 才视为保分。阵容缺失、战力相同、换位读回失败或刷新资格不明都会跳过。' },
   'modules.battle.league.reservePoints': { title:'保留积分赛挑战券', note:'这里保留的是 LEAGUE_POINT 挑战券，不是竞技排名积分。当前券数必须严格大于此值才出战，每次战斗后都会重新读取库存；它不保证平局保分，平局仍以战斗回包的 finalScore 核验。' },
   'modules.resident.dailyCap': { note:'当前角色每日处理居民订单的本地次数上限；0 不设本地上限，游戏服务端仍可能限制次数。' },
-  'modules.guild.order.dailyLimit': { note:'当前角色每日最多完成的联盟募兵订单；0 不设本地上限。' },
+  'modules.guild.order.enabled': { note:'开启后自动完成联盟募兵订单，不限星期；仍需开启联盟模块总开关。周一（上海时间）使用“周一总额度”，其他日期使用“每日总额度”。' },
+  'modules.guild.order.dailyLimit': { note:'当前角色每日最多完成的联盟募兵订单；周一改用“周一总额度”。0 不设本地上限。' },
+  'modules.guild.order.mondayLimit': { note:'周一（上海时间）当天使用的额度，替换“每日总额度”；0 不设本地上限，其他日期不受影响。' },
   'modules.guild.aid.helpMinStock': { note:'帮助盟友前，自己的该物品库存必须至少达到此数量；帮助后库存可能低于该值。' },
   'modules.guild.aid.helpDailyLimit': { note:'当前角色每日最多帮助盟友的次数；0 不设本地上限。' },
 };
@@ -140,14 +141,14 @@ const automationFeatureCopy = {
   'modules.world.trade': { action:'处理海商王领奖、升级、加速、买卖货物和迁船', scope:'当前角色当前贸易船；交易仅在 10:00 至 21:59 的执行窗口运行' },
   'modules.guild': { action:'处理联盟礼包、募兵、互助、科技和联盟商船', scope:'当前角色所在联盟；未入盟时本组不发送后续联盟操作' },
   'modules.guild.packs': { action:'领取联盟礼包和职级奖励', scope:'当前角色当前可领取的联盟福利；已领状态不会重复提交' },
-  'modules.guild.order': { action:'完成联盟募兵订单', scope:'当前角色当前可接的指定城市订单；冷却、材料和每日次数都必须满足' },
+  'modules.guild.order': { action:'完成联盟募兵订单', scope:'当前角色当前可接的指定城市订单；冷却、材料和每日次数都必须满足，周一使用单独的周一额度' },
   'modules.guild.aid': { action:'领取帮助、发起求助或帮助盟友', scope:'当前角色联盟互助列表；不会帮助自己或已过期项' },
   'modules.guild.tech': { action:'升级指定联盟科技', scope:'当前角色当前赛季可升级的科技；只消耗现有科技点' },
   'modules.guild.ship': { action:'应聘联盟商船船长并精确补货登船', scope:'当前角色符合品质、奖励和材料筛选的联盟商船；不会购买补货材料' },
   'modules.welfare': { action:'领取日常权益、任务、成长、活动和邮件奖励', scope:'当前角色现有且未领取的免费或已持有权益；不会购买月卡、礼包或付费资格' },
-  'modules.activity': { action:'处理酆都捞尸人、不差钱商人、幸运转盘和走江踏浪', scope:'当前角色当前活动周期；中秋、盲盒、捞月、工坊和祝福在“历史活动”中单独配置' },
-  'modules.activity.edict': { action:'入场券足够时参与一局，每张符文先显化一次，再竞猜并结算', scope:'当前角色开放中的捞尸人联动活动；每次执行最多一局，优先续接已有局' },
-  'modules.activity.snowball': { action:'参与走江踏浪，自动放置、合成、使用符文并领取累计积分奖励', scope:'当前角色开放中的走江踏浪；未开启连续开局时每次执行最多一局，已有局优先续接' },
+  'modules.activity': { action:'处理不差钱商人和幸运转盘', scope:'当前角色当前活动周期；酆都捞尸人、走江踏浪已下架，与中秋、盲盒、捞月、工坊和祝福一起在“历史活动”中单独配置' },
+  'modules.activity.edict': { action:'入场券足够时参与一局，每张符文先显化一次，再竞猜并结算', scope:'已下架活动的历史设置，仅供查阅；挂机流程与活动模块不再执行' },
+  'modules.activity.snowball': { action:'参与走江踏浪，自动放置、合成、使用符文并领取累计积分奖励', scope:'已下架活动的历史设置，仅供查阅；挂机流程与活动模块不再执行' },
   'modules.activity.midAutumn': { action:'领取中秋签到、免费礼包和活跃奖励', scope:'当前角色当前开放的中秋活动；活动或子玩法关闭时不会操作' },
   'modules.activity.blindBox': { action:'续办或开启盲盒并领取免费、积分奖励', scope:'当前角色本期盲盒；已有局优先续办，每个格子只处理一次' },
   'modules.activity.catcher': { action:'挑战、续局、扫荡捞月并领取战令奖励', scope:'当前角色当前开放的海底捞月；已开始的局会沿用保存的奖励信息，不重复消耗钩子' },
@@ -422,9 +423,9 @@ function settingHeading(title, note) {
 }
 
 // 已下架玩法仍复用原有模块 ID 与账号设置路径；这里只调整控制台呈现位置，避免历史配置失效。
-const HISTORICAL_ACTIVITY_KEYS = ['midAutumn', 'blindBox', 'catcher', 'workshop', 'blessing'];
-const CURRENT_ACTIVITY_KEYS = ['enabled', 'edict', 'weekOrder', 'weekLottery', 'snowball'];
-const HISTORICAL_ACTIVITY_LABELS = { midAutumn: '中秋', blindBox: '盲盒', catcher: '抓捕（海底捞月）', workshop: '活动工坊', blessing: '祈福' };
+const HISTORICAL_ACTIVITY_KEYS = ['midAutumn', 'blindBox', 'catcher', 'workshop', 'blessing', 'edict', 'snowball'];
+const CURRENT_ACTIVITY_KEYS = ['enabled', 'weekOrder', 'weekLottery'];
+const HISTORICAL_ACTIVITY_LABELS = { midAutumn: '中秋', blindBox: '盲盒', catcher: '抓捕（海底捞月）', workshop: '活动工坊', blessing: '祈福', edict: '酆都捞尸人', snowball: '走江踏浪' };
 
 /**
  * Adds one selected-fleet row for the merchant-ship form. The setting keeps a
@@ -1116,7 +1117,7 @@ async function loadAutomation() {
       : data.settings.modules[id];
     settingFields(values,['modules',id],group); form.appendChild(group);
   }
-  const history = el('details','automation-group'); history.append(el('summary',null,'历史活动（已下架）'), el('p','automation-group-note','功能：保留已下架活动的历史账号设置以便查阅或手动单轮执行。影响范围：这些玩法不会加入自动循环，不会因保存设置而自动开始。'));
+  const history = el('details','automation-group'); history.append(el('summary',null,'历史活动（已下架）'), el('p','automation-group-note','功能：保留已下架活动的历史账号设置以便查阅或手动单轮执行；酆都捞尸人和走江踏浪已停止执行，设置仅作留档。影响范围：这些玩法不会因保存设置而自动开始。'));
   for (const key of HISTORICAL_ACTIVITY_KEYS) {
     const group = el('details','automation-group'); group.appendChild(el('summary',null,HISTORICAL_ACTIVITY_LABELS[key]));
     const activityCopy = settingCopy(['modules','activity',key], key);
