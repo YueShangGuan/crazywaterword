@@ -4,6 +4,7 @@ import { operationLabels } from './operation-labels.mjs';
 import { iconEntry } from './art.mjs';
 import { rail, topbar, journal, dialogs, templates, overviewPage, manualPage, heroesPage, dailiesPage, activitiesPage, accountPage, automationPage, idlePanel, stagePanel, mapPage } from './ui/dist/console.mjs';
 import { AUTOMATION_SCRIPT } from './automation-ui.mjs';
+import { SETTINGS_SCRIPT } from './settings-card.mjs';
 const componentCss = readFileSync(new URL('./ui/dist/theme.css', import.meta.url), 'utf8');
 const consoleCss = readFileSync(new URL('./console.css', import.meta.url), 'utf8');
 const automationCss = readFileSync(new URL('./automation.css', import.meta.url), 'utf8');
@@ -679,7 +680,7 @@ $('account').onchange = async () => {
   refreshStages();
   refreshLoop();
   await call('/api/accounts/active', { method: 'POST', body: JSON.stringify({ confirm: true, id: current }) });
-  if (!$('tab-automation').classList.contains('hidden')) await loadAutomation();
+  if (!$('tab-automation').classList.contains('hidden')) { await loadAutomation(); gsLoad().catch(() => {}); }
   subscribe();
   await loadMessages();
   refreshOverview();
@@ -1955,6 +1956,7 @@ $('cap-stop').onclick = async () => {
 
 // ---- 启动 ------------------------------------------------------------------
 ${AUTOMATION_SCRIPT}
+${SETTINGS_SCRIPT}
 ${activitiesScript}
 ${progressionScript}
 ${connectionScript}
@@ -2002,7 +2004,7 @@ document.querySelectorAll('#tabs button').forEach((button) => {
     if (button.dataset.tab === 'idle') refreshLoop();
     if (button.dataset.tab === 'activities') refreshActivities();
     if (button.dataset.tab === 'stages') refreshStages();
-    if (button.dataset.tab === 'automation') loadAutomation().catch(error => $('automation-hint').textContent = error.message);
+    if (button.dataset.tab === 'automation') { loadAutomation().catch(error => $('automation-hint').textContent = error.message); gsLoad().catch(() => {}); }
   };
 });
 

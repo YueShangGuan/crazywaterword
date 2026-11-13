@@ -1216,11 +1216,27 @@ function bindWorldMap() {
     drawWorldMap();
   }, { passive: false });
 
-  canvas.addEventListener('mousedown', (event) => {
+  // Pointer Events 统一鼠标与触摸；粗指针默认放行页面滚动（pan-y），点“移动地图”后锁定画布拖拽。
+  let mapTouchPan = false;
+  if (matchMedia('(pointer: coarse)').matches) {
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.textContent = '移动地图';
+    toggle.addEventListener('click', () => {
+      mapTouchPan = !mapTouchPan;
+      toggle.classList.toggle('active', mapTouchPan);
+      toggle.textContent = mapTouchPan ? '完成移动' : '移动地图';
+      canvas.classList.toggle('gs-pan', mapTouchPan);
+    });
+    canvas.after(toggle);
+  }
+  canvas.addEventListener('pointerdown', (event) => {
+    if (event.pointerType !== 'mouse' && !mapTouchPan) return;
+    canvas.setPointerCapture(event.pointerId);
     worldMapDragMoved = false;
     worldMapDrag = { x: event.clientX, y: event.clientY, tx: worldMapView.tx, ty: worldMapView.ty };
   });
-  canvas.addEventListener('mousemove', (event) => {
+  canvas.addEventListener('pointermove', (event) => {
     const rect = canvas.getBoundingClientRect();
     const mx = event.clientX - rect.left;
     const my = event.clientY - rect.top;
@@ -1233,12 +1249,14 @@ function bindWorldMap() {
       drawWorldMap();
       return;
     }
+    if (event.pointerType !== 'mouse') return;
     worldMapHover = worldMapHitAt(mx, my);
     positionWorldMapTooltip(mx, my);
     drawWorldMap();
   });
   const endDrag = () => { worldMapDrag = null; };
-  canvas.addEventListener('mouseup', endDrag);
+  canvas.addEventListener('pointerup', endDrag);
+  canvas.addEventListener('pointercancel', endDrag);
   canvas.addEventListener('mouseleave', () => {
     endDrag();
     worldMapHover = null;

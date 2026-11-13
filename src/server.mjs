@@ -1,5 +1,6 @@
 import http from 'node:http';
 import fs from 'node:fs';
+import zlib from 'node:zlib';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { GameClient, toNumber } from './client.mjs';
@@ -36,7 +37,14 @@ import { automationTasks, defaultFishingGoldReserve, defaultCompassSpinCount, ma
 import { rewardSchedule } from './reward-schedule.mjs';
 import { normalizeReconnect, parseReconnect, reconnectDelaySeconds, recoveryDecision } from './reconnect.mjs';
 import { createNotifier, loadNotifySettings, notifyEvents, parseNotifySettings, saveNotifySettings, webhookFormats } from './notify.mjs';
+import { createHash } from 'node:crypto';
 import { incomeView, readIncomeSnapshot, recordIncome } from './income-report.mjs';
+import { activityAvailability } from './activity-availability.mjs';
+import { createUsageLedger, defaultSettings, loadAutomationSettings, saveAutomationSettings, validateSettings, settingsCatalog, settingsFromNative,
+  exportAutomationSettings, importAutomationSettings, SettingsError, settingsUiRules } from './automation-settings.mjs';
+import { giftCodeStatus, giftCodeSummary, startGiftCodeBatch } from './gift-codes.mjs';
+import { classifyLog } from './log-categories.mjs';
+import { createTraceLog } from './trace-log.mjs';
 import { createStageTask } from './stages.mjs';
 import { runAction } from './actions.mjs';
 import { loadStore, saveStore, upsertAccount, removeAccount, setActive, pickAccount, describeAccount, revealAccount, DATA_DIR } from './accounts.mjs';
@@ -83,6 +91,11 @@ const GIFT_CODE_BATCH_ROUTE = 'POST /api/gift-codes/redeem';
 const validSpinCount = count => Number.isSafeInteger(count) && count >= 1 && count <= maxCompassSpinCount;
 // 协议帧不再进界面，但仍然要能事后查。默认只写文件，CW_DEBUG=1 时才同时打到终端。
 const TRACE_PATH = path.resolve(import.meta.dirname, '../data/protocol.log');
+const TRACE_MAX_BYTES = (() => {
+  const value = Number(process.env.CW_PROTOCOL_LOG_MAX_BYTES);
+  return Number.isSafeInteger(value) && value > 0 ? value : 5 * 1024 * 1024;
+})();
+const traceLog = createTraceLog(TRACE_PATH, { maxBytes: TRACE_MAX_BYTES });
 
 const STATE_TEXT = {
   IDLE: '未连接',
@@ -154,7 +167,7 @@ export function loopEntryLogLevel(entry) {
  * @param {{host?: string, port?: number}} options 监听地址和端口。
  * @returns {object} 可启动、停止并供测试调用的控制台实例。
  */
-export function createConsole({ host = '127.0.0.1', port = 17321 }) {
+export function createConsole({ host = '127.0.0.1', port = 17321, onLog = null }) {
   const protocol = loadProtocol();
   const globalLog = [];
   const streams = new Set();
@@ -171,7 +184,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
   function emit(session, level, message, extra) {
     const display = describeLogError(message, extra);
     const detail = [extra?.diagnostic, display.detail].filter(Boolean).join('\n');
-    const entry = { id: ++logId, t: Date.now(), level, message: display.message, detail: detail || undefined, extra, account: session?.id ?? null };
+    const entry = { id: ++logId, t: Date.now(), level, category: classifyLog(display.message, extra), message: display.message, detail: detail || undefined, extra, account: session?.id ?? null };
     const list = session ? session.log : globalLog;
     list.push(entry);
     logLimit(list);
@@ -180,23 +193,48 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
       if (entry.account !== null && res.account !== entry.account) continue;
       res.write(payload);
     }
+    try { onLog?.(entry); } catch { /* 启动窗口输出失败不影响控制台 */ }
     return entry;
   }
 
   // 协议层细节（帧、序号、字节数、原始 JSON）只落盘，不进运行记录。
-  let traceStream = null;
   function trace(session, line) {
     const text = `${new Date().toISOString()} [${session.id.slice(0, 8)}] ${line}\n`;
     if (process.env.CW_DEBUG === '1') process.stdout.write(text);
     try {
-      if (!traceStream) {
-        fs.mkdirSync(path.dirname(TRACE_PATH), { recursive: true });
-        traceStream = fs.createWriteStream(TRACE_PATH, { flags: 'a' });
-      }
-      traceStream.write(text);
+      traceLog.write(text);
     } catch {
       /* 写不进去就算了，协议日志不是功能 */
     }
+  }
+
+  // 上游用量账本（发送前占用 + uniqueKey 防重，跨重启持久在 data/usage-<账号>.json）。
+  // 与用户 ctx.ledger（请求级 pending + 押钻）语义不同，两套并存、各管各的模块。
+  function sessionUsageLedger(session) {
+    if (!session.usageLedger) {
+      session.usageLedger = createUsageLedger(session.id, { now: () => Date.now() + (session.client?.serverClockOffsetMs ?? 0) });
+    }
+    return session.usageLedger;
+  }
+
+  function adoptPreferences(session, entry) {
+    session.preferences = entry.settings;
+    session.preferencesRevision = entry.revision;
+    session.preferencesSavedAt = entry.savedAt;
+  }
+
+  // 上游形状设置视图：未保存过配置时按当前挂机开关折算一份基线（baseRevision 供首次保存比对）。
+  function settingsView(session) {
+    const saved = loadAutomationSettings(session.id);
+    if (saved.revision && saved.revision !== session.preferencesRevision) adoptPreferences(session, saved);
+    const settings = saved.revision ? saved.settings : settingsFromNative(session.loop.tasks, {
+      everySeconds: session.loop.everyMs / 1000, fishingGoldReserve: session.loop.fishingGoldReserve,
+    });
+    const baseRevision = createHash('sha256').update(JSON.stringify([session.loop.tasks, session.loop.everyMs, session.loop.fishingGoldReserve])).digest('hex');
+    const availability = activityAvailability(session.client);
+    return { settings, revision: saved.revision, savedAt: saved.savedAt, baseRevision, catalog: settingsCatalog(loadConfigSafe()),
+      tasks: automationTasks.filter(task => !availability.hiddenTasks.includes(task.key)), rules: { ...settingsUiRules(), hiddenFields: availability.hiddenFields },
+      usage: sessionUsageLedger(session).snapshot(), pendingUsage: sessionUsageLedger(session).pendingCounters(), running: session.loop.running };
   }
 
   function enqueue(session, work, label) {
@@ -517,69 +555,72 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     });
   }
 
-  /** Submit a batch's codes serially for one account so a late response cannot be assigned to a later code. */
-  async function redeemGiftCodesForAccount(session, account, batch, codes, summary) {
-    const client = await acquireGiftRedeemSlot(session, account, batch);
-    if (!client) {
-      summary.offline += 1;
-      emitGiftRedeemLog('warn', account, batch, 'offline', '账号已离线，未调用兑换接口');
-      return;
-    }
-    summary.online += 1;
-    try {
-      for (let index = 0; index < codes.length; index += 1) {
-        const code = codes[index];
-        try {
-          const response = await client.request('GotGiftCodeRequest', { giftCode: code }, 'GotRewardResponse');
-          const rewards = formatGiftCodeRewards(response?.reward, loadConfigSafe(), protocol);
-          summary.succeeded += 1;
-          emitGiftRedeemLog('info', account, batch, 'result', `兑换码 ${code} 兑换成功：${rewards}`, { status: 'success', code, rewards });
-        } catch (error) {
-          summary.failed += 1;
-          const reason = error instanceof Error ? error.message : String(error);
-          emitGiftRedeemLog('error', account, batch, 'result', `兑换码 ${code} 兑换失败：${reason}`, { status: 'failed', code, reason });
-          // Only a server prompt conclusively belongs to this code. Unknown outcomes stop this account to avoid response mixups.
-          if (!error?.prompt) {
-            const remaining = codes.length - index - 1;
-            if (remaining > 0) emitGiftRedeemLog('warn', account, batch, 'result', `兑换结果未确认，已停止该账号剩余 ${remaining} 个兑换码`, { status: 'stopped', remaining });
-            break;
-          }
-        }
-      }
-    } finally {
-      if (session.busy === GIFT_CODE_BATCH_ROUTE) session.busy = null;
-    }
-  }
-
-  /** Run one frozen account/code batch in saved-account order and report a concise aggregate result. */
+  /** Run one frozen account/code batch in saved-account order and report a concise aggregate result.
+   *  兑换记录的持久化、跨重启的 sending→unknown 状态机、跨账号 700ms 发送门与限频共享停止
+   *  全部由上游 gift-codes.mjs 承担；这里只负责账号忙等与 SSE 逐码进度翻译。 */
   async function runGiftCodeBatch(batch, codes, accounts) {
     const summary = { online: 0, offline: 0, succeeded: 0, failed: 0 };
     emitGiftRedeemLog('info', null, batch, 'start', `开始处理 ${codes.length} 个兑换码；仅调用当前在线账号`, { codes: codes.length, accounts: accounts.length });
-    for (const account of accounts) {
+    const shared = {
+      stop: '',
+      report: (accountId, row) => {
+        const account = accounts.find(item => item.id === accountId);
+        if (!account || row.status === 'queued' || row.status === 'sending') return;
+        const { code, status, detail } = row;
+        if (status === 'success') {
+          summary.succeeded += 1;
+          emitGiftRedeemLog('info', account, batch, 'result', `兑换码 ${code} 兑换成功：${detail || '服务器已确认'}`, { status: 'success', code, rewards: detail });
+        } else if (status === 'used') {
+          summary.succeeded += 1;
+          emitGiftRedeemLog('info', account, batch, 'result', `兑换码 ${code} 此前已兑换过`, { status: 'success', code, rewards: detail });
+        } else if (status === 'unknown') {
+          summary.failed += 1;
+          emitGiftRedeemLog('warn', account, batch, 'result', `兑换码 ${code} 结果未确认：${detail}`, { status: 'stopped', code, reason: detail });
+        } else if (status === 'rejected') {
+          summary.failed += 1;
+          emitGiftRedeemLog('error', account, batch, 'result', `兑换码 ${code} 兑换失败：${detail}`, { status: 'failed', code, reason: detail });
+        } else if (status === 'skipped') {
+          emitGiftRedeemLog('info', account, batch, 'result', `兑换码 ${code} 跳过：${detail}`, { status: 'stopped', code, reason: detail });
+        }
+      },
+    };
+    const targets = accounts.map((account) => {
       const session = sessionFor(account.id);
-      if (!session.client?.connected) {
-        summary.offline += 1;
-        emitGiftRedeemLog('warn', account, batch, 'offline', '账号未在线，未调用兑换接口');
-        continue;
-      }
-      try {
-        await enqueue(session, () => redeemGiftCodesForAccount(session, account, batch, codes, summary), '批量兑换');
-      } catch (error) {
-        summary.offline += 1;
-        const reason = error instanceof Error ? error.message : String(error);
-        emitGiftRedeemLog('warn', account, batch, 'offline', `账号任务已取消，未调用剩余兑换码：${reason}`, { reason, status: 'stopped' });
-      }
-    }
+      const online = Boolean(session.client?.connected);
+      return {
+        id: account.id,
+        blocked: online ? '' : '账号未在线，未调用兑换接口',
+        dispatch: action => enqueue(session, async () => {
+          const client = await acquireGiftRedeemSlot(session, account, batch);
+          if (!client) { summary.offline += 1; throw new Error('账号已离线'); }
+          summary.online += 1;
+          try {
+            return await action(client, () => session.client?.connected !== false && !session.paused);
+          } finally {
+            if (session.busy === GIFT_CODE_BATCH_ROUTE) session.busy = null;
+          }
+        }, '批量兑换'),
+      };
+    });
+    const results = startGiftCodeBatch(targets, codes.join('\n'), shared);
+    const started = results.filter(result => result.accepted);
+    summary.offline += results.length - started.length;
+    await Promise.allSettled(started.map(result => result.done));
     emitGiftRedeemLog(summary.failed || summary.offline ? 'warn' : 'info', null, batch, 'summary',
       `本批结束：在线 ${summary.online} 个，离线 ${summary.offline} 个，成功 ${summary.succeeded} 次，失败 ${summary.failed} 次`, summary);
   }
 
   function newSession(id) {
     const saved = loadStore().accounts.find(account => account.id === id)?.automation;
+    // 上游形状的游戏配置（舰队族/领奖族读取）；与用户自动化页的 tasks 开关是两套并存的数据。
+    const detailed = loadAutomationSettings(id);
     return {
       id,
       paused: saved?.paused === true,
       generation: 0,
+      preferences: detailed.revision ? detailed.settings : null,
+      preferencesRevision: detailed.revision,
+      preferencesSavedAt: detailed.savedAt,
       client: null,
       connecting: null,
       player: null,
@@ -1288,9 +1329,20 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
     }
     const parsed = new URL(req.url, 'http://localhost');
     const route = `${req.method} ${parsed.pathname}`;
+    // 大响应 gzip + ETag/304（上游同款）：手机走隧道访问时总览/地图等大 JSON 差别明显。
     const json = (value, code = 200) => {
-      res.writeHead(code, { 'content-type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify(value));
+      const body = JSON.stringify(value);
+      const etag = '"' + createHash('sha1').update(body).digest('base64') + '"';
+      if (req.headers['if-none-match'] === etag) { res.writeHead(304, { etag }); res.end(); return; }
+      const headers = { 'content-type': 'application/json; charset=utf-8', etag };
+      if (body.length >= 1024 && String(req.headers['accept-encoding'] ?? '').includes('gzip')) {
+        headers['content-encoding'] = 'gzip';
+        res.writeHead(code, headers);
+        res.end(zlib.gzipSync(Buffer.from(body)));
+        return;
+      }
+      res.writeHead(code, headers);
+      res.end(body);
     };
     const jsonBody = () => JSON.parse(body || '{}');
     const needConfirm = (payload) => {
@@ -1385,13 +1437,64 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
         return;
       }
 
+      // ---- 游戏配置（上游形状；舰队族/领奖族的设置家） ----------------------
+      if (parsed.pathname.startsWith('/api/settings') && body.length > 262144) throw new SettingsError({ import: '配置文件不能超过 256 KB' });
+      if (route === 'GET /api/settings') {
+        const { session } = scoped_(parsed);
+        json(settingsView(session));
+        return;
+      }
+      if (route === 'POST /api/settings/validate') {
+        const { session } = scoped_(parsed);
+        const payload = jsonBody();
+        const options = { catalog: settingsCatalog(loadConfigSafe()) };
+        const settings = payload.document ? importAutomationSettings(payload.document, options) : validateSettings(payload.settings, options);
+        json({ settings, revision: session.preferencesRevision });
+        return;
+      }
+      if (route === 'GET /api/settings/export') {
+        const { session } = scoped_(parsed);
+        res.setHeader('content-disposition', "attachment; filename*=UTF-8''" + encodeURIComponent('疯狂水世界-游戏配置.json'));
+        json(exportAutomationSettings(settingsView(session).settings));
+        return;
+      }
+      if (route === 'POST /api/settings') {
+        const { session } = scoped_(parsed);
+        const payload = jsonBody();
+        const current = settingsView(session);
+        if (!current.revision && payload.baseRevision !== current.baseRevision) throw new SettingsError({ revision: '现有挂机开关已变化，请重新载入后再保存' });
+        const entry = saveAutomationSettings(session.id, payload.settings, { revision: payload.revision, catalog: current.catalog });
+        adoptPreferences(session, entry);
+        if (session.client) for (const task of automationTasks) rewardSchedule(session.client).clearTask(task.key);
+        emit(session, 'info', '游戏配置已保存。正在运行的任务从下次检查开始使用新配置。');
+        json(settingsView(session));
+        return;
+      }
+
       // ---- 批量兑换码 ------------------------------------------------------
+      if (route === 'GET /api/gift-codes') {
+        const { session } = scoped_(parsed);
+        json(giftCodeStatus(session.id));
+        return;
+      }
+      if (route === 'GET /api/gift-codes/accounts') {
+        json({
+          accounts: loadStore().accounts.map((account) => {
+            const session = sessionFor(account.id);
+            const base = { id: account.id, title: describeAccount(account).title, paused: session.paused, connected: Boolean(session.client?.connected) };
+            try { return { ...base, ...giftCodeSummary(account.id) }; }
+            catch (error) { return { ...base, running: false, total: 0, counts: {}, error: error.message }; }
+          }),
+        });
+        return;
+      }
       if (route === GIFT_CODE_BATCH_ROUTE) {
         const payload = jsonBody();
         needConfirm(payload);
         if (giftCodeBatch) throw new Error('批量兑换码任务正在执行，请等待当前批次结束');
         const codes = parseGiftCodes(payload.codes);
         if (!codes.length) throw new Error('请至少输入一个兑换码（使用逗号或换行分隔）');
+        if (codes.length > 100) throw new Error('每批 1 至 100 个不同的礼包码');
         // Freeze both the account order and code order before asynchronous queue waits begin.
         const accounts = [...loadStore().accounts];
         const batch = { id: `gift-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` };
@@ -2541,6 +2644,9 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
           accountId: account.id,
           automationModules: selectedAutomationModules,
           automationOnly,
+          // 第二/三波模块（领奖族/舰队族）读取上游形状设置与用量账本；未保存过配置时用上游默认值。
+          getSettings: () => session.preferences ?? defaultSettings(),
+          usageLedger: sessionUsageLedger(session),
           adChannel: { clientInfo: { appId, channelId, originVersion }, language: account.login?.language },
           rounds, everyMs: loop.everyMs, allowMutate: true, stop: loop.stop,
           schedule: work => enqueue(session, work),
@@ -2548,7 +2654,6 @@ export function createConsole({ host = '127.0.0.1', port = 17321 }) {
           onModuleComplete: async moduleId => refreshOverviewCategories(session, account, MODULE_CACHE_CATEGORIES[moduleId] ?? []),
           isEnabled: key => loop.tasks[key] === true,
           getFishingGoldReserve: () => loop.fishingGoldReserve,
-          getCompassSpinCount: () => loop.compassSpinCount,
           isStageBusy: () => session.stages.view().running,
           onRound(summary) {
             trackRound(session, summary);

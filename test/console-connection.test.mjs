@@ -78,6 +78,14 @@ async function waitFor(predicate, message, attempts = 50) {
   assert.fail(typeof message === 'function' ? message() : message);
 }
 
+/** 批次必须完全收尾：兑换模块按账号持久化活动批次，残留会顶掉下一批（跨测试串扰）。
+ *  必须动态 import：静态导入会在第 14 行设置 CW_DATA_DIR 之前加载 accounts.mjs，
+ *  导致 DATA_DIR 回落到仓库目录，测试数据写进真实 data/。 */
+async function waitGiftBatchIdle(...ids) {
+  const { giftCodeStatus } = await import('../src/gift-codes.mjs');
+  await waitFor(() => ids.every(id => !giftCodeStatus(id).running), '礼包批次没有收尾');
+}
+
 /** 已确认战败保持普通日志，待确认写入显示提醒且不伪装为服务异常。 */
 test('console: loop log level keeps confirmed battle losses normal', () => {
   assert.equal(automationEntryLogLevel({ request: 'ChallengeStageRequest', status: 'failed' }), 'info');
@@ -123,16 +131,21 @@ test('console: batch gift codes redeem online accounts in account-code order', a
   assert.equal(started.status, 200);
   assert.deepEqual(started.value.codes, ['FIRST', 'SECOND']);
   // 首次奖励摘要会加载本地配置表；允许冷缓存解析完成，仍验证最终的严格账号、兑换码顺序。
-  await waitFor(() => requests.length === 4, () => '批量兑换未完成两个在线账号的顺序请求：' + JSON.stringify(requests), 300);
+  // 跨账号发送门每个兑换码间隔 700ms，四个请求约 2.1 秒，等待窗口放宽到 6 秒。
+  await waitFor(() => requests.length === 4, () => '批量兑换未完成两个在线账号的顺序请求：' + JSON.stringify(requests), 600);
 
-  assert.deepEqual(requests, [
-    { client: app.sessions.get('connection-a').client, body: { giftCode: 'FIRST' }, response: 'GotRewardResponse' },
-    { client: app.sessions.get('connection-a').client, body: { giftCode: 'SECOND' }, response: 'GotRewardResponse' },
-    { client: app.sessions.get('connection-b').client, body: { giftCode: 'FIRST' }, response: 'GotRewardResponse' },
-    { client: app.sessions.get('connection-b').client, body: { giftCode: 'SECOND' }, response: 'GotRewardResponse' },
-  ]);
+  // 跨账号发送门按提交顺序串行化并保持 700ms 间隔，账号之间允许交错；协议安全
+  // 要求的是同一连接内严格保序（回包按序归属），这里按账号分组断言。
+  const codesByAccount = new Map();
+  for (const entry of requests) {
+    const list = codesByAccount.get(entry.client) ?? [];
+    list.push(entry.body.giftCode);
+    codesByAccount.set(entry.client, list);
+  }
+  assert.deepEqual([...codesByAccount.values()].sort(), [['FIRST', 'SECOND'], ['FIRST', 'SECOND']]);
   assert.equal(app.sessions.get('connection-a').busy, null);
   assert.equal(app.sessions.get('connection-b').busy, null);
+  await waitGiftBatchIdle('connection-a', 'connection-b');
 });
 
 /** 离线账号只能写明未调用，批次不能为了兑换码隐式使用保存的凭证重新登录。 */
@@ -147,6 +160,7 @@ test('console: batch gift codes skip offline accounts without connecting them', 
   assert.equal(started.status, 200);
   await new Promise(resolve => setTimeout(resolve, 25));
   assert.equal(login.mock.callCount(), 1);
+  await waitGiftBatchIdle('connection-a', 'connection-b');
 });
 
 /** 忙碌账号的批次保留全局单活锁，释放原业务锁后才可发送兑换请求。 */
@@ -154,7 +168,8 @@ test('console: batch gift codes wait for a busy account and reject a second batc
   const requests = [];
   mockGateway(t, undefined, async function (name, body) {
     if (name === 'GotGiftCodeRequest') requests.push(body.giftCode);
-    return { reward: { asset: [] } };
+    // 上游兑换状态机会核对奖励明细；空 asset 会被判“未取得可核对的奖励”而停号。
+    return { reward: { asset: [{ type: 0, id: '木材', num: 2 }] } };
   });
   const { app, api } = await consoleFixture(t);
   assert.equal((await api('/api/connect', {}, 'connection-a')).status, 200);
@@ -170,6 +185,7 @@ test('console: batch gift codes wait for a busy account and reject a second batc
 
   session.busy = null;
   await waitFor(() => requests.length === 1, '原业务锁释放后批量兑换没有继续');
+  await waitGiftBatchIdle('connection-a', 'connection-b');
 });
 
 /** Prompt 拒绝是单码业务结果；仍在线时必须继续处理后续兑换码。 */
@@ -179,18 +195,20 @@ test('console: batch gift codes continue after a server prompt rejection', async
     if (name !== 'GotGiftCodeRequest') return {};
     requests.push(body.giftCode);
     if (body.giftCode === 'REJECTED') {
-      // 客户端只在 PromptResponse 已明确归属时附加 prompt；这与超时等未知终态不同。
+      // 客户端只在 PromptResponse 已明确归属时附加 prompt 与请求名；这与超时等未知终态不同。
       const error = new Error('server prompt: invalid gift code');
       error.prompt = { prompt: 1 };
+      error.request = 'GotGiftCodeRequest';
       throw error;
     }
-    return { reward: { asset: [] } };
+    return { reward: { asset: [{ type: 0, id: '木材', num: 2 }] } };
   });
   const { api } = await consoleFixture(t);
   assert.equal((await api('/api/connect', {}, 'connection-a')).status, 200);
   assert.equal((await api('/api/gift-codes/redeem', { confirm: true, codes: 'REJECTED, NEXT' })).status, 200);
-  await waitFor(() => requests.length === 2, 'Prompt 拒绝后没有继续下一兑换码');
+  await waitFor(() => requests.length === 2, 'Prompt 拒绝后没有继续下一兑换码', 300);
   assert.deepEqual(requests, ['REJECTED', 'NEXT']);
+  await waitGiftBatchIdle('connection-a', 'connection-b');
 });
 
 /** 超时后响应可能迟到且无请求 ID；当前账号必须停止，避免把旧回包归属给下一兑换码。 */
@@ -208,6 +226,7 @@ test('console: batch gift codes stop the account after a response timeout', asyn
   await waitFor(() => requests.length === 1, '超时兑换码没有发出');
   await new Promise(resolve => setTimeout(resolve, 20));
   assert.deepEqual(requests, ['TIMEOUT']);
+  await waitGiftBatchIdle('connection-a', 'connection-b');
 });
 
 /** 连接中止后必须停止该账号剩余码，同时继续处理下一个仍在线账号。 */
@@ -222,13 +241,13 @@ test('console: batch gift codes stop an account after its connection fails', asy
       this.setState('STOPPED');
       throw new Error('socket closed');
     }
-    return { reward: { asset: [] } };
+    return { reward: { asset: [{ type: 0, id: '木材', num: 2 }] } };
   });
   const { app, api } = await consoleFixture(t);
   assert.equal((await api('/api/connect', {}, 'connection-a')).status, 200);
   assert.equal((await api('/api/connect', {}, 'connection-b')).status, 200);
   assert.equal((await api('/api/gift-codes/redeem', { confirm: true, codes: 'BREAK, SHOULD-NOT-SEND' })).status, 200);
-  await waitFor(() => requests.length === 3, '连接故障后没有继续处理下一在线账号');
+  await waitFor(() => requests.length === 3, '连接故障后没有继续处理下一在线账号', 300);
   assert.deepEqual(requests, [
     { client: app.sessions.get('connection-a').client, code: 'BREAK' },
     { client: app.sessions.get('connection-b').client, code: 'BREAK' },
@@ -258,6 +277,7 @@ test('console: batch gift code events broadcast all account results through SSE'
   assert.equal((await api('/api/gift-codes/redeem', { confirm: true, codes: 'SSE-CODE' })).status, 200);
   await waitFor(() => events.includes('"accountId":"connection-b"') && events.includes('"phase":"summary"'),
     () => 'SSE 未广播其他账号的兑换结果或汇总：' + events, 150);
+  await waitGiftBatchIdle('connection-a', 'connection-b');
 });
 
 /** 设置页读取海盗次数只能复用已连接会话，不能为展示数据隐式登录游戏。 */

@@ -1,9 +1,12 @@
 import { amount, idString } from './context.mjs';
 import { costs, idleFleets, inWindows, mutate, repeat, rewardAction, skip, succeeded } from './common.mjs';
+import { businessDate } from './settings.mjs';
 import { claimPass } from './battle.mjs';
 import { pirateDailySweepLimit, pirateSweepProgress } from '../pirates.mjs';
 import { worldOnlineState } from '../extra-rewards.mjs';
 import { cityNameMap } from '../world-map.mjs';
+import { loadMapAsset } from '../world.mjs';
+import { cityPetrolCost } from '../city-war.mjs';
 
 const SPEED_UP_RUBY_TYPE = 1;
 const SPEED_UP_ITEM_TYPE = 2;
@@ -232,10 +235,16 @@ export async function world(ctx, options) {
     }
   }
   if (options.pirate.attack || options.pirate.sweep) await pirates(ctx, options.pirate);
-  if (options.radar.enabled) await radar(ctx, options.radar);
+  if (options.radar.enabled) {
+    if (options.preferences?.radar?.enabled) skip(ctx, '联盟情报已由「游戏配置 → 联盟情报调度」接管', '联盟情报');
+    else await radar(ctx, options.radar);
+  }
   if (options.resField.enabled) await fields(ctx, options.resField);
   if (options.chipMine.enabled) await chipMine(ctx, options.chipMine);
-  if (options.treasureLoot.enabled) await treasure(ctx, options.treasureLoot);
+  if (options.treasureLoot.enabled) {
+    if (options.preferences?.treasure?.enabled) skip(ctx, '万吨巨轮已由「游戏配置 → 巨轮调度」接管', '万吨巨轮');
+    else await treasure(ctx, options.treasureLoot);
+  }
   if (options.cityWar.enabled) await cityWar(ctx, options.cityWar);
   if (options.worldBoss.enabled) {
     const state = (await ctx.query('WorldBossInfoRequest')).info;
@@ -578,6 +587,37 @@ async function cityWarOwnGuildIdx(ctx) {
   return guildIndexes.size === 1 ? [...guildIndexes][0] : null;
 }
 
+// ---- 城战决策内核（移植自上游 city-war.mjs，纯函数 + 只读预检）----
+
+const cityWarDayNumber = now => Math.floor((Date.parse(`${businessDate(now)}T00:00:00+08:00`)) / 86400000);
+
+/**
+ * 城战派遣前的上游决策内核预检：合服窗口暂停 + 赛季开放日校验。
+ * 数据不足时放行（避免误停），仅在明确命中暂停条件时拦下。
+ * @returns {{ ok: true } | { ok: false, reason: string }}
+ */
+async function cityWarGuards(ctx) {
+  try {
+    const merge = await ctx.query('UniteWorldsPlanRequest');
+    const now = ctx.now() / 1000, executeTs = amount(merge?.executeTs ?? 0);
+    const merging = merge?.matchMaking === true
+      || (Array.isArray(merge?.worldIds) && merge.worldIds.length > 0 && executeTs > 0);
+    if (merging && (now >= executeTs - 3600 || cityWarDayNumber(now * 1000) === cityWarDayNumber(executeTs * 1000))) {
+      return { ok: false, reason: '合服匹配或执行期间暂停城战派遣' };
+    }
+  } catch { /* 合服查询失败不阻塞城战 */ }
+  const worldId = idString(ctx.player?.worldId);
+  const season = worldId && /^\d+$/.test(worldId) ? Number(BigInt(worldId) / 1000000n % 1000n) : 0;
+  const days = ctx.rows('GameplayOpenCfg').find(row => row.gameplay === '国战')?.openDays;
+  const openDays = Array.isArray(days) && season > 0 ? days[Math.min(season, days.length) - 1] : null;
+  const openTime = amount(ctx.player?.worldOpenTime ?? 0);
+  if (Number.isInteger(openDays) && openDays >= 1 && openTime > 0
+    && cityWarDayNumber(ctx.now()) - cityWarDayNumber(openTime) + 1 < openDays) {
+    return { ok: false, reason: `当前赛季尚未到城战开放日（开服第 ${openDays} 天开放）` };
+  }
+  return { ok: true };
+}
+
 /** 城战仅在上海时间 20:00–21:00 且服务器确认开放后执行，城市记录按角色业务日隔离。 */
 async function cityWar(ctx, options) {
   if (!inWindows(CITY_WAR_EXECUTION_WINDOW, ctx.now())) return skip(ctx, '不在城战执行时段（20:00–21:00）');
@@ -587,19 +627,48 @@ async function cityWar(ctx, options) {
   // 日志和战报里城池用配置名（如 堡垒G2）展示，编号只留在数据层。
   const cityNames = cityNameMap(ctx.config, ctx.player?.scenarioId);
   const cityName = (cityId) => cityNames.get(Number(cityId)) ?? `城 #${cityId}`;
-  // 游戏内“委托自动打城战”会和自动化监管抢舰队（自动战斗不受派遣节奏控制），
-  // 城战时段开始时把仍挂着委托的舰队统一关闭；之后 isOn 全为 false，天然按日去重。
+  // 上游决策内核：合服窗口暂停 + 赛季开放日校验，先于一切派遣动作。
+  const guard = await cityWarGuards(ctx);
+  if (!guard.ok) return skip(ctx, guard.reason, '城战');
+  // 舰队族配置（游戏配置 → 城战接续分组）：汽油保留、原生委任额度、选城策略。
+  const preferences = options.preferences ?? {};
+  const cityWarPrefs = preferences.cityWar ?? {};
+  const petrolReserve = Number(cityWarPrefs.petrolReserve ?? 0);
+  const scenarioId = Number.isInteger(ctx.player?.scenarioId) ? ctx.player.scenarioId : 1;
+  const cityPetrol = async (cityId) => {
+    const cities = ctx.rows(scenarioId + '_CityCfg'), brackets = ctx.rows(scenarioId + '_AttackCityConsumeCfg');
+    const home = cities.find(row => Number(row.guildIndex) === Number(ownGuildIdx));
+    if (!home || !brackets.length) return null;
+    return cityPetrolCost(await loadMapAsset(scenarioId), home.id, Number(cityId), brackets);
+  };
+  // 游戏内“委托自动打城战”会和自动化监管抢舰队；上游决策内核改为按原生委任额度接管：
+  // -1 跟随 VIP「每日城战委任次数」、0 立即全部接管、N 保留 N 队原生委任。
   const delegated = ((await ctx.query('MyFleetsRequest')).fleets ?? [])
     .filter(fleet => fleet?.autoFight?.isOn === true)
     .map(fleet => String(fleet.buildingId));
   if (delegated.length) {
-    const result = await mutate(ctx, 'SetFleetAutoFightRequest', { buildingIds: delegated, isOn: false }, 'MyFleetsRequest',
-      state => JSON.stringify((state.fleets ?? []).map(fleet => [fleet.buildingId, fleet.autoFight?.isOn === true])));
-    ctx.record({
-      label: '取消城战委托',
-      status: succeeded(result) ? (ctx.dryRun ? 'planned' : 'success') : result.status,
-      reason: `${delegated.join('、')} 的委托自动打城战与自动化监管冲突，已提交关闭`,
-    });
+    const nativeLimit = Number.isInteger(cityWarPrefs.nativeCommissionLimit) ? cityWarPrefs.nativeCommissionLimit : -1;
+    let keep = 0;
+    if (nativeLimit > 0) keep = nativeLimit;
+    else if (nativeLimit === -1) {
+      const vip = ctx.rows('VipLevelCfg').find(row => row.level === ctx.player?.vip?.vipLevel);
+      const quota = vip?.effects?.find(row => row[0] === '每日城战委任次数')?.[1];
+      keep = Number.isSafeInteger(quota) ? Number(quota) : 0;
+    }
+    const closing = delegated.slice(keep);
+    if (!closing.length) {
+      skip(ctx, `原生委任额度内保留 ${delegated.length} 队自动战斗，本模块不重复接管`, '城战');
+    } else {
+      const result = await mutate(ctx, 'SetFleetAutoFightRequest', { buildingIds: closing, isOn: false }, 'MyFleetsRequest',
+        state => JSON.stringify((state.fleets ?? []).map(fleet => [fleet.buildingId, fleet.autoFight?.isOn === true])));
+      ctx.record({
+        label: '取消城战委托',
+        status: succeeded(result) ? (ctx.dryRun ? 'planned' : 'success') : result.status,
+        reason: keep > 0
+          ? `${closing.join('、')} 超出原生委任额度（保留 ${keep} 队），已提交关闭`
+          : `${closing.join('、')} 的委托自动打城战与自动化监管冲突，已提交关闭`,
+      });
+    }
   }
   if (options.online) {
     // 每档倒计时以服务端计数更新时间为准；仅处于 ready 状态时才发送领取请求，避免未到时间的拒绝日志。
@@ -653,8 +722,23 @@ async function cityWar(ctx, options) {
     // 只有本联盟发起的宣战允许进攻；无法归属时不发送会被服务器拒绝的派舰请求。
     skip(ctx, '无法确认己方联盟序号，跳过城战进攻派遣');
   }
+  // 上游决策内核：fewestAllied 智能选城——本盟排队（attackFleetNum+priorityAtkFleetNum）少者优先。
+  let attackQueue = null;
+  if (hasAttackRule && ownGuildIdx !== null && (cityWarPrefs.targetPriority ?? 'fewestAllied') === 'fewestAllied') {
+    try {
+      const cities = (await ctx.query('WorldInfoRequest', { screenCenter: { x: 0, y: 0 } })).cities ?? [];
+      attackQueue = new Map(cities.map(city => [idString(city.id), Number(city.attackFleetNum ?? 0) + Number(city.priorityAtkFleetNum ?? 0)]));
+    } catch { /* 排队数据不可得时退回宣战顺序 */ }
+  }
+  const attackCandidates = (declarations, reattack) => {
+    const candidates = declarations.filter(declaration => idString(declaration.attackGuildIdx) === ownGuildIdx && (reattack || !ctx.count(`cityWar.${declaration.cityId}`)));
+    if (attackQueue) candidates.sort((a, b) => (attackQueue.get(idString(a.cityId)) ?? Number.MAX_SAFE_INTEGER) - (attackQueue.get(idString(b.cityId)) ?? Number.MAX_SAFE_INTEGER));
+    return candidates.map(declaration => declaration.cityId);
+  };
   for (const rule of options.fleets.filter(f => f.enabled)) {
-    const fleet = (await idleFleets(ctx)).find(f => !rule.buildingId || rule.buildingId === f.buildingId);
+    // fleetGate 补充：在途巨轮/芯片战舰队即便状态回 IDLE 也不可城战派遣（上游 fleetGate 检查项）。
+    const fleet = (await idleFleets(ctx)).find(f => (!rule.buildingId || rule.buildingId === f.buildingId)
+      && !((f.treasureLootUid ?? 0) > 0) && !(f.chipWar?.rewardTs > 0));
     // 已派出或维修中的前序舰队不能阻塞后续已配置舰队的城战派遣。
     if (!fleet) continue;
     for (const role of rule.roles ?? []) {
@@ -663,13 +747,25 @@ async function cityWar(ctx, options) {
         : role === 'defend'
           ? war.assembleCityId
           : role === 'attack' && ownGuildIdx !== null
-            ? war.declarations?.find(declaration => idString(declaration.attackGuildIdx) === ownGuildIdx && (options.reattack || !ctx.count(`cityWar.${declaration.cityId}`)))?.cityId
+            ? attackCandidates(war.declarations ?? [], options.reattack)[0]
             : null;
       if (!cityId) continue;
       if (role === 'defend') {
         // 募防改变城市守军列表，不是派遣此舰队；确认必须读取城市防守状态。
         await mutate(ctx, 'CityRecruitDefenceRequest', { cityId }, 'CityDefenceRequest', s => s.fleets, { stateBody: { cityId } });
       } else {
+        // 上游决策内核：行军汽油预算——估算行军费后保留 petrolReserve，不够不派。
+        if (petrolReserve > 0) {
+          try {
+            const cost = await cityPetrol(cityId);
+            await ctx.refreshStock();
+            const fuel = amount(ctx.stock.get('汽油') ?? 0);
+            if (Number.isSafeInteger(cost) && fuel - cost < petrolReserve) {
+              ctx.record({ label: `城战派遣 ${fleet.buildingId}`, status: 'skipped', reason: `行军 ${cityName(cityId)} 需汽油 ${cost}，现有 ${fuel}，低于保留 ${petrolReserve}` });
+              break;
+            }
+          } catch { /* 汽油估价失败不阻塞派遣 */ }
+        }
         const result = await dispatch(ctx, 'MoveFleetsToCityRequest', { buildingId: [fleet.buildingId], cityId }, [fleet]);
         if (succeeded(result)) {
           ctx.count(`cityWar.${cityId}`, 1);

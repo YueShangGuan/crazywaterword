@@ -132,6 +132,17 @@ export function automationPage() {
         <div id="automation-settings" />
       </CardContent>
     </Card>
+    <Card>
+      <CardHeader>
+        <CardTitle>游戏配置（舰队族 / 领奖族）</CardTitle>
+        <CardDescription>巨轮、情报、Boss、城战内核与锻造的上游形状设置。保存后正在运行的任务从下次检查开始生效；全部开关默认关闭。</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="bar"><Button id="game-settings-save" variant="outline">保存配置</Button><Button id="game-settings-json" variant="outline">高级 JSON 编辑</Button><a id="game-settings-export" className="automation-floating-save" href="/api/settings/export">导出</a><span id="game-settings-hint" className="warn" role="status" /></div>
+        <div id="game-settings-fields" className="grid gap-2" />
+        <textarea id="game-settings-text" className="hidden" rows="14" spellCheck={false} />
+      </CardContent>
+    </Card>
     <Button id="automation-floating-save" className="automation-floating-save" type="button" hidden>保存设置</Button>
     <Button id="automation-back-to-top" className="automation-back-to-top" type="button" hidden><span aria-hidden="true">↑</span>回到顶部</Button>
   </div>)

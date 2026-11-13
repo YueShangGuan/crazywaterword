@@ -13,6 +13,11 @@
 .world-map-stage { position: relative; height: clamp(420px, calc(100vh - 250px), 880px); min-width: 0; overflow: hidden; border: 1px solid #24434d; border-radius: 12px; background: #0c2631; }
 #map-canvas { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; }
 #map-canvas:active { cursor: grabbing; }
+/* 触屏默认放行页面滚动；点“移动地图”后锁定画布（gs-pan）再拖拽。 */
+@media (pointer: coarse) {
+  #map-canvas { touch-action: pan-y; }
+  #map-canvas.gs-pan { touch-action: none; }
+}
 .world-map-tooltip { position: absolute; z-index: 3; max-width: 200px; padding: 6px 9px; border: 1px solid #2f5560; border-radius: 8px; background: rgba(8, 22, 28, 0.94); color: #e2f0f2; font-size: 12px; line-height: 1.45; white-space: pre-line; pointer-events: none; box-shadow: 0 4px 14px #00000045; }
 .world-map-empty { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; font-size: 13px; line-height: 1.6; color: #cfe4e7; background: rgba(8, 22, 28, 0.72); }
 .world-map-side { display: grid; gap: 12px; min-width: 0; max-height: clamp(420px, calc(100vh - 250px), 880px); overflow: auto; padding-right: 3px; }

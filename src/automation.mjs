@@ -90,6 +90,22 @@ export const automationTasks = [
   ['upgrade', '余料升级建筑', '海面', false],
   ['speedUp', '使用加速器', '海面', false],
   ['denyOrder', '拒单重刷', '海面', false],
+  ['afkAd', '挂机广告收益（VIP 免广告直接领；无权益账号需另开广告等待）', '领奖', false],
+  ['adSpeedUpProduce', '工厂广告加速（每日限次；与自动化·岛屿的免广告加速二选一）', '海面', false],
+  ['adSpeedUpBuilding', '建筑广告加速', '海面', false],
+  ['adSpeedUpMuseum', '博物馆展柜广告加速', '海面', false],
+  ['tournamentDailyGift', '擂台赛每日礼包', '限时活动', false],
+  ['seasonChest', '赛季宝箱（钥匙开箱）', '限时活动', false],
+  ['armsRaceRewards', '军备竞赛达标奖励与免费补给', '限时活动', false],
+  ['beautyVotes', '风采大赛每日投票', '限时活动', false],
+  ['beautyGift', '风采大赛投票礼包', '限时活动', false],
+  ['merchantTrade', '海商王走商（买入/航行/卖出；与自动化·海商王模块二选一）', '限时活动', false],
+  ['merchantRewards', '海商王成就与战报领奖（与自动化·海商王模块二选一）', '领奖', false],
+  ['comicDrama', '漫剧观看奖励', '限时活动', false],
+  ['trialPaidSweep', '试炼付费扫荡（钻石；暂未接线）', '挑战', false],
+  ['trialAdSweep', '试炼广告扫荡（暂未接线）', '挑战', false],
+  ['antiqueFloaters', '海面藏品宝箱打捞（打捞确认后才计入）', '海面', false],
+  ['worldOnlineRewards', '城战在线奖励（自动化·世界模块已覆盖，此键备用）', '领奖', false],
 ].map(([key, label, group, initial]) => ({ key, label, group, initial }));
 
 export function taskSettings(saved = {}) {
