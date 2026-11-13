@@ -113,7 +113,8 @@ export async function runAutomation({ selector = 'all', settings, onModuleComple
       releaseExpiredLocks(ctx);
       for (const id of selected) {
         ctx.assertReady(); state.module = id; ctx.setModule(id);
-        const options = resolved.modules[id];
+        // preferences：上游形状游戏配置（舰队族/城战内核）；未挂机注入时为 null，模块走原有行为。
+        const options = { ...resolved.modules[id], preferences: args.preferences ?? null };
         if (!moduleActive(id, options, ctx)) { ctx.record({ status: moduleConfigured(id, options) ? 'skipped' : 'disabled', label: LABELS[id], reason: '当前执行模式未启用或未到指定星期' }); continue; }
         await ctx.refreshStock();
         try { await HANDLERS[id](ctx, options); }
@@ -371,7 +372,7 @@ export async function legacyAction(ctx, step) {
   /** 旧任务提交点也使用当前模式，不能从日常入口绕过指定星期或模块总开关。 */
   const allowed = () => {
     const modules = ctx.settings.modules;
-    if (step.request === 'FinishGuildOrderRequest') return modules.guild.enabled && modeActive(modules.guild.order.enabled, serverTime(ctx));
+    if (step.request === 'FinishGuildOrderRequest') return modules.guild.enabled && modules.guild.order.enabled;
     if (['ActivateAntiqueRequest', 'AntiqueStarUpRequest'].includes(step.request)) return modules.antique.enabled
       && modeActive(modules.antique[step.request === 'ActivateAntiqueRequest' ? 'activate' : 'upgrade'], serverTime(ctx));
     if (step.request === 'AntiqueSuitLevelUpRequest') return modules.antique.enabled && (existingSuit
@@ -409,8 +410,8 @@ export function handledDailyIds(settings) {
     if (modules.world.cityWar.enabled) ids.push(1015);
   }
   if (modules.guild.enabled) {
-    // 日期模式即使今天不执行，也持有该任务，防止旧日常绕过周一限制。
-    if (modules.guild.order.enabled !== 'off') ids.push(1012);
+    // 开关开启即持有该任务，防止旧日常在同一轮绕过自动化重复交单。
+    if (modules.guild.order.enabled) ids.push(1012);
     if (modules.guild.aid.help) ids.push(1013);
     if (modules.guild.aid.ask) ids.push(1014);
   }

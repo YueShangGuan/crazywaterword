@@ -67,6 +67,29 @@ export async function readGuild(client, config, player) {
   return view;
 }
 
+// 盟友名册（巨轮跟随模式用）：只列可跟随的本盟成员，BLACK 黑名单分组除外。
+export async function readGuildMembers(client, config, player) {
+  const status = await guildStatus(client, config, player);
+  if (status.state !== 'member') return { state: status.state, reason: status.reason, members: [] };
+  const ownId = idText(player.playerId), response = await client.request('GuildMemberRequest', {}, 'GuildMemberResponse');
+  if (idText(player.guildId) !== status.id || idText(player.playerId) !== ownId) throw new Error('角色或联盟已变化，请重新读取盟友名单');
+  if (!Array.isArray(response?.titleList) || !Number.isSafeInteger(response.total) || response.total < 0) throw new Error('服务器未返回完整盟友名单');
+  const members = new Map();
+  for (const group of response.titleList) {
+    if (!Array.isArray(group.members)) throw new Error('盟友分组数据不完整');
+    if (![2, 3, 4, 5].includes(group.guildTitle)) continue;
+    for (const member of group.members) {
+      const id = idText(member.playerId);
+      if (!id || !/^[1-9]\d{0,18}$/.test(id) || BigInt(id) > (1n << 63n) - 1n || typeof member.nickname !== 'string' || !member.nickname.trim()) throw new Error('盟友身份未能精确读取，请稍后重试');
+      if (id === ownId) continue;
+      if (members.has(id) && members.get(id).name !== member.nickname) throw new Error('盟友身份重复且昵称冲突，请重新读取');
+      members.set(id, { id, name: member.nickname, online: member.online === true, title: group.guildTitle });
+    }
+  }
+  return { state: 'member', guildName: status.name, total: response.total, checkedAt: new Date().toISOString(),
+    members: [...members.values()].sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name, 'zh-CN') || a.id.localeCompare(b.id)) };
+}
+
 export async function claimGuildWelfare(client, config, { player, enabled = () => true, scheduler } = {}) {
   if (!enabled()) return skipped('已暂停');
   if (scheduler && !scheduler.due(task)) return skipped('等待下次检查');
