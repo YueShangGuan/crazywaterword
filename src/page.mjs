@@ -2143,7 +2143,6 @@ function renderOverviewProduction(data) {
 let messageTab = 'world';
 let messageStore = { world: [], notice: [], private: [], guild: [] };
 let messageErrors = [];
-const MESSAGE_TAB_LABELS = { world: '世界', notice: '通知', private: '私聊', guild: '联盟' };
 
 /** Render the selected account-local message channel without querying the game server again. */
 function renderMessages({ connected = snapshot.connected, errors = messageErrors } = {}) {

@@ -18,7 +18,7 @@ import { claimRewards } from './claim-rewards.mjs';
 import { fishView, newbieView } from './collections.mjs';
 import { normalize } from './worlds.mjs';
 import { pirateDailySweepLimit, pirateSweepProgress, pirateTracker, pirateHuntOptions, startPirateHunt, inspectHunt } from './pirates.mjs';
-import { activityView, runActivity } from './activities.mjs';
+import { activityView, runActivity, runWeekOrder } from './activities.mjs';
 import { applyActiveScore, syncFestivalDay } from './free-rewards.mjs';
 import { pirateBoard, claimCampaignReports } from './pirate-board.mjs';
 import { displayMaterial, getConfig } from './config.mjs';
@@ -48,7 +48,6 @@ import { readActivityStatistics } from './activity-statistics.mjs';
 import { activityRankCatalog, readActivityRanking } from './activity-rankings.mjs';
 import { createPhoneLogin } from './phone-login.mjs';
 import { dailySingleState, addDailyOptions, runDailySingle } from './daily-single.mjs';
-import { runWeekOrder } from './activities.mjs';
 import { createActionGuard, exactAutomationId, budgetPreview } from './automation-policy.mjs';
 import { watchBasePushes, surveyBaseAutomation } from './base-automation.mjs';
 import { reserveDispatch, fleetDispatchView, dispatchLabels, fleetRecordReason, dispatchReservationReason } from './fleet-availability.mjs';
@@ -3304,9 +3303,11 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog = null }
     const displayUsage = usageFor(session).snapshot();
     const observedReward = session.client?.connected ? treasureRewards.get(session.client) : null;
     const treasureReward = observedReward && observedReward.day === displayUsage.day ? observedReward.text : '今日奖励未同步';
+    // settingsView 每次都会读盘并重建目录；/api/loop 被 3 秒轮询，这里只允许取一次。
+    const settings = settingsView(session).settings;
     // 上游外壳的挂机页/总览按 controls 渲染开关与受限说明；观察值接线在阶段 3b 补齐，
     // 这里先保证 enabled/blockedBy/group 正确，检查状态显示「本次连接尚无检查结果」。
-    const controls = automationControlView(settingsView(session).settings).map(control => {
+    const controls = automationControlView(settings).map(control => {
       const aliases = { 'factory.produce': 'startProduce', 'factory.cooperateNative': 'nativeProduce', 'factory.gain': 'collect', 'factory.speedUp': 'speedUp', 'building.build': 'build', 'building.upgrade': 'upgrade', 'building.finish': 'finishUpgrade', 'resident.enabled': 'finishOrder', 'resident.reroll': 'denyOrder', 'farm.enabled': 'farm', 'radar.enabled': '联盟情报', 'treasure.enabled': '万吨巨轮', 'cityWar.enabled': '城战接续', 'forge.enabled': '装备锻造', 'antique.enabled': '藏品养成', 'dailies.claimTasks': 'dailyRewards', 'dailies.claimDailyChest': 'chests', 'dailies.claimWeeklyChest': 'chests', 'dailies.claimGift': 'gift', 'resident.rewards': 'orderDaily', 'trials.paid': 'trialPaidSweep', 'trials.ads': 'trialAdSweep' };
       const key = control.taskKey || aliases[control.key] || ({ 'worldBoss.enabled': 'worldBoss', 'gather.fishing': 'autoFish', 'gather.upgradeFishing': 'fishEnhance', 'gather.diving': 'autoDive', 'gather.salvage': 'autoSalvage', 'gather.upgradeDiving': 'diveEnhance', 'gather.upgradeSalvage': 'salvageEnhance', 'gather.floaters': 'floaters', 'gather.antiqueFloaters': 'antiqueFloaters', 'cargo.enabled': 'cargo', 'building.collect': 'collect', 'building.supply': 'buildSupply', 'building.speedUp': 'speedUp', 'gold.enabled': 'paidGold' })[control.key] || control.key;
       const observed = rewards?.status ? rewards.status(key) : null;
@@ -3318,13 +3319,13 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog = null }
     return {
       runVersion: SERVER_STARTED_AT,
       controls,
-      fleetMaintenance: { ...(loop.fleetMaintenance ?? { rows: [], reason: '等待首次检查' }), enabled: loop.running && !!session.client?.connected && fleetMaintenanceEnabled(settingsView(session).settings) },
+      fleetMaintenance: { ...(loop.fleetMaintenance ?? { rows: [], reason: '等待首次检查' }), enabled: loop.running && !!session.client?.connected && fleetMaintenanceEnabled(settings) },
       singleTasks: { pirate: session.pirateAdvance.view(), stages: session.stages?.view?.(), mutual: session.mutualAid?.view?.() },
       running: loop.running,
       stopping: !!loop.controller?.signal.aborted,
       tasks: automationTasks.filter(task => isActivityTaskAvailable(task.key, session.client)).map(({ key, label, group }) => ({
-        key, label, group, enabled: loop.tasks[key], blockedBySettings: loop.tasks[key] && !nativePreferenceEnabled(settingsView(session).settings, key),
-        nextCheck: loop.tasks[key] && nativePreferenceEnabled(settingsView(session).settings, key) ? rewards?.nextCheck(key) : null,
+        key, label, group, enabled: loop.tasks[key], blockedBySettings: loop.tasks[key] && !nativePreferenceEnabled(settings, key),
+        nextCheck: loop.tasks[key] && nativePreferenceEnabled(settings, key) ? rewards?.nextCheck(key) : null,
       })),
       fishingGoldReserve: loop.fishingGoldReserve,
       reconnect: loop.reconnect,
