@@ -767,6 +767,49 @@ function drawWorldMapStatic(width, height, dpr) {
     }
   }
 
+  if (mapTabLayerOn('faction')) {
+    // 领地边界：把大城占的多格与相邻同盟城视作连续区域，只在归属变化的格边描线。
+    // 每条边向己方内侧收 1.5px，两个同盟相邻时呈平行双线，外缘则是单条领地轮廓。
+    const ownerAtCell = new Map();
+    for (const city of layout.cities) {
+      if (!Number.isSafeInteger(city.col) || !Number.isSafeInteger(city.row)) continue;
+      const guildIdx = Number(ownership.get(city.id)?.guildIdx) || 0;
+      if (guildIdx <= 0) continue;
+      const colSpan = Math.max(1, city.colSpan || 1);
+      const rowSpan = Math.max(1, city.rowSpan || 1);
+      for (let dy = 0; dy < rowSpan; dy += 1) {
+        for (let dx = 0; dx < colSpan; dx += 1) {
+          ownerAtCell.set((city.col + dx) + ',' + (city.row + dy), guildIdx);
+        }
+      }
+    }
+    const inset = Math.max(1.2, Math.min(2.5, scale * 0.05));
+    ctx.lineWidth = Math.max(1.5, Math.min(3, scale * 0.05));
+    const edge = (x1, y1, x2, y2, nx, ny) => {
+      ctx.beginPath();
+      ctx.moveTo(x1 + nx, y1 + ny);
+      ctx.lineTo(x2 + nx, y2 + ny);
+      ctx.stroke();
+    };
+    for (const [key, guildIdx] of ownerAtCell) {
+      const [col, row] = key.split(',').map(Number);
+      ctx.strokeStyle = mapTabGuildColor(guildIdx);
+      const x = col * scale + mapTabView.tx;
+      const y = row * scale + mapTabView.ty;
+      const neighbours = [
+        { key: col + ',' + (row - 1), from: [x, y], to: [x + scale, y], normal: [0, inset] },
+        { key: col + ',' + (row + 1), from: [x, y + scale], to: [x + scale, y + scale], normal: [0, -inset] },
+        { key: (col - 1) + ',' + row, from: [x, y], to: [x, y + scale], normal: [inset, 0] },
+        { key: (col + 1) + ',' + row, from: [x + scale, y], to: [x + scale, y + scale], normal: [-inset, 0] },
+      ];
+      for (const side of neighbours) {
+        const other = ownerAtCell.get(side.key);
+        if (other === guildIdx) continue;
+        edge(side.from[0], side.from[1], side.to[0], side.to[1], side.normal[0], side.normal[1]);
+      }
+    }
+  }
+
   if (mapTabLayerOn('objects')) {
     // 世界对象画在真实位置（硅矿/沉船），不再挤在最近城池的角标里。
     // 静态宝藏位（treasureData）只是货轮停靠点，全部不显示，只画当前万吨货轮那格；

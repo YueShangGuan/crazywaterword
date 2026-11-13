@@ -1094,6 +1094,7 @@ function parseMap(raw, file, scenarioId) {
     tileWidth: mapInfo?.tileWidth ?? 0,
     tileHeight: mapInfo?.tileHeight ?? 0,
     cityInfo,
+    cityAt(gridIdx) { return mapData[gridIdx] === undefined ? 0 : mapData[gridIdx] % 1000; },
     // 世界地图需要原始格子和固定点位；旧调用方只用 width/height/cityInfo/fieldAt，新增字段不影响它们。
     mapData,
     wreckPos: Number.isSafeInteger(data.wreckPos) ? data.wreckPos : null,
