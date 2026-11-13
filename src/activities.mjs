@@ -1,7 +1,10 @@
+import { createHash } from 'node:crypto';
 import { displayMaterial } from './config.mjs';
 import { normalize } from './worlds.mjs';
 import { claimCollection, newbieView } from './collections.mjs';
 import { toNumber } from './client.mjs';
+import { exactAutomationId } from './automation-policy.mjs';
+import { readOrderMaterialState, settleOrderMaterialState } from './order-reservations.mjs';
 import { campaignReportState, claimCampaignReports, claimOpenRanks, openRankState, openRanks } from './pirate-board.mjs';
 import { claimFestivalRewards, claimWeeklyRewards, claimVipDaily, festivalRewardKeys, weeklyRewardKeys, festivalRewardState, snowballState,
   compassState, weekChargeState, weekHeroStarState, weekFreePackState, weekOrderState, vipDailyState, syncFestivalDay } from './free-rewards.mjs';
@@ -133,7 +136,45 @@ export async function readWeekOrder(client, week, config) {
     if (!item?.id || !Number.isSafeInteger(item.num) || item.num <= 0) throw new Error('周订单材料或数量不完整');
     needed.set(item.id, (needed.get(item.id) ?? 0) + item.num);
   }
-  return { needed, finished: false };
+  // 订单要求可能被刷新而不算完成；只有同一期周活动里新增了奖励，才能证明一次提交已完成。
+  const identity = [current.period, current.startTime, current.endTime, order.gotRwdId, [...needed]];
+  const orderKey = createHash('sha256').update(JSON.stringify(identity)).digest('hex');
+  const evidence = { period: current.period, startTime: current.startTime, endTime: current.endTime, rewards: [...(order.gotRwdId ?? [])] };
+  return { needed, finished: false, orderKey, evidence };
+}
+
+// 只读核对：证据里的期次仍是当前唯一开放周订单，且奖励列表在原有基础上新增了条目。
+export async function verifyWeekOrderOperation(client, evidence) {
+  if (!evidence || !Array.isArray(evidence.rewards)) return false;
+  const active = (await weekSchedule(client)).filter(row => row.type === 5 && open(row, serverNow(client)));
+  if (active.length !== 1 || !active.some(row => row.period === evidence.period && row.startTime === evidence.startTime && row.endTime === evidence.endTime)) return false;
+  const after = await client.request('WeekOrderInfoRequest', {}, 'WeekOrderInfoResponse'), rewards = after?.gotRwdId;
+  return Array.isArray(rewards) && rewards.every(id => Number.isSafeInteger(id) && id > 0) && new Set(rewards).size === rewards.length &&
+    evidence.rewards.every(id => rewards.includes(id)) && rewards.some(id => !evidence.rewards.includes(id));
+}
+
+function weekOrderActor(player) {
+  const playerId = exactAutomationId(player?.playerId), worldId = exactAutomationId(player?.worldId);
+  if (!playerId || !worldId || playerId === '0' || worldId === '0') throw Error('无法确认材料消费账号');
+  return { playerId, worldId };
+}
+
+// 冻结在途材料消费候选后读取完整仓库库存；旧快照或无关扣减都不能结算新操作。
+export async function readWeekOrderStock(client, player, enabled = () => true) {
+  const stamp = JSON.stringify(weekOrderActor(player));
+  const check = () => { if (!enabled() || client.connected === false || JSON.stringify(weekOrderActor(player)) !== stamp) throw Error('账号连接已变化'); };
+  check();
+  const snapshot = await readOrderMaterialState(client, player, { enabled });
+  const bag = await client.request('AllItemRequest', {}, 'AllItemResponse'), stock = new Map();
+  check();
+  if (!Array.isArray(bag?.items)) throw Error('未能确认仓库库存');
+  for (const row of bag.items) {
+    const count = row?.num == null ? NaN : toNumber(row.num);
+    if (typeof row?.itemId !== 'string' || !row.itemId || stock.has(row.itemId) || !Number.isSafeInteger(count) || count < 0) throw Error('仓库材料库存异常');
+    stock.set(row.itemId, count);
+  }
+  settleOrderMaterialState(player, snapshot, stock);
+  return stock;
 }
 
 function lotteryProgress(config, period, info) {
