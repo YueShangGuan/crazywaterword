@@ -659,14 +659,18 @@ async function refreshOverview() {
   overviewPending = account;
   if (!snapshot.connected) setBusy('连接中…', 'busy');
   try {
-    const data = await call('/api/overview');
+    // 总览与城战统计并行拉取（统计失败单独降级为 null，不拖垮总览）。
+    const overviewVisible = !$('tab-overview').classList.contains('hidden');
+    const [data, cityWarStats] = await Promise.all([
+      call('/api/overview'),
+      overviewVisible ? call('/api/city-war/stats').catch(() => null) : Promise.resolve(null),
+    ]);
     if (account !== current || snapshot.paused || disconnected.has(account)) return;
     snapshot = data.status;
     renderAccountSelect();
     renderOverview(data);
-    // 用户业务卡只在总览页可见时渲染；城战摘要查询失败单独降级，不拖垮总览。
-    if (!$('tab-overview').classList.contains('hidden')) {
-      const cityWarStats = await call('/api/city-war/stats').catch(() => null);
+    // 用户业务卡只在总览页可见时渲染。
+    if (overviewVisible) {
       if (account === current) renderOverviewExtras(data, cityWarStats);
       void refreshIncome?.();
     }

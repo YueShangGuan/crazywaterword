@@ -303,9 +303,22 @@ function accountKey(accountId) {
   return accountId;
 }
 
+// 设置文件读多写少（挂机页每 3 秒轮询 loopView、配置页与预览都会读），按 mtimeMs+size
+// 缓存解析结果，避免重复读盘；仍每次重新 validateSettings，保持「每次调用返回全新对象」
+// 的既有语义，调用方就地改动不会穿透缓存。外部工具直改文件也会因 stat 变化而失效。
+let settingsStoreCache = { file: null, mtimeMs: -1, size: -1, store: null };
+function readSettingsStore(file) {
+  let stat;
+  try { stat = fs.statSync(file); } catch { settingsStoreCache = { file: null, mtimeMs: -1, size: -1, store: null }; return readJson(file, { version: 1, accounts: {} }); }
+  if (settingsStoreCache.file === file && settingsStoreCache.mtimeMs === stat.mtimeMs && settingsStoreCache.size === stat.size) return settingsStoreCache.store;
+  const store = readJson(file, { version: 1, accounts: {} });
+  settingsStoreCache = { file, mtimeMs: stat.mtimeMs, size: stat.size, store };
+  return store;
+}
+
 export function loadAutomationSettings(accountId, { file = settingsFile() } = {}) {
   const key = accountKey(accountId);
-  const store = readJson(file, { version: 1, accounts: {} });
+  const store = readSettingsStore(file);
   if (store.version !== 1 || !plain(store.accounts)) throw new Error('设置文件格式不支持，未覆盖原文件');
   const entry = Object.hasOwn(store.accounts, key) ? store.accounts[key] : null;
   return { settings: entry ? validateSettings(entry.settings, { partial: true }) : defaultSettings(), revision: entry?.revision ?? 0, savedAt: entry?.savedAt ?? null };
