@@ -269,3 +269,12 @@ export function formatTaskPlan(survey) {
   for (const note of survey.notes) lines.push(`跳过 ${note}`);
   return lines.join('\n');
 }
+
+/** 按设置裁剪任务奖励计划：上游配置编辑器的「日常与活动」预览用它计算实际会执行的部分。 */
+export function selectTaskSettings(survey, settings) {
+  if (!settings) return survey;
+  const enabled = kind => kind === 'orderDaily' ? settings.loop.world && settings.resident.rewards : settings.loop.tasks &&
+    (kind === 'main' ? settings.tasks.main : kind === 'branch' ? settings.tasks.branch : kind === 'achievement' ? settings.tasks.achievements : true);
+  const paused = survey.plan.filter(step => !enabled(step.kind));
+  return { ...survey, plan: survey.plan.filter(step => enabled(step.kind)), notes: [...survey.notes, ...paused.map(step => `${step.label}：已在设置中暂停领取`)] };
+}

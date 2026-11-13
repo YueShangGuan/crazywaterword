@@ -54,6 +54,7 @@ export function iconEntry(name) {
   if (!icon) return null;
   return {
     name: icon.name,
+    thumb: `/api/art/icon/${encodeURIComponent(icon.name)}.png?v=${[icon.x, icon.y, icon.w, icon.h].join('.')}`,
     url: `/api/art/atlas/${icon.bundle}/${encodeURIComponent(icon.page)}`,
     x: icon.x,
     y: icon.y,

@@ -12,13 +12,12 @@ import { readFleetFormations, initializeFleetFormation } from './fleet-formation
 import { readLineups, applyLineup } from './lineups.mjs';
 import { loadProtocol } from './proto.mjs';
 import { PAGE } from './page.mjs';
-import { MOBILE_PAGE } from './mobile-page.mjs';
 import { listWorlds, enterWorld, describeRole } from './worlds.mjs';
 import { collectState, summarize, formatState, ENTRY_QUERIES } from './game.mjs';
 import { claimRewards } from './claim-rewards.mjs';
 import { fishView, newbieView } from './collections.mjs';
 import { normalize } from './worlds.mjs';
-import { pirateDailySweepLimit, pirateSweepProgress, pirateTracker, pirateHuntOptions, startPirateHunt } from './pirates.mjs';
+import { pirateDailySweepLimit, pirateSweepProgress, pirateTracker, pirateHuntOptions, startPirateHunt, inspectHunt } from './pirates.mjs';
 import { activityView, runActivity } from './activities.mjs';
 import { applyActiveScore, syncFestivalDay } from './free-rewards.mjs';
 import { pirateBoard, claimCampaignReports } from './pirate-board.mjs';
@@ -26,10 +25,16 @@ import { displayMaterial, getConfig } from './config.mjs';
 import { planHeroes, runHeroPlan, formatHeroPlan } from './heroes.mjs';
 import { appointments } from './appointments.mjs';
 import { surveyDailies, runDailies, formatSurvey } from './dailies.mjs';
-import { surveyTasks, runTasks, formatTaskPlan } from './tasks.mjs';
+import { surveyTasks, runTasks, formatTaskPlan, selectTaskSettings } from './tasks.mjs';
+import { readTreasureLoot, planTreasureLoot } from './treasure-loot.mjs';
+import { readEquipmentForge, planEquipmentForge } from './equipment-forge.mjs';
+import { planRadarPreview, pendingPetrol } from './dispatch-preview.mjs';
+import { readWorldOnlineReward, worldOnlineRewardKey } from './world-online-rewards.mjs';
+import { readPirateSweeps } from './pirate-sweeps.mjs';
+import { readAntiqueUpgrade, planAntiqueUpgrade } from './antique-upgrade.mjs';
 import { makeTypeResolver, weekFactoryInfo, surveyWorld, planWorld, runWorldRound, submitResidentOrder, formatWorldPlan, formatFieldReport, loadMapAsset } from './world.mjs';
 import { buildMapLayout, buildWorldMapState, readWorldMapState, cityNameMap, forceInfoMap } from './world-map.mjs';
-import { dispatchCityWarFleet, readCityWar, cityWarReservedFleets } from './city-war.mjs';
+import { dispatchCityWarFleet, readCityWar, planCityWar, cityWarEnabled, cityWarReservedFleets } from './city-war.mjs';
 import { runLoop, formatLoopRound, formatLoopStep } from './loop.mjs';
 // UI 迁移阶段 3a：上游外壳页面会调用、而用户侧尚未引入的模块。
 import { readWorldOverview } from './world-overview.mjs';
@@ -38,18 +43,18 @@ import { resourceFieldRows, resourceFieldTotals } from './resource-fields.mjs';
 import { readGuildTech, upgradeGuildTech } from './guild-tech.mjs';
 import { createGuildMutualTask, readMutualOptions } from './guild-mutual.mjs';
 import { readTrialSweeps, executeTrialSweep } from './trial-sweeps.mjs';
-import { createPirateAdvanceTask, runSinglePirateHunt } from './pirate-advance.mjs';
+import { createPirateAdvanceTask, runSinglePirateHunt, selectPirateAdvance } from './pirate-advance.mjs';
 import { readActivityStatistics } from './activity-statistics.mjs';
 import { activityRankCatalog, readActivityRanking } from './activity-rankings.mjs';
 import { createPhoneLogin } from './phone-login.mjs';
 import { dailySingleState, addDailyOptions, runDailySingle } from './daily-single.mjs';
 import { runWeekOrder } from './activities.mjs';
-import { createActionGuard } from './automation-policy.mjs';
+import { createActionGuard, exactAutomationId, budgetPreview } from './automation-policy.mjs';
 import { watchBasePushes, surveyBaseAutomation } from './base-automation.mjs';
-import { reserveDispatch } from './fleet-availability.mjs';
+import { reserveDispatch, fleetDispatchView, dispatchLabels, fleetRecordReason, dispatchReservationReason } from './fleet-availability.mjs';
 import { describeLogError } from './log-errors.mjs';
 import { operationLabels } from './operation-labels.mjs';
-import { automationTasks, defaultFishingGoldReserve, defaultCompassSpinCount, maxCompassSpinCount, taskSettings, worldTaskKey } from './automation.mjs';
+import { automationTasks, defaultFishingGoldReserve, defaultCompassSpinCount, maxCompassSpinCount, taskSettings, worldTaskKey, dailyTaskKey } from './automation.mjs';
 import { rewardSchedule } from './reward-schedule.mjs';
 import { normalizeReconnect, parseReconnect, reconnectDelaySeconds, recoveryDecision } from './reconnect.mjs';
 import { createNotifier, loadNotifySettings, notifyEvents, parseNotifySettings, saveNotifySettings, webhookFormats } from './notify.mjs';
@@ -58,7 +63,7 @@ import { incomeView, readIncomeSnapshot, recordIncome } from './income-report.mj
 import { activityAvailability, isActivityTaskAvailable } from './activity-availability.mjs';
 import { nativePreferenceEnabled } from './automation-policy.mjs';
 import { createUsageLedger, defaultSettings, loadAutomationSettings, saveAutomationSettings, validateSettings, settingsCatalog, settingsFromNative,
-  exportAutomationSettings, importAutomationSettings, SettingsError, settingsUiRules } from './automation-settings.mjs';
+  exportAutomationSettings, importAutomationSettings, SettingsError, settingsUiRules, nativeTaskValues } from './automation-settings.mjs';
 import { giftCodeStatus, giftCodeSummary, startGiftCodeBatch } from './gift-codes.mjs';
 import { classifyLog } from './log-categories.mjs';
 import { createTraceLog } from './trace-log.mjs';
@@ -67,6 +72,7 @@ import { runAction } from './actions.mjs';
 import { loadStore, saveStore, upsertAccount, removeAccount, setActive, pickAccount, describeAccount, revealAccount, DATA_DIR } from './accounts.mjs';
 import { startCapture, stopCapture, captureState, DEFAULT_PROXY_PORT } from './capture.mjs';
 import { iconIndex, atlasFile, itemIcon, resourceIcon, materialIcon, heroIcon, heroCard, buildingIcon, workerIcon } from './art.mjs';
+import { iconThumb } from './art-thumbs.mjs';
 import { runAutomation, automationStatus, stopAutomation } from './automation/service.mjs';
 import { loadSettings, saveSettings, loadLedger, businessDate, accountDirectory, writeJson, LABELS, MODULES, selectModules, selectLoopModules } from './automation/settings.mjs';
 import { automationFormOptions, guildShipMaterialOptions } from './automation/form-options.mjs';
@@ -1482,17 +1488,23 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog = null }
         res.end(PAGE);
         return;
       }
-      // Mobile remains a separate information-architecture prototype and does not replace the desktop console.
-      if (route === 'GET /mobile' || route === 'GET /mobile/') {
-        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-        res.end(MOBILE_PAGE);
-        return;
-      }
       if (route === 'GET /api/art/index') {
         json(iconIndex());
         return;
       }
       // 图标是游戏自己的贴图，从 FairyGUI 图集里按图集页整张给出去，裁切交给浏览器。
+      if (route.startsWith('GET /api/art/icon/') && route.endsWith('.png')) {
+        const name = decodeURIComponent(parsed.pathname.slice('/api/art/icon/'.length, -'.png'.length));
+        const png = await iconThumb(name);
+        if (!png) {
+          json({ error: 'not found' }, 404);
+          return;
+        }
+        // 地址带图标在图集里的位置，内容变了地址也会变。
+        res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'public, max-age=31536000, immutable' });
+        res.end(png);
+        return;
+      }
       if (route.startsWith('GET /api/art/atlas/')) {
         const [, , , , bundle, file] = route.split('/').map((part) => decodeURIComponent(part));
         const found = atlasFile(bundle, file);
@@ -1563,6 +1575,181 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog = null }
       }
 
       // ---- 批量兑换码 ------------------------------------------------------
+      if (route === 'POST /api/settings/preview') {
+        const { session } = scoped_(parsed);
+        const payload = jsonBody();
+        const config = loadConfigSafe();
+        if (!config) throw new Error('缺少游戏配置表，暂时不能预览');
+        const settings = validateSettings(payload.settings ?? settingsView(session).settings, { catalog: settingsCatalog(config) });
+        const category = payload.category ?? 'base';
+        if (!['base', 'world', 'heroes', 'daily', 'runtime', 'cityWar', 'forge', 'antique', 'activity', 'radar', 'pirateHunt', 'fleetDispatch','worldBoss','pirateSweep'].includes(category)) throw new Error('不支持的预览分类');
+
+        if (category === 'runtime') {
+          json({ checkedAt: new Date().toISOString(), usage: usageFor(session).snapshot(), actions: [], counts: {}, viewOnly: true, scopeLabel: '运行安排（仅查看，不执行）',
+            notes: [`当前${session.loop.running ? '正在挂机' : '未在挂机'}；配置轮数${settings.loop.rounds === 0 ? '持续运行' : settings.loop.rounds}，间隔${settings.loop.everySeconds}秒。`,
+              '已启用：' + automationTasks.filter(task => isActivityTaskAvailable(task.key, session.client) && nativeTaskValues(settings, session.loop.tasks)[task.key]).map(task => task.label).join('、'),
+              '运行安排不是游戏动作计划。基地、英雄、日常、活动、联盟/城战和锻造请在范围中分别选择。'] }); return;
+        }
+        if (!session.client?.connected || session.paused) throw new Error('请先连接当前账号，再读取真实游戏状态');
+        const result = await enqueue(session, async () => {
+          const client = session.client;
+          const usage = usageFor(session).snapshot();
+          const output = (plan, counts, scopeLabel) => ({ checkedAt: new Date().toISOString(), usage, pendingUsage:usageFor(session).pendingCounters(), counts, scopeLabel,
+            actions: plan.actions.map(step => ({ label: step.label, kind: step.kind, costs: (step.costs ?? []).map(item => ({ name: displayMaterial(config, item.id), num: item.num })) })),
+            notes: [...new Set(plan.notes ?? [])],
+          });
+          // 草稿预览的预留结果仅在本请求使用，绝不写入运行中的调度缓存。
+          let previewCityReserved=[];
+          if(['radar','pirateHunt','worldBoss'].includes(category)&&settings.cityWar.enabled&&settings.cityWar.reserveDuringWar){
+            const war=await readCityWar(client,protocol,config,session.player,settings.cityWar);
+            previewCityReserved=war.reason?[...settings.cityWar.fleetIds]:cityWarReservedFleets(war,settings);
+          }
+          if(category==='fleetDispatch'){
+            const own=await client.request('MyFleetsRequest',{},'MyFleetsResponse');
+            if(!Array.isArray(own.fleets))throw Error('舰队状态未同步');
+            const table=fleetDispatchView(client,settings,usageFor(session),own.fleets,exactAutomationId(session.player.worldId));
+            return {...output({actions:[],notes:['任务顺序：'+settings.fleetDispatch.priority.map(k=>dispatchLabels[k]).join(' → '),'意向仅表示配置允许；派遣前仍核对目标和费用，正在执行的任务不抢占。']},{fleets:table.length},'舰队调度'),viewOnly:true,dispatch:{fleets:table.map(f=>({name:f.buildingId,reason:[f.reason,...f.reserved.map(r=>'预留给'+r),'允许顺序：'+(f.intents.map(i=>i.label).join(' → ')||'无'),'当前目标：'+(f.targetGrid??'主城')].filter(Boolean).join('；')}))}};
+          }
+          if(category==='pirateSweep'){
+            const state=await readPirateSweeps(client,config,session.player,settings),notes=[state.name+' · 今日已用 '+(state.used??'未同步')+'/'+(state.limit??'未同步')+' 次，剩余 '+(state.left??'未同步')+' 次'];
+            if(state.reason)notes.push(state.reason);if(!settings.schedule.pirate)notes.push('海盗日常扫荡开关未开启');
+            notes.push('三种海盗共用每日次数，不派遣舰队，不消耗汽油、耐久或钻石。');
+            return output({actions:!state.reason&&settings.schedule.pirate?[{kind:'pirateSweep',label:'扫荡'+state.name+' '+state.level+'级（本次最多使用剩余 '+state.left+' 次；逐次回读确认）',costs:[]}]:[],notes},{remaining:state.left},'海盗日常扫荡');
+          }
+          if(category==='worldBoss'){
+            const state=await readWorldBoss(client,config,session.player,settings,usageFor(session),{cityReservedFleetIds:previewCityReserved});
+            const plan={actions:[],notes:[state.reason||'当前可执行每日首战派遣']};
+            if(!settings.worldBoss.enabled)plan.notes.push('世界Boss自动首战未开启');
+            else if(!state.reason)plan.actions.push({kind:'worldBoss',label:state.fleets.find(f=>!f.reason).buildingId+' → 世界Boss '+state.boss.bossId,costs:[{id:'汽油',num:state.cost}]});
+            return {...output(plan,{fleets:state.fleets.length},'世界Boss首战'),dispatch:{fleets:state.fleets,fuel:state.fuel,pending:pendingPetrol(usageFor(session))}};
+          }
+          if (category === 'radar') {
+            const state=await readAllianceRadar(client,config,session.player),ledger=usageFor(session);
+            const plan=planRadarPreview(state,settings,ledger,client,{cityReservedFleetIds:previewCityReserved});
+            return {...output(plan,{fleets:state.fleets.length,targets:state.events.length},'联盟情报'),dispatch:{fleets:plan.fleets,fuel:state.fuel,pending:pendingPetrol(ledger)}};
+          }
+          if (category === 'pirateHunt') {
+            const snapshot=await inspectHunt(client,config,session.player),ledger=usageFor(session);
+            for(const fleet of snapshot.view.fleets??[])fleet.reason ||= (!settings.pirateHunt.fleetIds.includes(fleet.buildingId)?'未选择此舰队':'')|| fleetRecordReason(ledger.keyRecords(),fleet.buildingId,exactAutomationId(session.player.worldId))||(previewCityReserved.includes(fleet.buildingId)?'城战时段预留':dispatchReservationReason(client,settings,'pirateHunt',fleet.buildingId,{ignoreOwners:['cityWar']}));
+            const selection=selectPirateAdvance(snapshot,settings.pirateHunt,{spent:session.pirateAdvance.view().running?session.pirateAdvance.view().spent:0,pendingFuel:pendingPetrol(ledger)});
+            const plan={actions:selection.reason?[]:[{kind:'pirateFirst',label:selection.fleet.name+' → '+selection.target.name+' '+selection.target.level+'级',costs:[{id:'汽油',num:selection.cost}]}],notes:[selection.reason||'首杀需在挂机页单独启动；此处只预览下一次派遣']};
+            return {...output(plan,{fleets:snapshot.view.fleets?.length??0,targets:snapshot.view.targets?.length??0},'海盗首杀'),dispatch:{fleets:snapshot.view.fleets,fuel:snapshot.view.fuel,pending:pendingPetrol(ledger)}};
+          }
+          if (category === 'antique') {
+            const state = await readAntiqueUpgrade(client, protocol, config, session.player);
+            const plan = planAntiqueUpgrade(state, config, settings, { usage, keys: usageFor(session).keyRecords() });
+            return { ...output(plan, { antiques: state.antiques.length, suits: state.suits.length }, '藏品养成'),
+              antique: { count: state.antiques.length, suits: state.suits.length, masterLv: state.masterLv, gold: state.gold } };
+          }
+          if (category === 'cityWar') {
+            const state = await readCityWar(client, protocol, config, session.player, settings.cityWar);
+            const ledger = usageFor(session), pending = ledger.pendingCounters();
+            const plan = planCityWar(state, settings, { usage, keys: ledger.keyRecords(), pendingPetrol: (pending.cityWarPetrol ?? 0) + (pending.treasurePetrol ?? 0) + (pending.piratePetrol ?? 0) + (pending.radarPetrol ?? 0) + (pending.worldBossPetrol ?? 0) });
+            const online = await readWorldOnlineReward(client, config, session.player);
+            if (!settings.schedule.worldOnlineRewards) plan.notes.push('城战在线奖励自动领取未开启');
+            else if (online.ready && worldOnlineRewardKey(session.player, online)) {
+              if (ledger.hasKey(worldOnlineRewardKey(session.player, online))) plan.notes.push('本档在线奖励已发送，等待计数确认，不重复领取');
+              else plan.actions.push({ kind: 'worldOnlineReward', label: `领取城战在线奖励第 ${online.stage} 档`, costs: [] });
+            }
+            if (online.reason) plan.notes.push('城战在线奖励：' + online.reason);
+            if (settings.schedule.guildWelfare) {
+              const guild = await readGuild(client, config, session.player);
+              if (guild.welfareCount > 0) plan.actions.push({ kind: 'guildWelfare', label: `领取联盟福利礼包（${guild.welfareCount}份）`, costs: [] });
+              else plan.notes.push('联盟福利：' + (guild.reason || (guild.welfareCount === 0 ? '当前无待领礼包' : '待领数量未确认')));
+            }
+            return { ...output(plan, { fleets: state.fleets.length, targets: state.targets.length }, '联盟/城战'), onlineReward: online, cityWar: {
+              fleets: plan.fleets, targets: plan.targets, nativeLimit: state.nativeLimit, nativeCommissionLimit: plan.nativeCommissionLimit,
+              nativeOffFleetIds: plan.nativeOffFleetIds, startTime: state.startTime,
+              endTime: state.endTime, inWindow: state.inWindow, fuel: state.fuel, reservedFleetIds: plan.reservedFleetIds } };
+          }
+          if (category === 'activity') {
+            const state = await activityView(client, client.festivals ?? [], config);
+            return { ...output({ actions: [], notes: ['此范围只读取活动开放状态，不推算充值、抽奖、消耗道具或付费动作。',
+              ...(state.activities?.length ? state.activities.map(row => row.name + (row.endTime ? '：截至' + new Date(row.endTime * 1000).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) : '：开放时间未确认')) : ['当前未读到开放活动']),
+              ...(state.lotteryError ? ['周抽奖状态未确认：' + state.lotteryError] : []), ...(state.orderError ? ['周订单状态未确认：' + state.orderError] : [])] }, { activities: state.activities?.length ?? 0 }, '活动状态（只读）'), viewOnly: true };
+          }
+          if (category === 'forge') {
+            const state = await readEquipmentForge(client, protocol, config, session.player);
+            const plan = planEquipmentForge(state, config, settings, { usage, keys: usageFor(session).keyRecords() });
+            return { ...output(plan, { factories: state.buildings.length }, '装备锻造'), forge: {
+              factories: plan.factories, gold: state.gold, season: state.season, forgeLevel: state.forgeLevel } };
+          }
+          if (category === 'world') {
+            const snapshot = await readTreasureLoot(client, protocol, config, session.player, { preferences: settings.treasure });
+            const ledger = usageFor(session);
+            const pending = ledger.pendingCounters();
+            let reservedFleetIds = [];
+            if (cityWarEnabled(settings)) {
+              const war = await readCityWar(client, protocol, config, session.player, settings.cityWar);
+              reservedFleetIds = planCityWar(war, settings, { usage, keys: ledger.keyRecords(), pendingPetrol: (pending.cityWarPetrol ?? 0) + (pending.treasurePetrol ?? 0) + (pending.piratePetrol ?? 0) + (pending.radarPetrol ?? 0) }).reservedFleetIds;
+            }
+            const plan = planTreasureLoot(snapshot, config, settings, { usage, keys: ledger.keyRecords(), pendingFuel: (pending.treasurePetrol ?? 0) + (pending.cityWarPetrol ?? 0) + (pending.piratePetrol ?? 0) + (pending.radarPetrol ?? 0), reservedFleetIds });
+            return { ...output(plan, plan.counts, '万吨巨轮'), treasure: { targets: plan.targets, fleets: plan.fleets, fuel: snapshot.fuel,
+              fuelPerFleet: snapshot.fuelPerFleet, todayRewardTimes: snapshot.todayRewardTimes, rewardLimit: snapshot.rewardLimit,
+              participationMode: settings.treasure.participationMode, nextRefreshTime: snapshot.nextRefreshTime } };
+          }
+          if (category === 'heroes') {
+            const list = normalize(await client.request('AllHeroRequest', {}, 'AllHeroResponse'));
+            const bag = normalize(await client.request('AllItemRequest', {}, 'AllItemResponse'));
+            const stock = new Map((bag.items ?? []).map(item => [item.itemId, Number(item.num)]));
+            const plan = planHeroes({ config, heroes: list.heroes ?? [], itemNum: id => stock.get(id) ?? 0, playerLevel: session.player?.level ?? 1, settings });
+            const actions = plan.steps.map(step => ({ ...step, label: step.kind === 'level' ? `${step.heroId} 从 ${step.from} 级升至 ${step.to} 级` : step.kind === 'star' ? `${step.heroId} 升至 ${step.to} 星` : `${step.heroId} 技能 ${step.slot + 1} 升至 ${step.to} 级` }));
+            const checked = budgetPreview(actions, stock, settings, usage);
+            return output({ ...checked, notes: [...plan.notes, ...checked.notes, ...(settings.loop.heroes ? [] : ['英雄养成未加入挂机，可在英雄页手动按本配置执行'])] }, { heroes: list.heroes?.length ?? 0 }, '英雄养成');
+          }
+          if (category === 'daily') {
+            const flags = nativeTaskValues(settings, session.loop.tasks);
+            const daily = await surveyDailies(client, protocol, { config, player: session.player, settings });
+            const tasks = selectTaskSettings(await surveyTasks(client, protocol, { config, player: session.player }), settings);
+            const actions = [...tasks.plan];
+            const trialNotes = [];
+            for (const entry of daily.tasks) for (const action of entry.actions ?? []) {
+              const key = dailyTaskKey(entry.task.id, action);
+              if (!key || !flags[key] || !nativePreferenceEnabled(settings, key)) continue;
+              actions.push({ ...action, kind: 'daily', label: `${entry.task.title}：${action.note ?? '执行一次'}` });
+            }
+            if (settings.dailies.enabled) {
+              if (settings.dailies.claimTasks) for (const task of daily.daily?.dailyTask ?? []) if (task.progress >= task.targetProgress && !task.rewardClaimed) actions.push({ kind: 'reward', label: `领取每日任务 ${task.id} 奖励` });
+              for (const action of daily.chests?.actions ?? []) if (action.request === 'DrawWeeklyRewardRequest' ? settings.dailies.claimWeeklyChest : settings.dailies.claimDailyChest) actions.push({ ...action, kind: 'reward', label: action.note });
+              if (settings.dailies.claimGift) for (const action of daily.gift?.actions ?? []) actions.push({ ...action, kind: 'reward', label: action.note });
+            }
+            if (settings.trials.paid || settings.trials.ads) {
+              const account = scoped_(parsed).account, ledger = usageFor(session);
+              let plannedDiamonds = usage.counters?.trialDiamonds ?? 0;
+              for (const id of settings.trials.raidIds) {
+                const state = await readTrialSweeps(client, protocol, config, session.player, settings, Number(id), {
+                  channel:{clientInfo:account.login?.eworldClientInfo,language:account.login?.language},usage,records:ledger.keyRecords(),pendingDiamonds:ledger.pendingCounters().diamonds ?? 0 });
+                for (const mode of ['ad','paid']) {
+                  if (!(mode==='paid'?settings.trials.paid:settings.trials.ads)) continue;
+                  const option=state[mode], label=state.name+(mode==='paid'?'钻石扫荡':'免广告扫荡');
+                  if (!option.allowed) { trialNotes.push(label+'：'+option.reason); continue; }
+                  if (mode==='paid' && plannedDiamonds+option.cost>settings.trials.dailyDiamondBudget) { trialNotes.push(label+'：会超过试炼每日钻石预算'); continue; }
+                  actions.push({kind:mode==='paid'?'trialPaidSweep':'trialAdSweep',label,costs:mode==='paid'?[{id:'RUBY',num:option.cost}]:[]});
+                  if (mode==='paid') plannedDiamonds+=option.cost;
+                }
+              }
+            }
+            const checked = budgetPreview(actions, new Map([['RUBY', daily.ruby]]), settings, usage);
+            return output({ ...checked, notes: [...tasks.notes, ...trialNotes, ...daily.tasks.filter(entry => entry.reason).map(entry => entry.task.title + '：' + entry.reason), ...checked.notes,
+              '此处预览日常任务与领奖。限时活动、挑战的开放状态可在对应页面查看。'] }, { dailyTasks: daily.tasks.length }, '日常与任务奖励');
+          }
+          const survey = await surveyWorld(client, protocol, { config, player: session.player, includeCargo: settings.cargo.enabled || settings.factory.demandPriority.includes('cargo') });
+          const extra = await surveyBaseAutomation(client, protocol, config, session.player, settings, survey);
+          const flags = nativeTaskValues(settings, session.loop.tasks);
+          const worldPlan = planWorld(survey, { config, settings, usage, extraDemand: baseDemands(extra, config, settings),
+            enabled: kind => flags[worldTaskKey(kind)] === true, allowSpeedUp: flags.speedUp, allowReroll: settings.resident.reroll, minOrderExp: settings.resident.minExp });
+          const extraPlan = planBaseAutomation(extra, config, settings, usage);
+          const nativePlan = await previewNativeAutomation(client, config, session.player, settings, flags, survey, usage);
+          const plan = budgetPreview([...worldPlan.actions, ...extraPlan.actions, ...nativePlan.actions], survey.stock, settings, usage);
+          return { checkedAt: new Date().toISOString(), usage, scopeLabel: '基地与点金',
+            actions: plan.actions.map(step => ({ label: step.label, kind: step.kind, setting:step.setting, costs: (step.costs ?? []).map(item => ({ name: displayMaterial(config, item.id), num: item.num })) })),
+            notes: [...new Set([...survey.notes, ...worldPlan.notes, ...extraPlan.notes, ...nativePlan.notes, ...plan.notes])],
+            counts: { buildings: survey.buildings.length, factories: survey.factories.length, orders: survey.orders.length, maps: extra.museum?.exploreStages?.length ?? 0 },
+          };
+        }, '读取配置执行计划');
+        json(result);
+        return;
+      }
       if (route === 'GET /api/gift-codes') {
         const { session } = scoped_(parsed);
         json(giftCodeStatus(session.id));
