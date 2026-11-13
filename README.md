@@ -6,6 +6,12 @@
 
 [快速开始](#快速开始) · [功能一览](#功能一览) · [16 级玩法指南](docs/level-16.md) · [更新日志](CHANGELOG.md) · [玩法与协议](docs/gameplay.md)
 
+## 项目代码来源
+
+- **基座项目**：[xutongxue233/crazywaterworld](https://github.com/xutongxue233/crazywaterworld) —— 本项目以它的代码为基座；
+- **参考项目**：[641779071-source/sea666-afk](https://github.com/641779071-source/sea666-afk) —— 部分实现参考了该项目的代码；
+- 在以上基础上，加入了本项目自己需要的功能（多账号自动化调度、城战与世界地图、游戏消息面板、断线重连与通知等）。
+
 ## 快速开始
 
 需要 Windows 和 Node.js 20.11 或更高版本。默认安装流程从电脑版微信的游戏缓存读取协议和配置，请先在微信里打开一次《疯狂水世界》。如果要添加抖音账号，还要在同一台电脑上登录电脑版抖音。
