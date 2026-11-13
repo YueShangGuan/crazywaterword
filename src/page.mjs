@@ -8,7 +8,9 @@ const componentCss = readFileSync(new URL('./ui/dist/theme.css', import.meta.url
 const consoleCss = readFileSync(new URL('./console.css', import.meta.url), 'utf8');
 const automationCss = readFileSync(new URL('./automation.css', import.meta.url), 'utf8');
 const mapCss = readFileSync(new URL('./map.css', import.meta.url), 'utf8');
+const overviewCss = readFileSync(new URL('./overview-legacy.css', import.meta.url), 'utf8');
 const mapScript = readFileSync(new URL('./ui/map.js', import.meta.url), 'utf8');
+const connectionScript = readFileSync(new URL('./ui/connection.js', import.meta.url), 'utf8');
 const progressionScript = readFileSync(new URL('./ui/progression.js', import.meta.url), 'utf8');
 const settingsScript = readFileSync(new URL('./settings-ui.js', import.meta.url), 'utf8');
 const activitiesScript = readFileSync(new URL('./ui/activities.js', import.meta.url), 'utf8');
@@ -30,7 +32,7 @@ export const PAGE = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
 <meta name="format-detection" content="telephone=no">
-<style>@layer properties, theme, base, components, page, utilities; @layer page { ${consoleCss} ${settingsCss} ${automationCss} ${mapCss} } ${componentCss}</style>
+<style>@layer properties, theme, base, components, page, utilities; @layer page { ${consoleCss} ${settingsCss} ${automationCss} ${mapCss} ${overviewCss} } ${componentCss}</style>
 </head>
 <body>
 ${chrome()}
@@ -662,8 +664,14 @@ async function refreshOverview() {
     snapshot = data.status;
     renderAccountSelect();
     renderOverview(data);
-    if(!$('tab-overview').classList.contains('hidden'))void refreshActivityRanks();
-    if(!$('tab-overview').classList.contains('hidden'))void refreshActivityStatistics();
+    // 用户业务卡只在总览页可见时渲染；城战摘要查询失败单独降级，不拖垮总览。
+    if (!$('tab-overview').classList.contains('hidden')) {
+      const cityWarStats = await call('/api/city-war/stats').catch(() => null);
+      if (account === current) renderOverviewExtras(data, cityWarStats);
+      void refreshIncome?.();
+    }
+    if(!$('tab-overview').classList.contains('hidden'))refreshActivityRanks().catch(error => reportError(error));
+    if(!$('tab-overview').classList.contains('hidden'))refreshActivityStatistics().catch(error => reportError(error));
     if(!$('tab-overview').classList.contains('hidden'))maybeRefreshWorldMap();
     $('hint').textContent = '';
     $('overview-refresh').disabled = false;
@@ -860,6 +868,7 @@ function renderLoop(data) {
   $('loop-every').disabled = $('loop-rounds').disabled = data.running;
   $('loop-start').disabled = data.running;
   $('loop-stop').disabled = !data.running || data.stopping;
+  renderReconnect(data);
   $('loop-hint').textContent = (data.running ? '后台挂机中，已完成 ' : '未在挂机，累计 ') + data.completed + ' 轮' + (data.error ? '，已中止' : '');
   if (data.stopping) $('loop-hint').textContent = '正在暂停，等待在途请求结束';
 
@@ -1843,6 +1852,293 @@ async function copyAutomationLog() {
 
 $('automation-log-copy').onclick = copyAutomationLog;
 
+/** 回插的用户业务卡：库存明细与海商王/货轮/生产/城战摘要，数据来自 /api/overview 与城战统计。 */
+function renderOverviewExtras(data, cityWarStats = null) {
+  const items = clear($('items'));
+  for (const entry of (data.items && data.items.top) || []) items.appendChild(cell(entry.icon, 34, entry.name, 'x' + fmt(entry.num)));
+  if (!items.childElementCount) items.appendChild(el('span', 'dim', '暂无数据'));
+
+  const materials = clear($('materials'));
+  // Dynamic capacity comes from the latest game effect; fixed initial limits would mislead when the warehouse was upgraded.
+  for (const entry of data.materials || []) materials.appendChild(cell(entry.icon, 34, entry.itemId, fmt(entry.num) + ' / ' + (entry.capacity == null ? '-' : fmt(entry.capacity))));
+  if (!materials.childElementCount) materials.appendChild(el('span', 'dim', '暂无原材料数据'));
+
+  const crops = clear($('crops'));
+  for (const entry of data.crops || []) {
+    const node = cell(entry.icon, 34, entry.itemId, fmt(entry.num) + ' / ' + (entry.capacity == null ? '-' : fmt(entry.capacity)));
+    // A configured positive reserve signals that the farm module should refill this crop, so show an actionable low-stock state.
+    if (Number(entry.plantTarget) > 0 && Number(entry.num) < Number(entry.plantTarget)) node.classList.add('crop-low-stock');
+    crops.appendChild(node);
+  }
+  if (!crops.childElementCount) crops.appendChild(el('span', 'dim', '暂无农作物数据'));
+
+  renderOverviewTrade(data);
+  renderOverviewMerchantShip(data);
+  renderOverviewWorldMap(data);
+  renderOverviewCityWar(cityWarStats);
+  renderOverviewProduction(data);
+}
+
+
+/**
+ * Renders labelled overview rows while keeping gateway-provided strings in
+ * text nodes. Values may be factories when a row needs an interactive native
+ * element such as the expandable trade-radar detail.
+ */
+function renderOverviewRows(id, rows) {
+  const box = clear($(id));
+  const lines = rows.filter((row) => row && row[1] !== undefined && row[1] !== null && row[1] !== '');
+  if (!lines.length) {
+    box.appendChild(el('span', 'dim', '暂无数据'));
+    return;
+  }
+  const list = el('div', 'overview-lines');
+  for (const [label, value] of lines) {
+    const line = el('div', 'overview-line');
+    line.appendChild(el('span', 'label', label));
+    const content = typeof value === 'function' ? value() : el('span', 'value', String(value));
+    if (typeof value === 'function') content.classList.add('value');
+    line.appendChild(content);
+    list.appendChild(line);
+  }
+  box.appendChild(list);
+}
+
+/**
+ * Keeps a collapsed production list moving slowly so rows remain discoverable without manual scrolling.
+ * Hovering or focusing the list pauses the movement while CSS expands the viewport to five rows.
+ */
+function bindOverviewProductionAutoScroll(scroll) {
+  // The real console runs in a browser; DOM-only test fixtures may omit animation APIs.
+  if (typeof window.requestAnimationFrame !== 'function') return;
+  let paused = false;
+  let lastStep = 0;
+
+  const pause = () => { paused = true; };
+  const resume = (event) => {
+    // Moving focus between table controls should not restart the scroll until focus leaves the whole list.
+    if (!event.relatedTarget || !scroll.contains(event.relatedTarget)) paused = false;
+  };
+  scroll.addEventListener('mouseenter', pause);
+  scroll.addEventListener('mouseleave', () => { paused = false; });
+  scroll.addEventListener('focusin', pause);
+  scroll.addEventListener('focusout', resume);
+
+  const tick = (time) => {
+    // Rendering a fresh overview detaches the old container; stop its loop on the next frame.
+    if (!scroll.isConnected) return;
+    if (!paused && time - lastStep >= 70 && scroll.scrollHeight > scroll.clientHeight + 1) {
+      const maxScroll = scroll.scrollHeight - scroll.clientHeight;
+      scroll.scrollTop = scroll.scrollTop >= maxScroll ? 0 : scroll.scrollTop + 1;
+      lastStep = time;
+    }
+    window.requestAnimationFrame(tick);
+  };
+  window.requestAnimationFrame(tick);
+}
+
+/** Builds an expandable, readable trade-radar list so city and goods IDs are not the only operator-facing data. */
+function tradeRadarDisclosure(radar) {
+  const details = el('details', 'trade-radar-disclosure');
+  details.appendChild(el('summary', null, radar.length + ' 个城市'));
+  const list = el('div', 'trade-radar-list');
+  for (const entry of radar) {
+    const row = el('div', 'trade-radar-row');
+    row.appendChild(el('strong', null, (entry.cityName || '未知城市') + ' #' + (entry.cityId ?? '-')));
+    const field = (label, name, id) => {
+      const cell = el('div', 'trade-radar-field');
+      cell.appendChild(el('small', null, label));
+      cell.appendChild(document.createTextNode((name || '未知') + (id == null ? '' : ' #' + id)));
+      return cell;
+    };
+    row.append(field('特产', entry.specGoodsName, entry.specGoodsId));
+    row.append(field('紧缺', entry.rareGoodsName, entry.rareGoodsId));
+    row.append(field('共享人', entry.reportName, null));
+    list.appendChild(row);
+  }
+  if (!radar.length) list.appendChild(el('span', 'dim', '暂无商情明细'));
+  details.appendChild(list);
+  return details;
+}
+
+/** Renders Sea Merchant data only while the server confirms that its current period is open. */
+function renderOverviewTrade(data) {
+  const card = $('overview-trade');
+  const trade = data.trade || {};
+  // A non-positive period means the event is closed, so old voyage data must not remain visible after a refresh.
+  const tradeOpen = Number(trade.period) > 0;
+  // Hide the whole card so a closed event does not leave an empty panel title in the overview.
+  const panel = card.closest?.('[data-slot=card]');
+  if (panel) panel.hidden = !tradeOpen;
+  card.hidden = !tradeOpen;
+  if (!tradeOpen) {
+    clear(card);
+    return;
+  }
+  const player = trade.player || {};
+  const cargo = trade.cargo || {};
+  const moving = cargo.moveEndTime && cargo.moveEndTime > Date.now() / 1000;
+  const goods = (player.goods || []).filter((item) => (item.num ?? 0) > 0);
+  renderOverviewRows('overview-trade', [
+    ['开放状态', '已开放，第 ' + trade.period + ' 期'],
+    ['贸易船', '等级 ' + (cargo.cargoLv ?? '-') + '，' + (moving ? '航行中' : '已停靠')],
+    ['航线', cargo.cityId ? String(cargo.cityId) + ' → ' + (cargo.moveToCityId || '-') : null],
+    ['到港时间', moving ? when(cargo.moveEndTime * 1000) : '当前已到港'],
+    ['贸易金币', fmt(player.coins ?? 0) + ' / ' + fmt(player.maxCoins ?? 0)],
+    ['累计利润', fmt(player.profit ?? 0)],
+    ['船舱货物', goods.length ? goods.map((item) => '货物' + item.goodsId + ' ×' + item.num).join('；') : '空'],
+    ['联盟商情', () => tradeRadarDisclosure(data.tradeRadar || [])],
+  ]);
+}
+
+/** Renders the world situation card: fleet movement, trade route and occupied resource fields. */
+function renderOverviewWorldMap(data) {
+  const box = clear($('overview-world-map'));
+  const fleets = data.fleets?.list ?? [];
+  const trade = data.trade || {};
+  const cargo = trade.cargo || {};
+  const moving = fleets.filter((fleet) => Number(fleet.state) === 2).length;
+  const rows = [['舰队', fleets.length ? fleets.length + ' 支 · ' + moving + ' 在航' : '暂无舰队']];
+  if (Number(trade.period) > 0 && cargo.cityId) {
+    const remain = Math.max(0, Math.round(Number(cargo.moveEndTime) - Date.now() / 1000));
+    const eta = remain > 0 ? Math.floor(remain / 60) + ' 分钟到港' : '已到港';
+    rows.push(['商船', '城 ' + cargo.cityId + ' → ' + (cargo.moveToCityId || '-') + ' · ' + eta]);
+  }
+  const fields = data.resFields?.fields ?? [];
+  rows.push(['资源田', data.resFields ? fields.length + ' / ' + (data.resFields.maxNum ?? data.resFields.max ?? '?') : '未取得']);
+  renderOverviewRows('overview-world-map', rows);
+  const link = el('button', 'world-map-open', '打开世界地图');
+  link.type = 'button';
+  link.onclick = () => {
+    const target = [...document.querySelectorAll('[data-tab]')].find((node) => node.dataset.tab === 'map');
+    if (target) target.click();
+  };
+  box.appendChild(link);
+}
+
+/** Builds the reward list as icon cells with the quantity centred beneath each icon; only the name stays in the hover tip. */
+function merchantRewardList(rewards) {
+  const list = el('div', 'overview-reward-list');
+  for (const reward of rewards) {
+    const item = el('div', 'overview-reward-item');
+    item.appendChild(iconEl(reward.icon, 30, reward.name || reward.id || '未知奖励'));
+    item.appendChild(el('span', 'overview-reward-num', 'x' + fmt(reward.num ?? 0)));
+    list.appendChild(item);
+  }
+  return list;
+}
+
+/** Renders one row per merchant-ship claim so each haul keeps its own line; the row leads with the claim time. */
+function merchantClaimList(groups) {
+  const list = el('div', 'overview-claim-list');
+  for (const group of groups) {
+    const row = el('div', 'overview-claim-row');
+    if (group.at) row.appendChild(el('span', 'ts dim', new Date(group.at).toTimeString().slice(0, 5)));
+    row.appendChild(merchantRewardList(group.rewards));
+    list.appendChild(row);
+  }
+  return list;
+}
+
+/** Renders the current ten-thousand-ton ship occupation progress, rewards and today's claimed list. */
+function renderOverviewMerchantShip(data) {
+  const merchant = data.merchantShip || {};
+  const rewardValue = merchant.uid == null ? null : (merchant.reward?.length ? () => merchantRewardList(merchant.reward) : '暂无奖品');
+  const times = merchant.todayRewardTimes == null || merchant.totalRewardTimes == null
+    ? null : merchant.todayRewardTimes + ' / ' + merchant.totalRewardTimes;
+  // 货轮在场时状态行显示占领总进度，不再显示“已出现”字样。
+  const status = merchant.uid == null ? '当前不存在万吨货轮'
+    : merchant.progress != null ? '占领 ' + merchant.progress + '%' : '已出现';
+  // 今日已领按艘分组换行展示；每行行首是领取时间，行内沿用只显示图标的设计，奖品名和数量收进悬停提示。
+  const claimGroups = (merchant.claimedToday || [])
+    .map(ship => ({ ...ship, rewards: (ship.rewards || []).filter(reward => Number(reward.num) > 0) }))
+    .filter(ship => ship.rewards.length);
+  const claimedValue = claimGroups.length ? () => merchantClaimList(claimGroups) : null;
+  const claimedLabel = '今日已领' + (merchant.claimedShips > 0 ? '（' + merchant.claimedShips + ' 艘）' : '');
+  renderOverviewRows('overview-merchant-ship', [
+    ['今日领奖次数', times],
+    ['状态', status],
+    ['当前奖品', rewardValue],
+    [claimedLabel, claimedValue],
+    ['当前占有排名', merchant.uid == null ? null : (merchant.rank == null ? '暂未上榜' : '第 ' + merchant.rank + ' 名')],
+  ]);
+}
+
+/**
+ * Renders today's city-war panel: battle-report stats (fetched live) plus local
+ * dispatch / diamond-speedup counters from the automation ledger.
+ */
+function renderOverviewCityWar(stats) {
+  if (!$('overview-city-war')) return;
+  if (!stats) {
+    renderOverviewRows('overview-city-war', [['城战统计', '暂无数据']]);
+    return;
+  }
+  const battles = stats.battles;
+  const battleText = battles ? battles.count + ' 场' : (stats.connected ? '今日暂无战报' : '未连接');
+  const dispatchList = (stats.dispatchByCity || [])
+    .map((row) => row.name + ' ×' + row.count).join('、');
+  renderOverviewRows('overview-city-war', [
+    ['今日参战场次', battleText],
+    ['击杀 / 功勋', battles ? fmt(battles.kills) + ' / ' + fmt(battles.feats) : null],
+    ['今日派遣次数', stats.dispatchCount ? String(stats.dispatchCount) : '0'],
+    ['派遣明细', dispatchList || null],
+    ['钻石行军加速', stats.rubyMarchSpeedUp + ' 次'],
+    ['钻石维修加速', stats.rubyRepairSpeedUp + ' 次'],
+  ]);
+}
+
+/** Renders every farm crop and factory queue item so operators can distinguish an empty queue from a finished product. */
+function renderOverviewProduction(data) {
+  const box = clear($('overview-production'));
+  const production = data.production || {};
+  const farms = production.farms || [];
+  const factories = production.factories || [];
+  if (!farms.length && !factories.length) {
+    box.appendChild(el('span', 'dim', '暂无农田或工厂数据'));
+    return;
+  }
+  const grid = el('div', 'overview-production');
+  const farmPane = el('div', 'overview-table');
+  farmPane.appendChild(el('h4', null, '农田（' + farms.length + ' 块）'));
+  // 建筑回包顺序不稳定；numeric 排序能按农田编号比较，且不会受页面模板字符串的转义影响。
+  const sortedFarms = [...farms].sort((a, b) => String(a.buildingId ?? '').localeCompare(String(b.buildingId ?? ''), 'zh-CN', { numeric: true }));
+  const farmTable = table(['农田', '作物', '状态'], sortedFarms.map((farm) => {
+    const ripe = farm.productId && farm.ripeTime && farm.ripeTime <= Date.now() / 1000;
+    const status = !farm.productId ? chip('paid', '空闲') : ripe ? chip('done', '已成熟')
+      : chip('ready', farm.ripeTime ? '生长至 ' + when(farm.ripeTime * 1000) : '种植中');
+    // 作物只留图标，名字收进悬停提示，让面板默认保持紧凑。
+    return [farm.buildingId, farm.productId ? { cells: [{ icon: farm.icon, tip: farm.name || farm.productId }] } : '未种植', status];
+  }));
+  // 默认只展示两行，保留滚动容器让较长的农田列表仍可在卡片内浏览；悬停时由 CSS 展开完整内容。
+  const farmScroll = el('div', 'overview-production-scroll');
+  farmScroll.appendChild(farmTable);
+  farmPane.appendChild(farmScroll);
+  grid.appendChild(farmPane);
+  const factoryPane = el('div', 'overview-table');
+  factoryPane.appendChild(el('h4', null, '工厂（' + factories.length + ' 座）'));
+  const factoryTable = table(['工厂', '产品', '状态 / 完成时间'], factories.map((factory) => {
+    const queue = factory.queue || [];
+    // 队列每项只留图标、名字收进悬停提示，避免长队列把面板撑成竖条。
+    const products = queue.length ? queue.map((job) => ({ icon: job.icon, tip: job.name || job.productId || '' }))
+      : factory.autoProductId ? [{ icon: factory.autoIcon, tip: '自动：' + (factory.autoName || factory.autoProductId) }] : [];
+    const finish = queue.filter((job) => job.finishTime).map((job) => when(job.finishTime * 1000)).join('、');
+    const status = queue.length ? chip('ready', '生产中 ' + queue.length + ' 项')
+      : factory.autoProductId ? chip('ready', '自动生产')
+        : factory.finished?.length ? chip('paid', '待领取 ' + factory.finished.length + ' 项') : chip('paid', '空闲');
+    return [factory.buildingId, products.length ? { cells: products } : '无排产', finish ? '生产中至 ' + finish : status];
+  }));
+  // 工厂队列可能比农田更长；使用同样的容器规则，避免低优先级信息挤占总览首屏空间。
+  const factoryScroll = el('div', 'overview-production-scroll');
+  factoryScroll.appendChild(factoryTable);
+  factoryPane.appendChild(factoryScroll);
+  grid.appendChild(factoryPane);
+  box.appendChild(grid);
+  bindOverviewProductionAutoScroll(farmScroll);
+  bindOverviewProductionAutoScroll(factoryScroll);
+}
+
+
 // ---- 游戏消息（世界/通知/私聊/联盟） ----------------------------------------
 let messageTab = 'world';
 let messageStore = { world: [], notice: [], private: [], guild: [] };
@@ -1969,6 +2265,7 @@ ${settingsScript}
 ${AUTOMATION_SCRIPT}
 ${SETTINGS_SCRIPT}
 ${mapScript}
+${connectionScript}
 for(const button of document.querySelectorAll('[data-panel-toggle]'))button.onclick=()=>{const panel=$(button.dataset.panelToggle),open=panel.hidden;panel.hidden=!open;button.setAttribute('aria-expanded',String(open));button.textContent=open?'收起':'展开';};
 ${giftCodeScript}
 let selectedResource = 'dailies';

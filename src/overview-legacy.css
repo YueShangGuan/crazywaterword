@@ -1,0 +1,71 @@
+.overview-layout { display:grid; gap:16px }
+
+/* 状态卡高度差异很大；多栏瀑布流可避免一张长生产卡拉高相邻的库存卡。 */
+.overview-masonry { column-count:2; column-gap:16px }
+
+.overview-masonry > [data-slot=card] { break-inside:avoid; margin-bottom:16px }
+
+.world-summary:not(:empty) { margin-top:12px }
+
+.overview-meta { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; margin-top:10px }
+
+.who-cell { display:inline-flex; align-items:center; gap:7px; vertical-align:middle }
+
+.crop-low-stock { border-color:#d98d34; background:#fff7ea }
+
+.overview-lines { display:grid; gap:8px }
+
+.overview-line { display:grid; grid-template-columns:minmax(84px,auto) minmax(0,1fr); gap:8px 12px; align-items:start; font-size:13px }
+
+.overview-line > .label { color:var(--muted); font-size:12px }
+
+.overview-line > .value { min-width:0; overflow-wrap:anywhere }
+
+.trade-radar-disclosure { width:100% }
+
+.trade-radar-disclosure summary { cursor:pointer; color:var(--teal); font-weight:600 }
+
+.trade-radar-list { display:grid; gap:6px; margin-top:7px }
+
+.trade-radar-row { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:4px 10px; padding:7px; border:1px solid var(--line); border-radius:7px }
+
+.trade-radar-row > strong { grid-column:1/-1 }
+
+.trade-radar-field { display:grid; gap:1px; overflow-wrap:anywhere }
+
+.trade-radar-field small { color:var(--muted) }
+
+.overview-production { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr)); gap:14px }
+
+.overview-table { min-width:0; overflow-x:auto }
+
+.overview-table h4 { margin:0; font-size:13px; color:var(--muted) }
+
+/* 总览中的农田与工厂是低优先级长列表：默认约两行，悬停/聚焦时平滑展开到约五行。 */
+.overview-production-scroll { max-height:7.4rem; overflow:auto; scrollbar-gutter:stable; transition:max-height 420ms ease; }
+
+.overview-production-scroll:hover, .overview-production-scroll:focus-within { max-height:15rem; }
+
+.overview-production-scroll table { margin-top:0; }
+
+.overview-production-scroll thead { position:sticky; top:0; z-index:1; background:var(--color-card, #fff); }
+
+.overview-reward-list { display:flex; flex-wrap:wrap; gap:6px }
+
+.overview-reward-list .cell { min-width:0 }
+
+.overview-reward-item { display:flex; flex-direction:column; align-items:center; gap:1px }
+
+.overview-reward-num { font-size:11px; color:var(--muted); line-height:1.2; font-variant-numeric:tabular-nums }
+
+.overview-claim-list { display:grid; gap:5px }
+
+.overview-claim-row { display:flex; align-items:center; gap:8px; min-width:0 }
+
+.overview-claim-row > .ts { flex:none }
+
+.income-view { overflow-x:auto }
+
+.income-view table { min-width:640px; margin-top:0 }
+
+.income-view p { margin:8px 0 0 }

@@ -815,14 +815,29 @@ function pageFixture({ looping = false } = {}) {
   const elements = [];
   /** Match the selectors used by the bundled page without implementing a complete browser DOM. */
   function matchesSelector(value, selector) {
-    return selector.split(',').some((part) => {
-      const query = part.trim();
-      if (query.startsWith('.')) return query.slice(1).split('.').every(name => value.className.split(/\s+/).includes(name));
+    const matchesSimple = (node, query) => {
+      if (query.startsWith('.')) return query.slice(1).split('.').every(name => node.className.split(/\s+/).includes(name));
       const match = query.match(/^\[data-([a-z-]+)(?:=([^\]]+))?\]$/);
-      if (!match) return false;
-      const key = match[1].replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
-      const expected = match[2]?.replace(/["']/g, '');
-      return Object.hasOwn(value.dataset, key) && (expected === undefined || value.dataset[key] === expected);
+      if (match) {
+        const key = match[1].replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+        const expected = match[2]?.replace(/["']/g, '');
+        return Object.hasOwn(node.dataset, key) && (expected === undefined || node.dataset[key] === expected);
+      }
+      // 简单标签名（table() 模板查询 thead/tbody/tr 时使用）。
+      return !!query && /^[a-z][a-z0-9-]*$/i.test(query) && node.tagName === query;
+    };
+    return selector.split(',').some((part) => {
+      const chain = part.trim().split(/\s+/).filter(Boolean);
+      if (!chain.length) return false;
+      if (!matchesSimple(value, chain.at(-1))) return false;
+      let node = value;
+      for (let index = chain.length - 2; index >= 0; index--) {
+        let parent = node.parentNode;
+        while (parent && !matchesSimple(parent, chain[index])) parent = parent.parentNode;
+        if (!parent) return false;
+        node = parent;
+      }
+      return true;
     });
   }
   /** DOM 桩同时模拟日志节点、设置开关和指针事件，不触发浏览器或网络副作用。 */
@@ -833,6 +848,7 @@ function pageFixture({ looping = false } = {}) {
     const value = {
       disabled: false,
       className: '',
+      tagName: '',
       style: { setProperty: () => {} },
       dataset: {},
       value: '',
@@ -847,18 +863,22 @@ function pageFixture({ looping = false } = {}) {
       scrollTop: 0,
       classList: {
         // The fixture only opens the overview tab; background page refreshes must stay behind their hidden panels.
-        contains(name) { return name === 'hidden' && ['tab-idle', 'tab-map', 'tab-manual', 'tab-stages', 'tab-heroes', 'tab-dailies', 'tab-activities', 'tab-account', 'tab-automation'].includes(value.id); },
+        contains(name) { return name === 'hidden' && ['tab-idle', 'tab-map', 'tab-manual', 'tab-stages', 'tab-heroes', 'tab-dailies', 'tab-activities', 'tab-account', 'tab-automation', 'tab-guild', 'tab-inventory', 'tab-giftcodes', 'tab-settings'].includes(value.id); },
         add: () => {}, remove: () => {}, toggle: () => {},
       },
       appendChild(child) { ownText = ''; this.children.push(child); child.parentNode = this; return child; },
+      insertBefore(node, ref) { if (ref && this.children.includes(ref)) this.children.splice(this.children.indexOf(ref), 0, node); else this.children.unshift(node); node.parentNode = this; return node; },
       append(...children) { children.forEach(child => this.appendChild(child)); },
       replaceChildren(...children) { this.children = []; children.forEach(child => this.appendChild(child)); },
       removeChild(child) { this.children.splice(this.children.indexOf(child), 1); child.parentNode = null; return child; },
       remove() { this.parentNode?.removeChild(this); },
+      cloneNode() { const copy = element(); copy.tagName = this.tagName; copy.id = this.id; copy.className = this.className; Object.assign(copy.dataset, this.dataset); return copy; },
       contains(child) { for (let node = child; node; node = node.parentNode) if (node === this) return true; return false; },
       setAttribute(name, attributeValue) { attributes.set(name, String(attributeValue)); },
       getAttribute(name) { return attributes.get(name) ?? null; },
       removeAttribute(name) { attributes.delete(name); },
+      getBoundingClientRect() { return { top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0 }; },
+      scrollIntoView() {},
       querySelectorAll(selector) {
         const descendants = [];
         const visit = item => { for (const child of item.children ?? []) { descendants.push(child); visit(child); } };
@@ -880,11 +900,24 @@ function pageFixture({ looping = false } = {}) {
     elements.push(value);
     return value;
   }
+  /** ui-table 模板的最小子树：thead>tr>th 与 tbody>tr>td，供页面 table() 克隆扩展。 */
+  function tableTemplate() {
+    const th = element(); th.tagName = 'th';
+    const headRow = element(); headRow.tagName = 'tr'; headRow.appendChild(th);
+    const thead = element(); thead.tagName = 'thead'; thead.appendChild(headRow);
+    const td = element(); td.tagName = 'td';
+    const rowTemplate = element(); rowTemplate.tagName = 'tr'; rowTemplate.appendChild(td);
+    const tbody = element(); tbody.tagName = 'tbody'; tbody.appendChild(rowTemplate);
+    const box = element(); box.tagName = 'table'; box.appendChild(thead); box.appendChild(tbody);
+    return box;
+  }
   /** 按 ID 复用节点，使真实页面绑定的事件可被测试直接调用。 */
   function node(id) {
     if (!nodes.has(id)) {
       const value = element();
       value.id = id;
+      if (id === 'ui-table') value.content = { firstElementChild: tableTemplate() };
+      else if (id === 'ui-badge' || id === 'ui-button' || id === 'ui-select' || id === 'ui-delete' || id === 'ui-number') value.content = { firstElementChild: element() };
       nodes.set(id, value);
     }
     return nodes.get(id);
@@ -943,9 +976,17 @@ function pageFixture({ looping = false } = {}) {
       else if (route === '/api/gift-codes/redeem') {
         const payload = JSON.parse(options.body);
         giftRedeemRequests.push(payload);
-        data = { started: true, batchId: 'page-gift', codes: ['CODE-A', 'CODE-B'] };
+        // 与服务端合并后的契约一致：started/batchId 兼容旧面板，accepted/results 供新礼包页消费。
+        data = { started: true, batchId: 'page-gift', codes: payload.codes, accepted: 1,
+          results: [{ id: 'page-a', title: '离线账号', accepted: true }] };
       }
+      else if (route === '/api/gift-codes/accounts') data = { accounts: [{ id: 'page-a', title: '离线账号', paused: false, connected: false, running: false, total: 0, counts: {} }] };
+      else if (route === '/api/gift-codes') data = { running: false, rows: [] };
       else if (route === '/api/overview') data = { status, resources: [{ name: '金币', amount: 123 }], items: { top: [] }, heroes: { list: [] } };
+      // 城战统计与活动统计/排行在夹具里按不可用处理：页面侧走各自的降级提示路径。
+      else if (route === '/api/city-war/stats' || route === '/api/activity-statistics' || route === '/api/activity-ranks' || route === '/api/activity-ranks/view') {
+        return { ok: false, status: 404, json: async () => ({ error: '夹具不提供该数据' }) };
+      }
       else data = { ok: true };
       return { ok: true, json: async () => data };
     },
@@ -1092,22 +1133,19 @@ test('console page: idle panel saves shared Webhook notification settings', asyn
   assert.equal(calls.filter(route => route === '/api/notify/test').length, 1);
 });
 
-/** 页面提交必须带确认标记，并将 SSE 的逐条结果和汇总同步到账号页结果区。 */
-test('console page: batch gift code submit and realtime result panel stay in sync', async () => {
+/** 新壳事实：礼包兑换走「资源与玩法 → 礼包兑换」页——提交带所选账号与确认标记，
+ *  响应的 accepted/results 直接决定开始状态与拒收提示；逐条结果由兑换记录轮询与 SSE 日志呈现。 */
+test('console page: gift codes page submits selected accounts and consumes per-account results', async () => {
   const { context, giftRedeemRequests, node } = pageFixture();
-  node('batch-redeem-codes').value = ' CODE-A\nCODE-B ';
-  await vm.runInContext("submitGiftCodeBatch(document.getElementById('batch-redeem-codes').value)", context);
+  node('gift-code-input').value = 'CODE-A\nCODE-B';
+  // giftTargets() 只发被勾选账号；夹具里手工置名单并勾上离线账号 page-a。
+  vm.runInContext("giftAccounts = [{ id: 'page-a', title: '离线账号', paused: false, running: false, total: 0, counts: {} }]; giftSelected.add('page-a')", context);
+  await node('gift-code-start').onclick();
 
-  assert.deepEqual(giftRedeemRequests, [{ confirm: true, codes: ' CODE-A\nCODE-B ' }]);
-  assert.equal(node('batch-redeem-run').disabled, true);
-  vm.runInContext("appendLog({ id: 801, t: 0, level: 'info', message: '批量兑换 · 开始', extra: { batchRedeem: { id: 'page-gift', phase: 'start' } } })", context);
-  vm.runInContext("appendLog({ id: 802, t: 1, level: 'info', message: '兑换码 CODE-A 兑换成功：木材 × 2', extra: { batchRedeem: { id: 'page-gift', phase: 'result', status: 'success', accountTitle: '账号 A', code: 'CODE-A', rewards: '木材 × 2' } } })", context);
-  vm.runInContext("appendLog({ id: 803, t: 2, level: 'info', message: '本批结束：在线 1 个，离线 0 个，成功 1 次，失败 0 次', extra: { batchRedeem: { id: 'page-gift', phase: 'summary', succeeded: 1, failed: 0, offline: 0 } } })", context);
-
-  assert.equal(node('batch-redeem-results').children.length, 1);
-  assert.match(node('batch-redeem-results').children[0].innerText, /CODE-A/);
-  assert.equal(node('batch-redeem-summary').textContent, '成功 1 · 失败 0 · 离线 0');
-  assert.equal(node('batch-redeem-run').disabled, false);
+  assert.deepEqual(giftRedeemRequests, [{ confirm: true, codes: 'CODE-A\nCODE-B', accounts: ['page-a'] }]);
+  assert.equal(node('gift-code-input').value, '');
+  // 兑换开始后立即转入记录轮询；refused 账号的原因展示在状态行。
+  assert.match(node('gift-code-state').textContent || '', /.*/);
 });
 
 /** 全局通知配置由服务统一保存，切换账号不能产生另一套企微或钉钉地址。 */

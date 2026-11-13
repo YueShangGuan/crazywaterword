@@ -834,7 +834,8 @@ test('overview: intermediate panels use an adaptive masonry layout', () => {
   assert.match(PAGE, /class="overview-masonry"/);
   assert.match(PAGE, /column-count:2/);
   assert.match(PAGE, /break-inside:avoid/);
-  assert.doesNotMatch(PAGE, /overview-grid|overview-status-grid|wide: true/);
+  // 新壳的 settings-ui 以 wide: true 标记宽字段选项，不再是布局标志，这里只禁旧总览网格类。
+  assert.doesNotMatch(PAGE, /overview-grid|overview-status-grid/);
 });
 
 /** 运行真实页面脚本的纯转换函数；用最小窗口桩承接固定入口初始化，不创建浏览器或游戏连接。 */

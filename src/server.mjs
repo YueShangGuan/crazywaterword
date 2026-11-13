@@ -55,7 +55,8 @@ import { normalizeReconnect, parseReconnect, reconnectDelaySeconds, recoveryDeci
 import { createNotifier, loadNotifySettings, notifyEvents, parseNotifySettings, saveNotifySettings, webhookFormats } from './notify.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import { incomeView, readIncomeSnapshot, recordIncome } from './income-report.mjs';
-import { activityAvailability } from './activity-availability.mjs';
+import { activityAvailability, isActivityTaskAvailable } from './activity-availability.mjs';
+import { nativePreferenceEnabled } from './automation-policy.mjs';
 import { createUsageLedger, defaultSettings, loadAutomationSettings, saveAutomationSettings, validateSettings, settingsCatalog, settingsFromNative,
   exportAutomationSettings, importAutomationSettings, SettingsError, settingsUiRules } from './automation-settings.mjs';
 import { giftCodeStatus, giftCodeSummary, startGiftCodeBatch } from './gift-codes.mjs';
@@ -72,6 +73,7 @@ import { automationFormOptions, guildShipMaterialOptions } from './automation/fo
 import { appendMessage, createMessageStore, loadInitialMessages, messagesFromPush, snapshotMessages } from './messages.mjs';
 import { automationControlView, setAutomationControl } from './automation-controls.mjs';
 import { runtimeProgress } from './runtime-progress.mjs';
+import { fleetMaintenanceEnabled } from './fleet-maintenance.mjs';
 
 const LOG_LIMIT = 400;
 // 供页面「当前服务加载时间」展示：进程本次启动时间。
@@ -773,9 +775,18 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog = null }
   }
 
   function wire(session, instance) {
+    watchBasePushes(instance);
+    // 每次登录重置检查状态：旧连接的观察值对新连接没有参考意义。
+    instance.on('login', () => { session.loop.controlStatus = new Map(); });
     instance.on('message', ({ name, body }) => {
       // A replaced connection can still emit delayed pushes; never let it mutate the active role cache.
       if (session.client !== instance) return;
+      if (name === 'RecruitInfoResponse') instance.freeRecruitTimes = { hero: body.hero?.freeEndTimeSeconds, antique: body.antique?.freeEndTimeSeconds };
+      if (name === 'RecruitStartResponse' || name === 'AntiqueRecruitResponse') {
+        instance.freeRecruitTimes ??= {};
+        instance.freeRecruitTimes[name === 'RecruitStartResponse' ? 'hero' : 'antique'] = body.recruitData?.freeEndTimeSeconds;
+      }
+      if (name === 'TreasureLootStatsResponse') recordTreasureRewards(instance, body);
       if (name === 'SCity') {
         // SCity 每秒交替两种帧：带 state/defenceFleetNum 的战况汇总帧和只带 id+battlePoints 的
         // 战斗槽位帧。战斗帧没有归属字段（proto 缺省 0），混进同一个缓存会把城市刷成中立。
@@ -2804,6 +2815,19 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog = null }
       // 循环：开启后立刻返回，进度走 /api/loop 与事件流。
       if (route === 'GET /api/loop') {
         const { session } = scoped_(parsed);
+        void refreshTreasureRewards(session);
+        const client = session.client;
+        // 免费招募冷却缺失时补读一次；runtimeProgress 靠它推算「下次可免费招募」。
+        if (client?.connected && session.player && (!client.freeRecruitTimes || !Number.isSafeInteger(client.freeRecruitTimes.hero) || !Number.isSafeInteger(client.freeRecruitTimes.antique))
+          && Date.now() - (client.recruitTimeAttempt || 0) > 60000) {
+          client.recruitTimeAttempt = Date.now();
+          void readJob(session, async () => {
+            if (session.client !== client || !client.connected) return;
+            try { const r = await client.request('RecruitInfoRequest', {}, 'RecruitInfoResponse', 8000);
+              client.freeRecruitTimes = { hero: r.hero?.freeEndTimeSeconds, antique: r.antique?.freeEndTimeSeconds };
+            } catch { /* 未取到时间时沿用已有的实际观察，不推算冷却。 */ }
+          }).catch(() => {});
+        }
         json(loopView(session));
         return;
       }
@@ -3001,6 +3025,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog = null }
           isEnabled: key => loop.tasks[key] === true,
           getFishingGoldReserve: () => loop.fishingGoldReserve,
           isStageBusy: () => session.stages.view().running,
+          // 战后维修视图直接进 loopView；onStep 记录检查状态供挂机页/总览观察值渲染。
+          onMaintenance: view => { loop.fleetMaintenance = view; },
           onRound(summary) {
             trackRound(session, summary);
             if (summary.world.factories?.length) {
@@ -3014,10 +3040,19 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog = null }
             emit(session, 'info', formatLoopRound(summary), summary.world.population ? { worldUpdated: true } : undefined);
           },
           onStep(entry) {
+            // statusKey 对齐 loopView 控件的别名键，观察值才能按功能归位。
+            const statusKey = (entry.step?.kind === 'startProduce' ? 'nativeProduce' : null) || entry.taskKey
+              || (['万吨巨轮', '城战接续', '装备锻造', '藏品养成', '联盟情报'].includes(entry.category) ? entry.category : null)
+              || (entry.step?.kind ? worldTaskKey(entry.step.kind) : null) || entry.category || entry.title || entry.label;
+            loop.controlStatus ??= new Map();
+            const previous = loop.controlStatus.get(statusKey);
+            const text = entry.reason || entry.error || entry.note || (entry.ok ? '最近执行成功' : '等待检查');
+            loop.controlStatus.set(statusKey, { text, state: entry.status === 'unknown' || entry.status === 'pending' ? 'pending' : entry.skipped ? 'waiting' : entry.ok ? 'ok' : 'error', checkedAt: Math.floor(Date.now() / 1000) });
+            if (previous?.state === 'error' && (entry.ok || entry.skipped) && !['pending', 'unknown'].includes(entry.status)) emit(session, 'info', (entry.title || entry.label || entry.step?.label || '任务') + '已恢复');
             const production = entry.ok && !entry.skipped && entry.step?.kind === 'startProduce';
             const batch = production ? JSON.stringify([entry.round, entry.step.body.buildingId, entry.step.body.productId]) : undefined;
             emit(session, loopEntryLogLevel(entry), formatLoopStep(entry),
-              batch ? { batch, factory: entry.step.displayFactory, product: entry.step.displayProduct }
+              entry.skipped && !['pending', 'unknown'].includes(entry.status) ? { waitKey: String(statusKey) + ':' + text } : batch ? { batch, factory: entry.step.displayFactory, product: entry.step.displayProduct }
                 : entry.request && entry.ok === false ? { request: entry.request, way: entry.way } : undefined);
           },
         });
@@ -3047,29 +3082,62 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog = null }
     })();
   }
 
+  // 活动统计与自动参与的真实回包也会刷新此连接的当日领奖数。
+  const treasureRewards = new WeakMap();
+  const rewardClock = client => Date.now() + (client.serverClockOffsetMs || 0);
+  function recordTreasureRewards(client, stats) {
+    const limit = loadConfigSafe()?.tables?.TreasureLootParamCfg?.data?.find(row => row.paramName === '每日宝藏奖励次数')?.paramValue;
+    const total = stats?.todayRewardTimes;
+    const at = rewardClock(client);
+    const text = Number.isSafeInteger(total) && total >= 0 && Number.isSafeInteger(limit) && limit > 0
+      ? '今日奖励 ' + total + '/' + limit : '今日奖励未同步';
+    treasureRewards.set(client, { at, day: beijingDay(at), text });
+  }
+  async function refreshTreasureRewards(session) {
+    const client = session.client;
+    if (!client?.connected || !session.player) return;
+    const at = rewardClock(client);
+    const cached = treasureRewards.get(client);
+    if (cached?.day === beijingDay(at) && at >= cached.at && at - cached.at < 60000) return;
+    const level = loadConfigSafe()?.tables?.ModuleOpenCfg?.data?.find(row => row.moduleId === '世界宝藏')?.playerLevel;
+    if (!Number.isSafeInteger(level) || !(session.player.level >= level)) return;
+    treasureRewards.set(client, { at, day: beijingDay(at), text: '今日奖励未同步' });
+    try {
+      await readJob(session, async () => {
+        if (session.client !== client || !client.connected) return;
+        const stats = await client.request('TreasureLootStatsRequest', {}, 'TreasureLootStatsResponse', 8000);
+        recordTreasureRewards(client, stats);
+      });
+    } catch { /* 保留未同步状态，下一分钟重试。 */ }
+  }
+
   function loopView(session) {
     const loop = session.loop;
     const rewards = session.client ? rewardSchedule(session.client) : null;
     const displayUsage = usageFor(session).snapshot();
+    const observedReward = session.client?.connected ? treasureRewards.get(session.client) : null;
+    const treasureReward = observedReward && observedReward.day === displayUsage.day ? observedReward.text : '今日奖励未同步';
     // 上游外壳的挂机页/总览按 controls 渲染开关与受限说明；观察值接线在阶段 3b 补齐，
     // 这里先保证 enabled/blockedBy/group 正确，检查状态显示「本次连接尚无检查结果」。
     const controls = automationControlView(settingsView(session).settings).map(control => {
       const aliases = { 'factory.produce': 'startProduce', 'factory.cooperateNative': 'nativeProduce', 'factory.gain': 'collect', 'factory.speedUp': 'speedUp', 'building.build': 'build', 'building.upgrade': 'upgrade', 'building.finish': 'finishUpgrade', 'resident.enabled': 'finishOrder', 'resident.reroll': 'denyOrder', 'farm.enabled': 'farm', 'radar.enabled': '联盟情报', 'treasure.enabled': '万吨巨轮', 'cityWar.enabled': '城战接续', 'forge.enabled': '装备锻造', 'antique.enabled': '藏品养成', 'dailies.claimTasks': 'dailyRewards', 'dailies.claimDailyChest': 'chests', 'dailies.claimWeeklyChest': 'chests', 'dailies.claimGift': 'gift', 'resident.rewards': 'orderDaily', 'trials.paid': 'trialPaidSweep', 'trials.ads': 'trialAdSweep' };
-      const key = control.taskKey || aliases[control.key] || control.key;
+      const key = control.taskKey || aliases[control.key] || ({ 'worldBoss.enabled': 'worldBoss', 'gather.fishing': 'autoFish', 'gather.upgradeFishing': 'fishEnhance', 'gather.diving': 'autoDive', 'gather.salvage': 'autoSalvage', 'gather.upgradeDiving': 'diveEnhance', 'gather.upgradeSalvage': 'salvageEnhance', 'gather.floaters': 'floaters', 'gather.antiqueFloaters': 'antiqueFloaters', 'cargo.enabled': 'cargo', 'building.collect': 'collect', 'building.supply': 'buildSupply', 'building.speedUp': 'speedUp', 'gold.enabled': 'paidGold' })[control.key] || control.key;
       const observed = rewards?.status ? rewards.status(key) : null;
       let state = observed;
       if (state?.checkedAt && beijingDay(state.checkedAt * 1000) !== displayUsage.day) state = null;
       state ??= { text: control.group === '总控制' ? '控制项，不单独执行' : control.key.endsWith('.enabled') && ['building', 'factory', 'heroes', 'pet'].includes(control.key.split('.')[0]) ? '分组控制，具体动作状态见下方子项' : '本次连接尚无检查结果', state: 'unseen', checkedAt: null };
-      return { ...control, observation: state, ...runtimeProgress(control, state, displayUsage, { running: loop.running, connected: !!session.client?.connected, now: Date.now() + (session.client?.serverClockOffsetMs || 0) }), nextCheck: loop.running && session.client?.connected && control.enabled && !control.blockedBy.length ? rewards?.nextCheck(key) ?? null : null, stale: !loop.running || !session.client?.connected };
+      return { ...control, observation: state, ...runtimeProgress(control, state, displayUsage, { running: loop.running, connected: !!session.client?.connected, treasureReward, now: Date.now() + (session.client?.serverClockOffsetMs || 0) }), nextCheck: loop.running && session.client?.connected && control.enabled && !control.blockedBy.length ? rewards?.nextCheck(key) ?? null : null, stale: !loop.running || !session.client?.connected };
     });
     return {
       runVersion: SERVER_STARTED_AT,
       controls,
-      fleetMaintenance: loop.fleetMaintenance ?? { rows: [], reason: '等待首次检查', enabled: false },
+      fleetMaintenance: { ...(loop.fleetMaintenance ?? { rows: [], reason: '等待首次检查' }), enabled: loop.running && !!session.client?.connected && fleetMaintenanceEnabled(settingsView(session).settings) },
+      singleTasks: { pirate: session.pirateAdvance.view(), stages: session.stages?.view?.(), mutual: session.mutualAid?.view?.() },
       running: loop.running,
       stopping: !!loop.controller?.signal.aborted,
-      tasks: automationTasks.map(({ key, label, group }) => ({
-        key, label, group, enabled: loop.tasks[key], nextCheck: loop.tasks[key] ? rewards?.nextCheck(key) : null,
+      tasks: automationTasks.filter(task => isActivityTaskAvailable(task.key, session.client)).map(({ key, label, group }) => ({
+        key, label, group, enabled: loop.tasks[key], blockedBySettings: loop.tasks[key] && !nativePreferenceEnabled(settingsView(session).settings, key),
+        nextCheck: loop.tasks[key] && nativePreferenceEnabled(settingsView(session).settings, key) ? rewards?.nextCheck(key) : null,
       })),
       fishingGoldReserve: loop.fishingGoldReserve,
       reconnect: loop.reconnect,

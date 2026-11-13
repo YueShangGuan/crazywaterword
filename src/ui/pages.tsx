@@ -55,6 +55,20 @@ export function overviewPage() {
       <div className="world-map-layout"><div id="world-map-scroll" className="world-map-scroll"><svg id="world-map" role="group" aria-label="只读世界地图" /></div><div id="world-map-legend" className="world-map-legend" /><div id="world-map-state-legend" className="world-map-state-legend" /><p className="world-map-help"><span className="for-mouse">拖动平移 · Ctrl+滚轮缩放 · </span><span className="for-touch">点「移动地图」后单指拖动 · 用缩放滑块放大 · </span>放大查看舰队名和攻守优先+排队数</p><aside id="world-map-detail" className="world-map-detail" hidden /></div>
       <p id="world-map-notes" className="dim" />
     </Panel>
+    {/* 用户自建业务卡：日报与状态摘要有独立数据源，与世界概览并排展示。 */}
+    <div className="overview-layout">
+      <Panel title="收益日报"><div id="income-view" className="income-view"><span className="dim">挂机运行后开始记录</span></div></Panel>
+      <Panel title="库存"><div className="icons" id="items"><span className="dim">连接后显示</span></div></Panel>
+      <div className="overview-masonry">
+        <Panel title="原材料库存（当前 / 仓库上限）"><div className="icons" id="materials"><span className="dim">连接后显示</span></div></Panel>
+        <Panel title="农作物库存（当前 / 上限）"><div className="icons" id="crops"><span className="dim">连接后显示</span></div></Panel>
+        <Panel title="海商王"><div id="overview-trade"><span className="dim">活动开放后显示</span></div></Panel>
+        <Panel title="万吨货轮"><div id="overview-merchant-ship"><span className="dim">连接后显示</span></div></Panel>
+        <Panel title="世界态势"><div id="overview-world-map"><span className="dim">连接后显示</span></div></Panel>
+        <Panel title="城战"><div id="overview-city-war"><span className="dim">城战时段（20:00–21:00）或有派遣记录后显示</span></div></Panel>
+        <Panel title="农田与工厂生产"><div id="overview-production"><span className="dim">连接后显示</span></div></Panel>
+      </div>
+    </div>
   </div>)
 }
 
