@@ -1,5 +1,6 @@
 import { amount, idString } from './context.mjs';
 import { costs, inWindows, mutate, repeat, skip, succeeded } from './common.mjs';
+import { demand } from './base.mjs';
 import { serverTime, shanghaiWeekday } from './schedule.mjs';
 
 // 服务端以 DAILY_GUILD_AID 同时约束本账号的联盟求助额度；现场已确认每日上限为 20 次。
@@ -56,10 +57,33 @@ function welfarePackSnapshot(packs) {
   return packs.map(pack => idString(pack.id)).sort().join(',');
 }
 
+/**
+ * 汇总其他订单系统对共享材料的占用，募兵只允许消费这些预留之外的余量。
+ *
+ * 居民、贸易港和英雄突袭由 demand() 按各自归属规则过滤；周商人订单与 activity
+ * 的 weekOrder 用同一开放期判定，未开放或订单已清空时不占用。
+ *
+ * @param {object} ctx 自动化上下文。
+ * @returns {Promise<Object<string, number>>} 供 ctx.enough 第二参扣减的预留表。
+ */
+async function reservedForOthers(ctx) {
+  const keep = {};
+  for (const row of await demand(ctx, ['resident', 'cargo', 'heroRaid'], { includeCovered: true })) {
+    keep[row.id] = (keep[row.id] ?? 0) + row.need;
+  }
+  const periods = ctx.rows('WeekOrderPeriodCfg').map(row => row.periodId);
+  const active = (await ctx.query('WeekInfoRequest')).activityTime?.find(time => periods.includes(time.period) && time.startTime <= ctx.now() / 1000 && time.endTime > ctx.now() / 1000);
+  if (active) for (const [id, num] of costs((await ctx.query('WeekOrderInfoRequest')).order, ctx.protocol)) keep[id] = (keep[id] ?? 0) + num;
+  return keep;
+}
+
 /** 募兵订单按每日计数、城市筛选、冷却和共享库存决定是否提交；周一额度单独生效。 */
 async function orders(ctx, options) {
   const city = (await ctx.query('GuildCityInfoRequest')).cities?.filter(c => !options.cityIds.length || options.cityIds.includes(c.cityId)).sort((a, b) => Number(b.recommended) - Number(a.recommended) || a.defenceNum - b.defenceNum)[0];
   if (!city) return skip(ctx, '没有符合设置的联盟城市');
+  // 其他订单的用料预留只在首次提交前核对一次：本轮内只有募兵自己在消耗库存，
+  // 居民/贸易港等需求不会因提交募兵订单而变化。
+  let keep = null;
   await repeat(ctx, 20, async () => {
     if (!options.enabled) return false;
     const counters = (await ctx.query('CounterInfoRequest')).counters ?? [];
@@ -69,7 +93,16 @@ async function orders(ctx, options) {
     if (limit > 0 && done >= limit) return false;
     const order = (await ctx.query('GuildOrderRequest')).order;
     const expenses = costs(order?.requirements, ctx.protocol);
-    if (!expenses.length || order.nextRefreshTime > ctx.now() / 1000 || !ctx.enough(expenses)) return false;
+    // nextRefreshTime 在未来代表当前订单可提交；已过点代表订单板正在刷新（与联盟订单服务的实测语义一致）。
+    if (!expenses.length || order.nextRefreshTime <= ctx.now() / 1000 || !ctx.enough(expenses)) return false;
+    try { keep ??= await reservedForOthers(ctx); } catch (error) {
+      skip(ctx, `核对其他订单用料预留失败：${error.message}`);
+      return false;
+    }
+    if (!ctx.enough(expenses, keep)) {
+      skip(ctx, '留足居民、贸易港、周商人和英雄突袭订单用料后材料不足，暂不提交募兵订单');
+      return false;
+    }
     return succeeded(await ctx.action('FinishGuildOrderRequest', { cityId: city.cityId }, { expenses, allowed: () => options.enabled }));
   });
 }
