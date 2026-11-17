@@ -44,6 +44,7 @@ import { checkFleetSettlement } from './fleet-settlement.mjs';
 import { fleetMaintenanceEnabled, fleetMaintenanceInterval, runFleetMaintenance, watchFleetMaintenance } from './fleet-maintenance.mjs';
 import { matchesFollowDeparture, watchTreasureTravel } from './treasure-follow.mjs';
 import { runWorldBoss } from './world-boss.mjs';
+import { recoverBossTeams } from './boss-team.mjs';
 import { runAllianceRadar } from './alliance-radar.mjs';
 import { forgeEnabled, runEquipmentForge } from './equipment-forge.mjs';
 import { automationTasks, dailyTaskKey, defaultFishingGoldReserve, worldTaskKey } from './automation.mjs';
@@ -70,6 +71,7 @@ function nextFactoryCheck(buildings, offset, collect) {
 import { runFixedRoutines } from './automation/routines.mjs';
 import { runAutomation, gameplaySession, handledDailyIds } from './automation/service.mjs';
 import { loadSettings, selectLoopModules } from './automation/settings.mjs';
+import { watchCityWarIdle, cityWarWindowActive } from './city-war-watcher.mjs';
 const ISLAND_ACTION_KINDS = new Set(['collectProduct', 'gainFactory', 'finishUpgrade', 'build', 'upgrade', 'speedUpUpgrade', 'startProduce', 'speedUpProduce', 'weekFactory', 'buildSupply']);
 
 /**
@@ -142,6 +144,7 @@ export async function runLoop(client, protocol, {
   const travel = watchTreasureTravel(client);
   let followWake = null, followPending = false, followVersion = 0;
   let maintenanceAt = 0, maintenancePending = false, maintenanceVersion = 0;
+  let cityWarPending = false, loopSettings = null;
   let treasureAt = 0, radarAt = 0, lastTreasureNotes = '';
   let forgeAt = 0, forgePreference = null, lastForgeNotes = '';
   const unsubscribeFollow = travel.subscribe(fleet => {
@@ -153,6 +156,16 @@ export async function runLoop(client, protocol, {
   const unsubscribeMaintenance = watchFleetMaintenance(client).subscribe(() => {
     if (stop.aborted || !client.connected || !fleetMaintenanceEnabled(getSettings())) return;
     maintenanceAt = 0; maintenancePending = true; maintenanceVersion++; followWake?.();
+  });
+  // 城战接续唤醒：配置舰队在城战窗内「非闲置→闲置」时提前开轮，由轮内世界模块的
+  // 维修+城战链路自然接管；不满足窗口、开关或舰队名单的迁移一律忽略。
+  // settings 在每轮开头重新加载，这里经 loopSettings 引用，避免捕获循环内绑定。
+  const unsubscribeCityWar = watchCityWarIdle(client).subscribe(({ buildingId }) => {
+    if (stop.aborted || !client.connected) return;
+    const rules = loopSettings?.modules?.world?.cityWar;
+    if (!rules?.enabled || !rules.fleets?.some(rule => rule.enabled && rule.buildingId === buildingId)) return;
+    if (!cityWarWindowActive()) return;
+    cityWarPending = true; followWake?.();
   });
   // 出发/受损推送只唤醒现有调度，不在消息回调中并发发协议或绕过舰队优先级。
   async function waitWithFollow(ms, signal) {
@@ -179,6 +192,7 @@ export async function runLoop(client, protocol, {
     const empty = () => ({ planned: 0, results: [] });
     const summary = { round, startedAt: Math.floor(Date.now() / 1000), tasks: empty(), dailies: empty(), world: empty() };
     const settings = accountId ? loadSettings(accountId) : null;
+    loopSettings = settings;
     // 同一玩法启用新模块后，其细分开关拥有唯一执行权；上游独有任务仍由原调度处理。
     const ownership = {
       cargo: 'cargo', farm: 'farm', finishOrder: 'resident', denyOrder: 'resident',
@@ -206,7 +220,15 @@ export async function runLoop(client, protocol, {
     let factoryDeadline;
     const rememberDeadline = time => { afkDeadline = time; };
     const logReward = (entry, category = '领奖') => stepLog('tasks')({ title: entry.label, ...entry, category });
-    const allowDaily = (id, action) => enabled(dailyTaskKey(id, action));
+    // 2 折券开关是折扣商店的独立授权：旧「折扣店购买」循环开关在新界面已没有入口，
+    // 只开设置开关时也必须放行任务 1007，否则日常检查会被旧开关静默拦下。
+    // 仍遵守 rewards 的当日节奏：任务达标后 defer('shop')，当天不再重复检查。
+    const discountAuthorized = () => settings?.spending?.dailiesDiscountTickets2x === true
+      && (!rewards || rewards.due('shop'));
+    const allowDaily = (id, action) => enabled(dailyTaskKey(id, action)) || (id === 1007 && discountAuthorized());
+    // 广告商店的旧循环开关在新界面没有入口；开启 VIP 免广告权益即视为授权——
+    // 该权益下商店领取全部免看广告直接完成，与旧开关开启时的实际行为一致。
+    const adShopEnabled = () => enabled('adShop') || settings?.vipFreeAd === true;
     const allowWorld = kind => enabled(worldTaskKey(kind));
     const attemptedOrders = new Set();
     const harvestOptions = { config, player, accountId, actionExecutor, stop, attemptedOrders, cargoEnabled: () => !!isEnabled && enabled('cargo'),
@@ -243,6 +265,8 @@ export async function runLoop(client, protocol, {
     }
     async function checkDispatch() {
       if (stop.aborted) return;
+      // 世界Boss名单编队的恢复独立于首战开关：即使当天关闭世界Boss，也要把上次换过的编队恢复回去。
+      await checkBossTeamRestore();
       if (usageLedger) await checkFleetSettlement(client, player, usageLedger);
       await checkMaintenance();
       await checkForge();
@@ -269,6 +293,15 @@ export async function runLoop(client, protocol, {
           report: entry => { summary.world.results.push(entry); stepLog('world')({ ...entry, title: entry.label, taskKey: 'worldBoss' }); } });
       } catch (error) { phaseFailure('world', '世界Boss首战', error); }
       finally { rewards?.defer('worldBoss', rewards.now() + Math.ceil(everyMs / 1000)); }
+    }
+    // 无待恢复记录时只读一次小文件；有记录时按舰队回港进度逐轮恢复编队。
+    async function checkBossTeamRestore() {
+      if (stop.aborted || !client.connected) return;
+      try {
+        await recoverBossTeams(client, config, player, {
+          report: entry => { summary.world.results.push(entry); stepLog('world')({ ...entry, title: entry.label, taskKey: 'worldBoss' }); },
+        });
+      } catch (error) { phaseFailure('world', '世界Boss队伍恢复', error); }
     }
     async function checkTreasure() {
       if (stop.aborted || !treasureAutomationEnabled(getSettings()) || Date.now() < treasureAt) return;
@@ -318,7 +351,7 @@ export async function runLoop(client, protocol, {
           preferences: getSettings?.() ?? null,
           onQuery,
           onModuleComplete,
-          onStep: row => onStep?.({ round, phase: 'automation', ...row, ok: row.status === 'success', error: row.reason }) });
+          onStep: row => onStep?.({ round, phase: 'automation', ...row, ok: row.status === 'success', skipped: row.status === 'skipped', error: row.reason }) });
         if (summary.automation.error || stop.aborted) return;
       }
       // 独立模块循环不执行上游挂机任务，防止未选择的任务随模块预览/执行一起运行。
@@ -332,9 +365,9 @@ export async function runLoop(client, protocol, {
           });
         } catch (error) { phaseFailure('tasks', '任务检查', error); }
       }
-      if (groupEnabled('日常')) {
+      if (groupEnabled('日常') || discountAuthorized()) {
         try {
-          const includeTask = id => !isEnabled || dailyActionKeys[id]?.some(enabled);
+          const includeTask = id => !isEnabled || dailyActionKeys[id]?.some(enabled) || (id === 1007 && discountAuthorized());
           const survey = await surveyDailies(client, protocol, { config, player, includeTask, probeGift: !isEnabled, idle: !!isEnabled });
           const waiting = survey.tasks.filter(({ task, status, reason }) => reason && (
             (task.id === 1002 && status === 'waiting') ||
@@ -374,8 +407,11 @@ export async function runLoop(client, protocol, {
         const results = await claimRewards(client, protocol, config, logReward, enabled, rememberDeadline, rewards, player, { accountId, actionExecutor, stop });
         summary.tasks = { planned: results.length, results };
       }
-      if (isEnabled && enabled('adShop')) {
-        await claimAdShop(client, config, { ...adChannel, player, enabled: () => enabled('adShop'),
+      if (isEnabled && adShopEnabled()) {
+        // 广告轮次配额在本阶段就要初始化；否则后置的广告加速先 beginAdRound 时，
+        // 商店已错过本轮复位，整个连接周期都领不到（审查遗留的饿死问题）。
+        beginAdRound(client);
+        await claimAdShop(client, config, { ...adChannel, player, enabled: adShopEnabled,
           schedule: rewards, report(entry) {
             summary.tasks.results.push(entry);
             if (!entry.skipped) summary.tasks.planned++;
@@ -722,7 +758,10 @@ export async function runLoop(client, protocol, {
     if (summary.automation?.error) break;
     if (automationOnly) {
       // 普通停止信号与 AbortSignal 均可使用；分段等待保证界面停止立即生效。
-      for (let remaining = everyMs; round < total && remaining > 0 && !stop.aborted; remaining -= 250) await sleep(Math.min(250, remaining));
+      for (let remaining = everyMs; round < total && remaining > 0 && !stop.aborted; remaining -= 250) {
+        if (cityWarPending) { cityWarPending = false; break; }
+        await sleep(Math.min(250, remaining));
+      }
       continue;
     }
     if (round < total && !stop.aborted) {
@@ -730,7 +769,11 @@ export async function runLoop(client, protocol, {
         const signal = stop.signal ?? (typeof stop.addEventListener === 'function' ? stop : undefined);
         const nextRound = Date.now() + everyMs;
         let upgradeAt = Date.now() + 30_000;
+        // 城战接续唤醒后直接开下一轮，跳过 (b) 段的剩余等待。
+        let kickRound = false;
         while (isEnabled && !stop.aborted) {
+          // 城战接续唤醒：提前结束轮间等待，直接进入下一轮跑维修+城战链路。
+          if (cityWarPending) { cityWarPending = false; kickRound = true; break; }
           const afkAt = enabled('afk') ? (afkDeadline ?? Date.now() + 60_000) : Infinity;
           const factoryAt = enabled('collect') || enabled('startProduce') ? factoryDeadline ?? Infinity : Infinity;
           const treasureNext = treasureAutomationEnabled(getSettings()) ? treasureAt : Infinity;
@@ -778,7 +821,8 @@ export async function runLoop(client, protocol, {
             if (checkUpgrade) upgradeAt = Date.now() + 30_000;
           }
         }
-        while (!stop.aborted && Date.now() < nextRound) {
+        while (!stop.aborted && !kickRound && Date.now() < nextRound) {
+          if (cityWarPending) { cityWarPending = false; break; }
           const changed = await waitWithFollow(Math.max(0, nextRound - Date.now()), signal);
           if (changed) await schedule(checkDispatch); else break;
         }
@@ -789,6 +833,7 @@ export async function runLoop(client, protocol, {
   } finally {
     unsubscribeFollow();
     unsubscribeMaintenance();
+    unsubscribeCityWar();
     watchFleetMaintenance(client).hold([]);
     followWake = null;
   }
