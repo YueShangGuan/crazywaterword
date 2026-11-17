@@ -52,7 +52,7 @@ export function giftCodeStatus(id) {
 }
 export function giftCodeSummary(id) {
   const {running,rows}=giftCodeStatus(id);
-  const latest=rows.filter(r=>r.batch&&r.batch===rows[0].batch);
+  const latest=rows.filter(r=>r.batch&&r.batch===rows[0]?.batch);
   const counts={};
   for(const r of latest)counts[r.status]=(counts[r.status]??0)+1;
   return {running,total:latest.length,counts};

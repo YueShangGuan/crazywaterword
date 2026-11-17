@@ -172,9 +172,11 @@ export async function prepareDailyBreed(ctx) {
   const period = await battlePeriod(ctx);
   if (!period) return;
   const cfg = ctx.rows('WeekPassTaskCfg').find(row => row.type === '培育海兽');
+  if (!(cfg?.target > 0)) return skip(ctx, '缺少勇士战令培育任务配置，不补做');
   const state = await ctx.query('WeekBattlePassInfoRequest');
-  const task = state.task?.find(row => row.taskId === cfg?.taskId);
-  if (!(cfg?.target > 0) || !task || !Object.hasOwn(task, 'progress')) return skip(ctx, '缺少勇士战令海兽培育任务状态或目标，不补做');
+  const task = state.task?.find(row => row.taskId === cfg.taskId);
+  if (!task) return skip(ctx, '缺少勇士战令培育任务状态，不补做');
+  // proto3 默认值不上线：progress 字段缺省即 0，不能视作任务状态缺失。
   if (task.isGot || amount(task.progress) >= cfg.target) return skip(ctx, '勇士战令海兽培育任务已达标');
   await ctx.refreshStock();
   const water = await ctx.query('OnWaterRequest'), room = breedRoom(ctx, water);

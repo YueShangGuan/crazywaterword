@@ -307,19 +307,25 @@ async function destroy(ctx, options, pets) {
 export async function equip(ctx, options) {
   // 收装、制造、加速与分解共同受整个装备模块的日期模式约束。
   if (!moduleActive('equip', options, ctx)) return skip(ctx, '装备未到执行日期或已关闭');
+  // 空闲装备厂不下发 equipMaking 字段，不能用「有制造状态」识别工厂；按解锁表过滤。
+  const factories = new Set(ctx.rows('BuildingUnlockCfg').filter(row => row.buildingType === '装备厂').map(row => row.buildingId));
   const water = await ctx.query('OnWaterRequest');
+  let idleFactory = false, started = false;
   for (const b of water.building ?? []) {
-    if (!b.equipMaking) continue;
+    if (!factories.has(b.buildingId)) continue;
     let making = b.equipMaking;
-    if (options.speedUp && making.makeId && making.finishTime - ctx.now() / 1000 >= options.speedUpMinRemainSecs && (ctx.stock.get('加速器') ?? 0) > 0) await ctx.action('SpeedMakeEquipRequest', { buildingId: b.buildingId, speedUp: { type: 2, useNum: 1 } }, { expenses: [['加速器', 1]] });
+    if (options.speedUp && making?.makeId && making.finishTime - ctx.now() / 1000 >= options.speedUpMinRemainSecs && (ctx.stock.get('加速器') ?? 0) > 0) await ctx.action('SpeedMakeEquipRequest', { buildingId: b.buildingId, speedUp: { type: 2, useNum: 1 } }, { expenses: [['加速器', 1]] });
     making = (await ctx.query('OnWaterRequest')).building?.find(r => r.buildingId === b.buildingId)?.equipMaking;
     if (options.collect && making?.makeId && making.finishTime <= ctx.now() / 1000) await ctx.action('PickMadeEquipRequest', { buildingId: b.buildingId });
     making = (await ctx.query('OnWaterRequest')).building?.find(r => r.buildingId === b.buildingId)?.equipMaking;
     if (options.make && !making?.makeId) {
       const row = ctx.rows('BuildingEquipMakeCfg').find(r => options.makeIds.includes(r.makeId) && r.season <= ctx.season && ctx.enough(r.costItem));
-      if (row) await mutate(ctx, 'MakeEquipRequest', { buildingId: b.buildingId, makeId: row.makeId, universal: options.universal }, 'OnWaterRequest', s => s.building?.find(r => r.buildingId === b.buildingId)?.equipMaking, { expenses: row.costItem });
+      if (row) { started = true; await mutate(ctx, 'MakeEquipRequest', { buildingId: b.buildingId, makeId: row.makeId, universal: options.universal }, 'OnWaterRequest', s => s.building?.find(r => r.buildingId === b.buildingId)?.equipMaking, { expenses: row.costItem }); }
+      else idleFactory = true;
     }
   }
+  // 有空闲工厂却开不了工时留痕，否则模块静默通过，用户无法区分「正常等待」和「配置/库存问题」。
+  if (idleFactory && !started) skip(ctx, '所选配方都不满足赛季或材料库存，装备厂保持空闲');
   if (options.decompose) await destroy(ctx, options, false);
 }
 
