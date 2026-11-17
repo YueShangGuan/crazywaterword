@@ -64,16 +64,21 @@ export function planFormationSaves(targets, currentByDock, { movable = null, nam
   // heroId → 当前所在舰队；保存目标编队时同步更新这份占用关系。
   const placed = new Map();
   for (const [dock, formation] of currentByDock) for (const p of formation?.heroPositions ?? []) placed.set(p.heroId, dock);
+  // live 记录每支舰队的现行编队：中间腾位后，目标等于现行编队的舰队无需再次保存。
+  const live = new Map(currentByDock);
   const pending = new Map(targets);
   const saves = [];
   const commit = (dock, formation) => {
     for (const [hero, holder] of [...placed]) if (holder === dock) placed.delete(hero);
     for (const p of formation.heroPositions) placed.set(p.heroId, dock);
+    live.set(dock, formation);
     saves.push({ buildingId: dock, formation });
   };
   while (pending.size) {
     let progressed = false;
     for (const [dock, formation] of [...pending]) {
+      // 目标与现行编队完全一致时无需保存；该队保持原状，也不进入待恢复快照。
+      if (formationSignature(live.get(dock)) === formationSignature(formation)) { pending.delete(dock); progressed = true; continue; }
       if (!formation.heroPositions.every(p => !placed.has(p.heroId) || placed.get(p.heroId) === dock)) continue;
       commit(dock, formation); pending.delete(dock); progressed = true;
     }
@@ -86,10 +91,11 @@ export function planFormationSaves(targets, currentByDock, { movable = null, nam
       const holders = [...placed].filter(([, holder]) => holder === dock).map(([hero]) => hero);
       const wanted = holders.filter(hero => [...pending].some(([other, job]) => other !== dock && job.heroPositions.some(p => p.heroId === hero)));
       if (!wanted.length) continue;
-      const positionOf = new Map((currentByDock.get(dock)?.heroPositions ?? []).map(p => [p.heroId, p.pos]));
+      // 站位以现行编队为准：中间腾位后的英雄仍保留它们当前所在的坐标。
+      const positionOf = new Map([...(currentByDock.get(dock)?.heroPositions ?? []), ...(live.get(dock)?.heroPositions ?? [])].map(p => [p.heroId, p.pos]));
       const keep = holders.filter(hero => !wanted.includes(hero)).map(heroId => ({ heroId, pos: positionOf.get(heroId) }));
       if (!keep.length) return { ok: false, reason: `${nameOf(dock)} 下阵 ${wanted.join('、')} 后没有剩余英雄，无法腾位（不允许保存空编队）` };
-      commit(dock, { presetId: currentByDock.get(dock)?.presetId ?? defaultPreset, heroPositions: keep });
+      commit(dock, { presetId: live.get(dock)?.presetId ?? defaultPreset, heroPositions: keep });
       acted = true;
       break;
     }
@@ -172,11 +178,14 @@ function readStateFile() {
 }
 
 function writeStateFile(worlds) {
-  fs.mkdirSync(path.dirname(stateFile()), { recursive: true });
-  const temporary = `${stateFile()}.${crypto.randomUUID()}.tmp`;
+  const file = stateFile();
+  // 最后一条记录恢复完成后直接删除文件，避免给每轮读取留下空壳。
+  if (!Object.keys(worlds).length) { fs.rmSync(file, { force: true }); return; }
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const temporary = `${file}.${crypto.randomUUID()}.tmp`;
   try {
     fs.writeFileSync(temporary, JSON.stringify({ version: STATE_VERSION, worlds }, null, 2), 'utf8');
-    fs.renameSync(temporary, stateFile());
+    fs.renameSync(temporary, file);
   } finally { if (fs.existsSync(temporary)) fs.unlinkSync(temporary); }
 }
 
@@ -250,8 +259,22 @@ export async function applyBossTeams(client, config, player, settings, { report 
   const docks = (water.building ?? []).filter(dock => dock.level > 0 && dock.buildingId?.endsWith(fleetType));
   const owned = new Set((rosterReply.heroes ?? []).map(hero => hero.heroId));
   if (!owned.size) return { ok: false, reason: '无法读取英雄列表，未应用队伍名单' };
-  const plan = planBossTeams(config, player, teams, docks, { owned, fleets: own.fleets });
+  // 先不做空闲检查：名单已就位时（无需换阵）舰队可以在途继续进攻。
+  let plan = planBossTeams(config, player, teams, docks, { owned });
   if (!plan.ok) return plan;
+  if (plan.saves.length && Array.isArray(own.fleets) && own.fleets.length) {
+    // 只有确实需要换阵时，被触碰的舰队才必须全部空闲；行军、战斗、维修或驻外时等回港再换。
+    plan = planBossTeams(config, player, teams, docks, { owned, fleets: own.fleets });
+    if (!plan.ok) return plan;
+  }
+  const worldId = exactAutomationId(player.worldId);
+  // 已有待恢复记录且本轮还需要换阵：说明上一次应用尚未走完（或另一套调度同时启用），
+  // 继续叠加会把中间编队当成"原编队"，必须拒绝。
+  if (pendingBossTeamRestore(worldId) && plan.saves.length) {
+    return { ok: false, reason: '上一次队伍名单编队尚未恢复，不能再次应用；请等待恢复完成或手动检查舰队编队' };
+  }
+  // 名单已就位（目标与现行编队一致）时无需重复保存，也保留原有待恢复快照。
+  if (!plan.saves.length) return { ok: true, already: true };
   const applied = [];
   for (const save of plan.saves) {
     try {
@@ -266,7 +289,7 @@ export async function applyBossTeams(client, config, player, settings, { report 
   }
   // 只有原本就有编队的舰队需要恢复；原本没有编队的舰队保留名单编队并明确说明。
   const restoreFleets = plan.touched.filter(row => row.formation);
-  saveBossTeamState(exactAutomationId(player.worldId), restoreFleets);
+  saveBossTeamState(worldId, restoreFleets);
   const kept = plan.touched.length - restoreFleets.length;
   const docksTouched = [...new Set(plan.saves.map(save => fleetName(save.buildingId)))].join('、');
   report({

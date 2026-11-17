@@ -274,7 +274,7 @@ const configGroups = [
   { id:'worldBoss',title:'世界Boss',category:'world',fields:[
     configField('worldBoss.enabled','每日首战自动派遣'),
     configField('worldBoss.fleetIds','首战可用舰队','multi',{catalog:'expeditionFleets',empty:'未选择，使用任意符合条件的空闲舰队',help:'开启队伍名单时，名单舰队与未配名单的合格舰队都会出征。'}),
-    configField('worldBoss.teamsEnabled','启用队伍名单','switch',{when:d=>d.worldBoss.enabled,help:'开启后每日首战前把名单舰队的编队切换为所选英雄；名单英雄被其他舰队占用时先自动下阵再上阵（打完Boss换回）。未配置名单的舰队按原编队照常出征。打完Boss、舰队回港空闲后自动恢复所有被改动的编队；恢复与首战开关无关。'}),
+    configField('worldBoss.teamsEnabled','启用队伍名单','switch',{help:'开启后每日首战前把名单舰队的编队切换为所选英雄；名单英雄被其他舰队占用时先自动下阵再上阵（打完Boss换回）。未配置名单的舰队按原编队照常出征。打完Boss、舰队回港空闲后自动恢复所有被改动的编队；恢复与首战开关无关。需先开启「每日首战自动派遣」。'}),
     configField('worldBoss.teams','队伍名单','bossTeams',{wide:true,when:d=>d.worldBoss.teamsEnabled,help:'每行一支舰队：选择远征舰队并勾选英雄。同一英雄只能出现在一个名单；人数不能超过当前解锁的编队位。'}),
     configField('worldBoss.minDurabilityPercent','最低耐久','number',{unit:'%',help:'0表示不设百分比门槛，仍须有耐久。'}),
     configField('worldBoss.petrolReserve','汽油保留量','number',{unit:'汽油',help:'0表示不保留，仍核对实际库存和其他任务待确认费用。出征舰队数量按每队一份汽油核对。'}),

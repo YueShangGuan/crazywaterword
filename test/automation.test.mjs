@@ -441,6 +441,31 @@ test('settings: defaults off; account isolation; strict arrays, dictionaries and
   assert.deepEqual(validateSettings(merchantMaterialSettings).modules.world.merchantShip.rewardMaterials, []);
   merchantMaterialSettings.modules.world.merchantShip.rewardMaterials = [1];
   assert.throws(() => validateSettings(merchantMaterialSettings), /非空字符串数组/);
+  const bossTeamSettings = defaultSettings();
+  bossTeamSettings.modules.world.worldBoss = {
+    enabled: true, teamsEnabled: true, schedules: [{ hour: 0, times: 3 }, { hour: 8, times: 1 }],
+    teams: [{ buildingId: '1远征船', heroes: ['坦克A', '战士A'] }, { buildingId: '2远征船', heroes: ['坦克B'] }],
+  };
+  const validatedBoss = validateSettings(bossTeamSettings).modules.world.worldBoss;
+  assert.deepEqual(validatedBoss.teams,
+    [{ buildingId: '1远征船', heroes: ['坦克A', '战士A'] }, { buildingId: '2远征船', heroes: ['坦克B'] }]);
+  assert.deepEqual(validatedBoss.schedules, [{ hour: 0, times: 3 }, { hour: 8, times: 1 }]);
+  bossTeamSettings.modules.world.worldBoss.teams[1].buildingId = '1远征船';
+  assert.throws(() => validateSettings(bossTeamSettings), /不能重复配置舰队/);
+  bossTeamSettings.modules.world.worldBoss.teams[1].buildingId = '1船';
+  assert.throws(() => validateSettings(bossTeamSettings), /必须为远征舰队/);
+  bossTeamSettings.modules.world.worldBoss.teams[1].buildingId = '2远征船';
+  bossTeamSettings.modules.world.worldBoss.teams[0].heroes = [];
+  assert.throws(() => validateSettings(bossTeamSettings), /非空英雄列表/);
+  bossTeamSettings.modules.world.worldBoss.teams[0].heroes = ['坦克A', '坦克A'];
+  assert.throws(() => validateSettings(bossTeamSettings), /非空英雄列表/);
+  bossTeamSettings.modules.world.worldBoss.teams[0].heroes = ['坦克A', '战士A'];
+  bossTeamSettings.modules.world.worldBoss.schedules[1].hour = 0;
+  assert.throws(() => validateSettings(bossTeamSettings), /不能重复配置 0 点/);
+  bossTeamSettings.modules.world.worldBoss.schedules[1].hour = 24;
+  assert.throws(() => validateSettings(bossTeamSettings), /0–23 的整点小时/);
+  bossTeamSettings.modules.world.worldBoss.schedules[1] = { hour: 8, times: 0 };
+  assert.throws(() => validateSettings(bossTeamSettings), /1–99 的整数/);
   settings.modules.hero.heroes = [1]; assert.throws(() => validateSettings(settings), /字符串/);
   settings.modules.hero.heroes = []; settings.modules.world.chipMine.hours = [24]; assert.throws(() => validateSettings(settings), /整数/);
   settings.modules.world.chipMine.hours = []; settings.modules.world.pirate.attackTime.start = '25:00'; assert.throws(() => validateSettings(settings), /HH/);
@@ -475,6 +500,23 @@ test('settings: migrates legacy pirate sweep type IDs without widening an implic
   assert.deepEqual(loadSettings('legacy-pirate-target').modules.world.pirate.sweepTypes, [{ type: 1, times: 2 }, { type: 2, times: 2 }, { type: 3, times: 1 }]);
   const persisted = JSON.parse(fs.readFileSync(path.join(accountDirectory('legacy-pirate-target'), 'settings.json'), 'utf8'));
   assert.deepEqual(persisted.modules.world.pirate.sweepTypes, [{ type: 1, times: 2 }, { type: 2, times: 2 }, { type: 3, times: 1 }]);
+});
+
+/** 世界Boss旧配置（每日总次数 + 时段）一次性升级为「小时 + 次数」计划，未配置过的账号不凭空创造进攻。 */
+test('settings: migrates legacy world boss daily count and window into hourly schedules', () => {
+  const configured = defaultSettings();
+  configured.modules.world.worldBoss = { enabled: true, attackTimes: 3, attackTime: { start: '08:00', end: '09:00' }, teamsEnabled: true, teams: [] };
+  writeJson(path.join(accountDirectory('legacy-boss-window'), 'settings.json'), configured);
+  const migrated = loadSettings('legacy-boss-window').modules.world.worldBoss;
+  assert.deepEqual(migrated.schedules, [{ hour: 8, times: 3 }]);
+  assert.equal(Object.hasOwn(migrated, 'attackTimes'), false);
+  assert.equal(Object.hasOwn(migrated, 'attackTime'), false);
+  const persisted = JSON.parse(fs.readFileSync(path.join(accountDirectory('legacy-boss-window'), 'settings.json'), 'utf8'));
+  assert.deepEqual(persisted.modules.world.worldBoss.schedules, [{ hour: 8, times: 3 }]);
+
+  const neverConfigured = defaultSettings();
+  writeJson(path.join(accountDirectory('legacy-boss-default'), 'settings.json'), neverConfigured);
+  assert.deepEqual(loadSettings('legacy-boss-default').modules.world.worldBoss.schedules, []);
 });
 
 /** 升级优先排序是固定枚举；错误值必须在保存前被拒绝，不能静默回落。 */
@@ -2661,6 +2703,89 @@ test('module chain: fleet consumed by radar is unavailable to subsequent boss', 
   }, { states: { RadarInfoRequest: { radarInfo: { events: [{ uid: '123', eventId: 1, state: protocol.RadarEventState.RADAR_EVENT_INIT }] } }, WorldBossInfoRequest: { info: { bossId: 1 } } } });
   assert.ok(f.client.calls.some(c => c.name === 'RadarSendFleetsRequest'));
   assert.equal(f.client.calls.filter(c => c.name === 'ChallengeWorldBossRequest').length, 0);
+});
+
+test('world boss: team roster swaps formations, dispatches every roster fleet and restores after the daily cap', async () => {
+  const water = { building: [
+    { buildingId: '1远征船', level: 1, fleet: { formation: { presetId: 1, heroPositions: [{ heroId: '坦克A', pos: { x: 1, y: 3 } }, { heroId: '战士A', pos: { x: 4, y: 4 } }] } } },
+    { buildingId: '2远征船', level: 1, fleet: { formation: { presetId: 1, heroPositions: [{ heroId: '坦克B', pos: { x: 1, y: 3 } }, { heroId: '战士B', pos: { x: 4, y: 4 } }] } } },
+  ] };
+  const fleets = [
+    { buildingId: '1远征船', state: protocol.FleetState.IDLE, curGridIdx: 0, maxDura: 100, durability: 100 },
+    { buildingId: '2远征船', state: protocol.FleetState.IDLE, curGridIdx: 0, maxDura: 100, durability: 100 },
+  ];
+  const heroes = ['坦克A', '坦克B', '战士A', '战士B'].map(heroId => ({ heroId }));
+  const options = {
+    player: { worldId: 2001001001, mainlineStage: 11 },
+    states: { WorldBossInfoRequest: { info: { bossId: 3 } }, OnWaterRequest: water },
+  };
+  const setup = ({ ctx, client }) => {
+    table(ctx, 'FormationTypePositionCfg', [{ id: 1, position: [1, 3] }, { id: 1, position: [4, 4] }]);
+    table(ctx, 'FormationHeroNumCfg', [{ heroNum: 1, mainlineStage: 0 }, { heroNum: 2, mainlineStage: 10 }]);
+    table(ctx, 'HeroCfg', ['坦克A', '坦克B', '战士A', '战士B'].map(id => ({ id, name: id, career: id.startsWith('坦克') ? '坦克' : '战士' })));
+    table(ctx, 'WorldBossDamageRewardCfg', [{ season: 99, bossId: 3, level: 1, damage: 999999 }]);
+    client.handlers.MyFleetsRequest = async () => ({ fleets: structuredClone(fleets) });
+    client.handlers.AllHeroRequest = async () => ({ heroes: structuredClone(heroes) });
+    client.handlers.FleetSaveFormationRequest = async body => {
+      water.building.find(dock => dock.buildingId === body.buildingId).fleet = { formation: structuredClone(body.formation) };
+    };
+    client.handlers.ChallengeWorldBossRequest = async body => {
+      assert.equal(body.fleetBuildingIds.length, 1, '名单舰队逐队单发进攻');
+      // 与真实派遣一致：舰队出征后进入行军状态，派遣靠这一状态变化确认。
+      const fleet = fleets.find(row => row.buildingId === body.fleetBuildingIds[0]);
+      fleet.state = protocol.FleetState.MOVING;
+    };
+  };
+  // 互换名单：1队要2队的坦克B，2队要1队的战士A；12 点计划两队各进攻一次即打满（固定时钟 12:45）。
+  const f = await moduleRun('world', {
+    radar: { enabled: false },
+    worldBoss: {
+      enabled: true, teamsEnabled: true, schedules: [{ hour: 12, times: 2 }],
+      teams: [{ buildingId: '1远征船', heroes: ['坦克A', '坦克B'] }, { buildingId: '2远征船', heroes: ['战士B', '战士A'] }],
+    },
+  }, setup, options);
+  const saves = f.client.calls.filter(call => call.name === 'FleetSaveFormationRequest');
+  const challenges = f.client.calls.filter(call => call.name === 'ChallengeWorldBossRequest');
+  // 校验器会把 body 里的坐标转成 protobuf 实例；统一序列化后比较。
+  const plain = value => JSON.parse(JSON.stringify(value));
+  assert.equal(saves.length, 3, '互换名单需要一次下阵腾位加两次落位');
+  assert.deepEqual(saves[0].body.buildingId, '1远征船');
+  assert.deepEqual(plain(saves[0].body.formation.heroPositions), [{ heroId: '坦克A', pos: { x: 1, y: 3 } }], '先从1队下阵战士A');
+  assert.equal(challenges.length, 2, '两支名单舰队各进攻一次后停止');
+  assert.ok(challenges.every(call => ['1远征船', '2远征船'].includes(call.body.fleetBuildingIds[0])), '未配名单舰队不掺和名单进攻');
+  assert.ok(challenges.every(call => call.body.bossId === 3));
+  assert.ok(saves.every(save => f.client.calls.indexOf(save) < f.client.calls.indexOf(challenges[0])), '换阵全部完成才开始进攻');
+  assert.ok(f.ctx.results.some(row => row.label === '世界Boss队伍名单' && row.status === 'success'));
+  // 舰队仍在途：打满次数也无法当场恢复，编队保持名单状态并保留待恢复记录。
+  assert.deepEqual(plain(water.building[0].fleet.formation.heroPositions), [{ heroId: '坦克A', pos: { x: 4, y: 4 } }, { heroId: '坦克B', pos: { x: 1, y: 3 } }]);
+  assert.ok(fs.existsSync(path.join(directory, 'automation-boss-teams.json')), '在途舰队的恢复留待后续轮次');
+  // 同一角色下一轮（舰队已回港）：先恢复原编队，再因当日次数已满不再进攻。
+  fleets.forEach(fleet => { fleet.state = protocol.FleetState.IDLE; });
+  const callsBefore = f.client.calls.length;
+  f.ctx.setModule('world');
+  await HANDLERS.world(f.ctx, f.settings.modules.world);
+  const roundSaves = f.client.calls.slice(callsBefore).filter(call => call.name === 'FleetSaveFormationRequest');
+  assert.equal(roundSaves.length, 3, '互换回位同样需要下阵腾位');
+  assert.deepEqual(plain(water.building[0].fleet.formation.heroPositions), [{ heroId: '坦克A', pos: { x: 1, y: 3 } }, { heroId: '战士A', pos: { x: 4, y: 4 } }]);
+  assert.deepEqual(plain(water.building[1].fleet.formation.heroPositions), [{ heroId: '坦克B', pos: { x: 1, y: 3 } }, { heroId: '战士B', pos: { x: 4, y: 4 } }]);
+  assert.ok(f.ctx.results.some(row => row.label === '世界Boss队伍恢复' && row.status === 'success'));
+  assert.equal(fs.existsSync(path.join(directory, 'automation-boss-teams.json')), false, '恢复完成后清除待恢复记录');
+  assert.equal(f.client.calls.slice(callsBefore).filter(call => call.name === 'ChallengeWorldBossRequest').length, 0, '当日次数已满不再进攻');
+});
+
+test('world boss: hours without a plan never attack', async () => {
+  const water = { building: [{ buildingId: '1远征船', level: 1, fleet: { formation: { presetId: 1, heroPositions: [{ heroId: '坦克A', pos: { x: 1, y: 3 } }] } } }] };
+  const f = await moduleRun('world', {
+    radar: { enabled: false },
+    worldBoss: {
+      enabled: true, teamsEnabled: false, teams: [], schedules: [{ hour: 0, times: 3 }],
+    },
+  }, ({ ctx }) => {
+    table(ctx, 'WorldBossDamageRewardCfg', []);
+  }, { player: { worldId: 2002002002 }, states: { WorldBossInfoRequest: { info: { bossId: 5 } }, OnWaterRequest: water } });
+  assert.equal(f.client.calls.filter(call => call.name === 'ChallengeWorldBossRequest').length, 0);
+  assert.match(f.ctx.results.find(row => row.status === 'skipped')?.reason ?? '', /当前小时没有世界Boss进攻计划/);
+  assert.equal(fs.existsSync(path.join(directory, 'automation-boss-teams.json')), false);
 });
 
 test('world radar: refugee event skips dispatch when the server-provided materials are insufficient', async () => {

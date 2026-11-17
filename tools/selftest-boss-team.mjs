@@ -153,6 +153,13 @@ async function testPlanner() {
   assert.match(planBossTeams(config, player, swapTeams(), teamDocks(), { fleets: busy }).reason, /正在执行其他任务/);
   assert.match(planBossTeams(config, player, swapTeams(), teamDocks(), { owned: new Set(['坦克A']), fleets: idleFleets() }).reason, /不存在或未拥有/);
   assert.match(planBossTeams(config, player, [], teamDocks()).reason, /请先在队伍名单中选择舰队和英雄/);
+  // 名单已就位（目标与现行编队一致）时排序器不再产生保存动作。
+  const appliedDocks = structuredClone(teamDocks());
+  appliedDocks[0].fleet.formation.heroPositions = [{ heroId: '坦克A', pos: { x: 4, y: 4 } }, { heroId: '坦克B', pos: { x: 1, y: 3 } }];
+  appliedDocks[1].fleet.formation.heroPositions = [{ heroId: '战士A', pos: { x: 4, y: 4 } }, { heroId: '战士B', pos: { x: 1, y: 3 } }];
+  const noopPlan = planBossTeams(config, player, swapTeams(), appliedDocks, { fleets: idleFleets() });
+  assert.ok(noopPlan.ok, noopPlan.reason);
+  assert.deepEqual(noopPlan.saves, [], '已就位的名单不产生重复保存');
 }
 
 async function testApplyAndRestore() {
@@ -162,6 +169,17 @@ async function testApplyAndRestore() {
   const applied = await applyBossTeams(client, config, player, settings, { report: entry => reports.push(entry) });
   assert.ok(applied.ok, applied.reason);
   assert.equal(client.writes.length, 3);
+  // 中途重复应用：名单已就位时不再发写请求，也不覆盖待恢复快照（保留真正原编队）。
+  const recordBeforeApply = structuredClone(pendingBossTeamRestore('2001001001'));
+  const again = await applyBossTeams(client, config, player, settings, { report: () => {} });
+  assert.ok(again.ok && again.already, '重复应用应识别为已就位');
+  assert.equal(client.writes.length, 3, '已就位时不重复保存');
+  assert.deepEqual(pendingBossTeamRestore('2001001001'), recordBeforeApply, '待恢复快照保持首轮原编队');
+  // 换一份不同名单时，上一份尚未恢复前拒绝再次应用。
+  const other = teamSettings({ teams: [{ buildingId: '1远征船', heroes: ['坦克A', '战士A'] }, { buildingId: '2远征船', heroes: ['坦克B', '战士B'] }] });
+  const refused = await applyBossTeams(client, config, player, other, { report: () => {} });
+  assert.equal(refused.ok, false);
+  assert.match(refused.reason, /尚未恢复/);
   assert.deepEqual(client.water.find(dock => dock.buildingId === '1远征船').fleet.formation.heroPositions.map(p => p.heroId), ['坦克A', '坦克B']);
   assert.deepEqual(client.water.find(dock => dock.buildingId === '2远征船').fleet.formation.heroPositions.map(p => p.heroId), ['战士A', '战士B']);
   assert.ok(reports.some(entry => entry.ok), '应用成功要上报');

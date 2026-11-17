@@ -54,7 +54,7 @@ export function defaultSettings() {
       equip: { enabled: 'off', collect: true, make: false, makeIds: [], universal: false, speedUp: false, speedUpMinRemainSecs: 300, decompose: false, decomposeBelowQuality: '', protectedUids: [] },
       museum: { enabled: false, collectRevenue: true, explore: false, factor: 1, maps: [], speedUp: false, speedUpDailyLimit: 0, speedUpKeepStock: 0 },
       battle: { enabled: false, maxActions: 50, stage: { enabled: false, samePowerRetryCount: 0, claimReward: true }, arena: { sweep: false, challenge: false }, trial: { heroExp: { challenge: false, rubySweep: false }, forge: { challenge: false, rubySweep: false }, petExp: { challenge: false, rubySweep: false } }, league: { challenge: false, reservePoints: 0, hangupReward: false, danReward: false, passReward: false }, expedition: { sweep: false, finalReward: false, freePass: false, challenge: false, challengeStopOnHeroDeath: true, challengeMinTeamHpPct: 40 } },
-      world: { enabled: false, report: false, fleet: { repair: false, repairThresholds: [], repairSpeedUp: false, repairSpeedUpMinRemainSecs: 20 }, pirate: { attack: false, sweep: false, attackTypes: [], sweepTypes: [], dailySweepLimit: 10, attackTime: { start: '00:00', end: '00:00' } }, radar: { enabled: false, claim: true, kinds: [], fixed: false }, resField: { enabled: false, factory: 7, oasis: 3, tank: 0 }, chipMine: { enabled: false, hours: [], dailyCap: 0, fleets: [] }, treasureLoot: { enabled: false, hours: [], fleets: [] }, merchantShip: { enabled: false, retryMinutes: 0, rewardMaterials: [], fleets: [] }, cityWar: { enabled: false, online: false, reattack: false, fleets: [] }, worldBoss: { enabled: false, attackTimes: 1 }, limitedBoss: { enabled: false, challengeReward: false, fleets: [] }, trade: { enabled: false, claim: false, upgrade: false, speedUp: false, speedUpDailyLimit: 0, profitLimit: 0 } },
+      world: { enabled: false, report: false, fleet: { repair: false, repairThresholds: [], repairSpeedUp: false, repairSpeedUpMinRemainSecs: 20 }, pirate: { attack: false, sweep: false, attackTypes: [], sweepTypes: [], dailySweepLimit: 10, attackTime: { start: '00:00', end: '00:00' } }, radar: { enabled: false, claim: true, kinds: [], fixed: false }, resField: { enabled: false, factory: 7, oasis: 3, tank: 0 }, chipMine: { enabled: false, hours: [], dailyCap: 0, fleets: [] }, treasureLoot: { enabled: false, hours: [], fleets: [] }, merchantShip: { enabled: false, retryMinutes: 0, rewardMaterials: [], fleets: [] }, cityWar: { enabled: false, online: false, reattack: false, fleets: [] }, worldBoss: { enabled: false, teamsEnabled: false, teams: [], schedules: [] }, limitedBoss: { enabled: false, challengeReward: false, fleets: [] }, trade: { enabled: false, claim: false, upgrade: false, speedUp: false, speedUpDailyLimit: 0, profitLimit: 0 } },
       guild: { enabled: false, packs: { guild: false, title: false }, order: { enabled: false, dailyLimit: 20, mondayLimit: 20, cityIds: [] }, aid: { receive: false, ask: false, askItems: [], help: false, helpItems: [], helpNicknameKeywords: [], helpMinStock: 30, helpDailyLimit: 50 }, tech: { enabled: false, items: [] }, ship: { captain: false, crew: false, qualities: [], rewardItems: [], minWaterCoin: 0, forbiddenMaterials: [], relaxFilters: false } },
       welfare: { enabled: false, daily: true, limitedFree: true, skinGift: true, weeklyLottery: false, uniqueLottery: false, dailyTask: true, growth: true, events: true, email: true },
       activity: { enabled: false, edict: { enabled: false }, midAutumn: { enabled: false, signIn: false, freeGift: false, activeReward: false }, blindBox: { enabled: false, freeGift: false, scoreReward: false, play: false, keepCards: 0 }, catcher: { enabled: false, play: false, repeat: false, sweep: false, passReward: false, keepHooks: 0, maxStage: 30, sweepStage: 0 }, workshop: { enabled: false, produce: false, gain: false, speedUp: false, keepStock: 10, keepClaws: 0, speedUpDailyLimit: 0 }, blessing: { enabled: false, boost: false, skinId: 0, boostTimes: 1, claimReward: false, keepKnots: 0 }, weekOrder: { enabled: false, buyMissingMaterials: false, minRubyStock: 0 }, weekLottery: { enabled: false, prize: false, maxDraws: 1 }, snowball: { enabled: false, minEnergy: 100, autoStart: false } },
@@ -144,6 +144,28 @@ function migrateLegacyPirateSweepTypes(value) {
   return { value: migrated, changed: true };
 }
 
+/**
+ * 世界Boss旧配置（每日总次数 + 时段）一次性升级为「小时 + 次数」计划。
+ *
+ * 旧时段的开始小时即进攻小时；旧默认全天（00:00）映射到 0 点，保持"早期进攻"意图。
+ * 未配置过次数的账号只补空计划，不凭空创造进攻。
+ *
+ * @param {unknown} value 从账号 settings.json 读取的原始设置。
+ * @returns {{value: unknown, changed: boolean}} 可继续严格校验的设置及是否已迁移。
+ */
+function migrateWorldBossSchedule(value) {
+  const boss = value?.modules?.world?.worldBoss;
+  if (!boss || !Object.hasOwn(boss, 'attackTimes')) return { value, changed: false };
+  const migrated = structuredClone(value);
+  const next = migrated.modules.world.worldBoss;
+  const times = Number.isSafeInteger(next.attackTimes) && next.attackTimes > 0 ? next.attackTimes : 0;
+  const hour = /^(\d{1,2})/.exec(String(next.attackTime?.start ?? ''))?.[1];
+  next.schedules = times > 0 && hour !== undefined && Number(hour) <= 23 ? [{ hour: Number(hour), times }] : Array.isArray(next.schedules) ? next.schedules : [];
+  delete next.attackTimes;
+  delete next.attackTime;
+  return { value: migrated, changed: true };
+}
+
 /** 递归验证设置结构；动态字典保留作物、英雄、品质等真实业务键。 */
 export function validateSettings(value, { pirateDailyLimit = null } = {}) {
   const template = defaultSettings();
@@ -192,6 +214,37 @@ export function validateSettings(value, { pirateDailyLimit = null } = {}) {
           if (seen.has(entry.type)) throw new Error(`${location} 不能重复配置海盗类型 ${entry.type}`);
           seen.add(entry.type);
           return entry;
+        });
+      }
+      if (key === 'schedules') {
+        // 世界Boss进攻计划：每行一个整点小时加该小时内的进攻次数；小时不允许重复，避免同小时两组互相抢舰队。
+        if (input.length > 24) throw new Error(`${location} 最多配置 24 个小时`);
+        const hours = new Set();
+        return input.map((row, i) => {
+          object(row, `${location}.${i}`);
+          for (const field of Object.keys(row)) if (!['hour', 'times'].includes(field)) throw new Error(`未知设置 ${location}.${i}.${field}`);
+          if (!Number.isSafeInteger(row.hour) || row.hour < 0 || row.hour > 23) throw new Error(`${location}.${i}.hour 必须为 0–23 的整点小时`);
+          if (hours.has(row.hour)) throw new Error(`${location} 不能重复配置 ${row.hour} 点`);
+          hours.add(row.hour);
+          if (!Number.isSafeInteger(row.times) || row.times < 1 || row.times > 99) throw new Error(`${location}.${i}.times 必须为 1–99 的整数`);
+          return { hour: row.hour, times: row.times };
+        });
+      }
+      if (key === 'teams') {
+        // 世界Boss队伍名单：每行一支远征舰队加一份不重复的英雄列表，舰队之间不允许重复。
+        if (input.length > 10) throw new Error(`${location} 最多配置 10 支舰队`);
+        const docks = new Set();
+        return input.map((row, i) => {
+          object(row, `${location}.${i}`);
+          for (const field of Object.keys(row)) if (!['buildingId', 'heroes'].includes(field)) throw new Error(`未知设置 ${location}.${i}.${field}`);
+          if (typeof row.buildingId !== 'string' || !/^[1-9]\d*远征船$/.test(row.buildingId)) throw new Error(`${location}.${i}.buildingId 必须为远征舰队`);
+          if (docks.has(row.buildingId)) throw new Error(`${location} 不能重复配置舰队 ${row.buildingId}`);
+          docks.add(row.buildingId);
+          const heroes = row.heroes;
+          if (!Array.isArray(heroes) || !heroes.length || heroes.length > 20
+            || heroes.some(hero => typeof hero !== 'string' || !hero.trim() || hero.length > 120)
+            || new Set(heroes).size !== heroes.length) throw new Error(`${location}.${i}.heroes 必须是不重复的非空英雄列表`);
+          return { buildingId: row.buildingId, heroes: [...heroes] };
         });
       }
       for (const entry of input) {
@@ -279,9 +332,10 @@ export function loadSettings(accountId) {
   const legacy = migrateLegacyPirateSweepTypes(JSON.parse(fs.readFileSync(file, 'utf8')));
   const competition = migrateCompetitionSettings(legacy.value);
   const guildOrder = migrateGuildOrderSettings(competition.value);
-  const settings = validateSettings(guildOrder.value);
+  const bossSchedule = migrateWorldBossSchedule(guildOrder.value);
+  const settings = validateSettings(bossSchedule.value);
   // 迁移后立即原子回写，后续读取和服务重启都只走当前唯一的设置契约。
-  if (legacy.changed || competition.changed || guildOrder.changed) writeJson(file, settings);
+  if (legacy.changed || competition.changed || guildOrder.changed || bossSchedule.changed) writeJson(file, settings);
   return settings;
 }
 

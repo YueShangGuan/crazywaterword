@@ -7,6 +7,8 @@ import { worldOnlineState } from '../extra-rewards.mjs';
 import { cityNameMap } from '../world-map.mjs';
 import { loadMapAsset } from '../world.mjs';
 import { cityPetrolCost } from '../city-war.mjs';
+import { applyBossTeams, recoverBossTeams } from '../boss-team.mjs';
+import { exactAutomationId } from '../automation-policy.mjs';
 
 const SPEED_UP_RUBY_TYPE = 1;
 const SPEED_UP_ITEM_TYPE = 2;
@@ -196,8 +198,26 @@ function hourAllowed(ctx, hours) {
   return !hours.length || hours.includes(Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Shanghai', hour: '2-digit', hour12: false }).format(ctx.now())));
 }
 
+/** 当前上海小时命中的世界Boss进攻计划；只允许整点小时，避开万吨货轮的分钟级派遣。 */
+function worldBossScheduleGroup(wb, now) {
+  const hour = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Shanghai', hour: '2-digit', hour12: false }).format(new Date(now)));
+  return (wb?.schedules ?? []).find(group => group.hour === hour) ?? null;
+}
+
 /** 世界玩法逐项查询最新舰队；派遣结果未确认时阻断本模块后续写入，但不终止独立模块。 */
 export async function world(ctx, options) {
+  // 世界Boss名单编队的恢复独立于开关：改过编队就必须恢复；只有当前小时还有
+  // 未完成的进攻计划时才保留名单编队，避免打断一轮未完成的进攻。
+  const bossGroup = worldBossScheduleGroup(options.worldBoss, ctx.now());
+  const bossCampaign = bossGroup !== null
+    && ctx.count(`worldBoss.attack.${bossGroup.hour}`) < bossGroup.times;
+  if (!bossCampaign && !ctx.dryRun) {
+    try {
+      await recoverBossTeams(ctx.client, ctx.config, ctx.player, {
+        report: entry => ctx.record({ label: '世界Boss队伍恢复', status: entry.ok ? 'success' : 'failed', reason: entry.reason ?? entry.error }),
+      });
+    } catch (error) { skip(ctx, `世界Boss队伍恢复失败：${error.message}`, '世界Boss'); }
+  }
   if (options.report) {
     const reports = await ctx.query('CampaignReportsRequest', { pageNo: 0 });
     const campaignId = reports.reports?.filter(r => !r.received && r.rewards).map(r => idString(r.uid)) ?? [];
@@ -246,21 +266,7 @@ export async function world(ctx, options) {
     else await treasure(ctx, options.treasureLoot);
   }
   if (options.cityWar.enabled) await cityWar(ctx, options.cityWar);
-  if (options.worldBoss.enabled) {
-    const state = (await ctx.query('WorldBossInfoRequest')).info;
-    if (state) {
-      const ready = ctx.rows('WorldBossDamageRewardCfg').some(r => r.season === ctx.season && r.bossId === state.bossId && r.level > state.gotRewardLevel && r.damage <= amount(state.bestDamage));
-      if (ready) await mutate(ctx, 'WorldBossGetDamageRewardRequest', {}, 'WorldBossInfoRequest', s => s.info?.gotRewardLevel);
-      await repeat(ctx, options.worldBoss.attackTimes, async () => {
-        if (ctx.count('worldBoss.attack') >= options.worldBoss.attackTimes) return false;
-        const fleets = (await idleFleets(ctx)).slice(0, 1);
-        if (!fleets.length) return false;
-        const result = await dispatch(ctx, 'ChallengeWorldBossRequest', { bossId: state.bossId, fleetBuildingIds: fleets.map(f => f.buildingId) }, fleets);
-        if (result.status === 'success') ctx.count('worldBoss.attack', 1);
-        return succeeded(result);
-      });
-    }
-  }
+  if (options.worldBoss.enabled) await worldBossModule(ctx, options.worldBoss);
   if (options.limitedBoss.enabled) {
     const open = await ctx.query('LimitedBossOpenRequest');
     const state = (await ctx.query('LimitedBossInfoRequest')).bossInfo;
@@ -273,6 +279,69 @@ export async function world(ctx, options) {
     } else skip(ctx, '限时 Boss 当前不可挑战');
   }
   if (options.trade.enabled) await trade(ctx, options.trade);
+}
+
+/**
+ * 世界Boss模块：命中当前小时的进攻计划后，领取伤害奖励并进攻该小时配置的次数。
+ *
+ * 队伍名单开启时，首攻前把名单舰队编队切换为名单英雄（被占英雄自动下阵腾位），
+ * 每轮进攻使用全部名单舰队；舰队打完回港后的下一轮再继续，直到打满该小时的次数。
+ * 次数按小时持久计数（业务日隔离），打满或小时结束后由 world() 顶部的恢复闸门
+ * 把编队换回原样。名单已就位时不重复换阵，舰队在途也能继续进攻。
+ *
+ * @param {import('./context.mjs').AutomationContext} ctx 当前自动化上下文。
+ * @param {{enabled: boolean, teamsEnabled: boolean, teams: Array<{buildingId: string, heroes: string[]}>, schedules: Array<{hour: number, times: number}>}} options 当前账号的世界Boss设置。
+ */
+async function worldBossModule(ctx, wb) {
+  const state = (await ctx.query('WorldBossInfoRequest')).info;
+  if (state) {
+    const ready = ctx.rows('WorldBossDamageRewardCfg').some(r => r.season === ctx.season && r.bossId === state.bossId && r.level > state.gotRewardLevel && r.damage <= amount(state.bestDamage));
+    if (ready) await mutate(ctx, 'WorldBossGetDamageRewardRequest', {}, 'WorldBossInfoRequest', s => s.info?.gotRewardLevel);
+  }
+  // 命中当前小时的进攻计划才进攻；伤害奖励随时可领。
+  const group = worldBossScheduleGroup(wb, ctx.now());
+  if (!group) return skip(ctx, '当前小时没有世界Boss进攻计划', '世界Boss');
+  if (!state) return;
+  const countKey = `worldBoss.attack.${group.hour}`;
+  if (ctx.count(countKey) >= group.times) return;
+  let applied = false;
+  if (wb.teamsEnabled) {
+    if (ctx.dryRun) {
+      ctx.record({ label: '世界Boss队伍名单', status: 'planned', reason: '预览：将按名单切换编队并在打完后恢复，不发送写请求' });
+    } else {
+      const result = await applyBossTeams(ctx.client, ctx.config, ctx.player, { worldBoss: wb }, {
+        report: entry => ctx.record({ label: '世界Boss队伍名单', status: entry.ok ? 'success' : 'failed', reason: entry.reason ?? entry.error }),
+      });
+      if (!result.ok) return skip(ctx, `世界Boss队伍名单未应用：${result.reason}`, '世界Boss');
+      applied = !result.already;
+    }
+  }
+  const rosterFleets = new Set((wb.teams ?? []).map(row => row.buildingId));
+  try {
+    await repeat(ctx, group.times - ctx.count(countKey), async () => {
+      if (ctx.count(countKey) >= group.times) return false;
+      const idle = await idleFleets(ctx);
+      // 名单模式下一轮进攻派出全部名单舰队（逐队单发）；未开名单沿用第一支闲置舰队。
+      const fleets = wb.teamsEnabled && rosterFleets.size ? idle.filter(fleet => rosterFleets.has(fleet.buildingId)) : idle.slice(0, 1);
+      if (!fleets.length) return false;
+      let advanced = false;
+      for (const fleet of fleets) {
+        const result = await dispatch(ctx, 'ChallengeWorldBossRequest', { bossId: state.bossId, fleetBuildingIds: [fleet.buildingId] }, [fleet]);
+        if (result.status === 'success') { ctx.count(countKey, 1); advanced = true; }
+      }
+      // 单支舰队被拒不阻塞其余名单舰队；全部失败时结束本轮，下一轮再试。
+      return advanced;
+    });
+  } finally {
+    // 打满该小时次数后立刻尝试恢复；舰队在途时记录保留，由下一轮的恢复闸门完成。
+    if (applied && !ctx.dryRun && ctx.count(countKey) >= group.times) {
+      try {
+        await recoverBossTeams(ctx.client, ctx.config, ctx.player, {
+          report: entry => ctx.record({ label: '世界Boss队伍恢复', status: entry.ok ? 'success' : 'failed', reason: entry.reason ?? entry.error }),
+        });
+      } catch { /* 恢复失败由下一轮重试 */ }
+    }
+  }
 }
 
 const TEN_THOUSAND_TON_SHIP_COLOR = 5;
