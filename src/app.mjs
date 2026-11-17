@@ -479,7 +479,12 @@ async function world({ allowMutate, dryRun, allowSpeedUp, allowReroll }) {
   try {
     console.log(`login ok: ${describeRole(response.playerInfo)?.nickname} lv${describeRole(response.playerInfo)?.level}`);
     const survey = await surveyWorld(client, protocol, { config, player: response.playerInfo });
-    const plan = planWorld(survey, { config, allowSpeedUp, allowReroll });
+    // 与控制台共用账号保存的升级优先排序；--upgrade-priority 仅本次运行临时覆盖。
+    const saved = loadSettings(account.id)?.modules?.island?.upgradePriority;
+    const override = process.argv[process.argv.indexOf('--upgrade-priority') + 1];
+    const upgradePriority = ['time', 'population'].includes(override) ? override : saved;
+    const plan = planWorld(survey, { config, allowSpeedUp, allowReroll, upgradePriority });
+    if (upgradePriority === 'population') console.log('升级优先排序：人口优先');
     console.log(`\n${formatWorldPlan(survey, plan)}\n`);
     console.log(`共 ${plan.actions.length} 个动作${allowSpeedUp ? '' : '（未开 --speed-up，不会花' + SPEED_UP_ITEM + '）'}`);
 
