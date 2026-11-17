@@ -20,7 +20,7 @@ const gsSchema = [
   ['城战接续（内核参数，供自动化·世界模块读取）', [
     ['cityWar.petrolReserve', '行军汽油保留（0 不预算）', 'num'],
     ['cityWar.nativeCommissionLimit', '原生委任额度：-1 跟随 VIP / 0 全接管 / N 保留 N 队', 'num'],
-    ['cityWar.targetPriority', '选城策略', 'select:fewestAllied=本盟排队少者优先|declaration=按宣战顺序'],
+    ['cityWar.targetPriority', '选城策略', 'select:fewestAllied=本盟排队少者优先|original=按宣战顺序'],
   ]],
   ['装备锻造', [
     ['forge.enabled', '启用锻造（接管自动化·装备厂开关）', 'bool'],

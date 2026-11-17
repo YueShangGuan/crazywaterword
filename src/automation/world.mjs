@@ -612,7 +612,7 @@ async function cityWarGuards(ctx) {
   const openDays = Array.isArray(days) && season > 0 ? days[Math.min(season, days.length) - 1] : null;
   const openTime = amount(ctx.player?.worldOpenTime ?? 0);
   if (Number.isInteger(openDays) && openDays >= 1 && openTime > 0
-    && cityWarDayNumber(ctx.now()) - cityWarDayNumber(openTime) + 1 < openDays) {
+    && cityWarDayNumber(ctx.now()) - cityWarDayNumber(openTime * 1000) + 1 < openDays) {
     return { ok: false, reason: `当前赛季尚未到城战开放日（开服第 ${openDays} 天开放）` };
   }
   return { ok: true };
