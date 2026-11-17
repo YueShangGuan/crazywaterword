@@ -1192,3 +1192,14 @@ test('migration smoke: reshelled page keeps bottom tabs and activates map/automa
     if (autoCalls !== 1) throw new Error('自动化 tab 未触发 loadAutomation');
   })()`, context);
 });
+
+test('console: page.mjs 引用的每个元素 id 都存在于外壳 HTML', () => {
+  // 换壳曾把 #overview-refresh 丢在新外壳外：顶层 $('id').onclick 取到 null，
+  // 整页脚本加载即崩，而下方 vm 夹具的 getElementById 对任意 id 都返回元素，抓不到。
+  // 这里静态交叉核对：page.mjs 里的 $('…') 引用必须能在外壳渲染出的 id="…" 里找到。
+  const source = fs.readFileSync(new URL('../src/page.mjs', import.meta.url), 'utf8');
+  const ids = [...new Set([...source.matchAll(/\$\('([A-Za-z0-9_-]+)'\)/g)].map(match => match[1]))];
+  assert.ok(ids.length > 100, `应从 page.mjs 解析出大量 id 引用，实际 ${ids.length}，解析逻辑可能失效`);
+  const missing = ids.filter(id => !PAGE.includes(`id="${id}"`));
+  assert.deepEqual(missing, [], `page.mjs 引用但外壳 HTML 缺失的元素 id（会导致顶层 $() 抛 TypeError）：${missing.join(', ')}`);
+});

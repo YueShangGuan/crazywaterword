@@ -407,6 +407,8 @@ test('settings: defaults off; account isolation; strict arrays, dictionaries and
   assert.equal(settings.modules.island.adSpeedUp, false);
   assert.equal(settings.modules.welfare.weeklyLottery, false);
   assert.equal(settings.modules.welfare.uniqueLottery, false);
+  assert.equal(settings.modules.welfare.limitedFree, true);
+  assert.equal(settings.modules.welfare.skinGift, true);
   assert.equal(settings.modules.world.merchantShip.enabled, false);
   assert.deepEqual(settings.modules.world.merchantShip.rewardMaterials, []);
   assert.equal(settings.modules.world.pirate.dailySweepLimit, 10);
@@ -1172,6 +1174,25 @@ test('service: all disabled modules emit statuses without querying gateway', asy
   assert.equal(result.results.length, 18); assert.equal(f.client.calls.length, 0); assert.equal(result.error, null);
   await assert.rejects(() => runAutomation({ ...f.args, selector: 'missing' }), /有效自动化模块/);
   await assert.rejects(() => runAutomation({ ...f.args, selector: [] }), /有效自动化模块/);
+});
+
+/** 活动到期会拒绝状态查询；这只是当前模块无事可做，不能中止持续挂机。 */
+test('service: ACTIVE_END prompt skips its module without stopping automation', async () => {
+  const f = fixture({ handlers: {
+    MonthCardRequest: async () => {
+      const error = new Error('server prompt: prompt=74 ACTIVE_END');
+      error.prompt = { prompt: 74 };
+      throw error;
+    },
+  } });
+  f.ctx.dispose();
+  f.client.promptNames = { 74: 'ACTIVE_END' };
+  f.settings.modules.welfare.enabled = true;
+  const stop = { aborted: false };
+  const result = await runAutomation({ ...f.args, selector: 'welfare', stop });
+  assert.equal(result.error, null, '活动结束不得将自动化标记为异常');
+  assert.equal(stop.aborted, false, '活动结束不得终止持续挂机');
+  assert.deepEqual(result.results.filter(row => row.status === 'skipped').map(row => row.reason), ['活动已结束，本轮跳过']);
 });
 
 test('farm: seed cost and nested PlantArg; quiet full plots; insufficient seed skips', async () => {
@@ -2285,13 +2306,20 @@ test('guild welfare: duplicate reward prompt is treated as an already-claimed sk
 });
 
 test('welfare: already claimed daily task sends no duplicate reward request', async () => {
-  const f = await moduleRun('welfare', { daily: false, dailyTask: true, growth: false, events: false, email: false }, null, { dryRun: true, states: { DailyTaskInfoRequest: { dailyTask: [{ id: 1001, progress: 1, targetProgress: 1, rewardClaimed: true }] } } });
+  const f = await moduleRun('welfare', { daily: false, dailyTask: true, growth: false, events: false, email: false, limitedFree: false, skinGift: false }, null, { dryRun: true, states: { DailyTaskInfoRequest: { dailyTask: [{ id: 1001, progress: 1, targetProgress: 1, rewardClaimed: true }] } } });
   assert.equal(f.ctx.results.filter(r => r.request).length, 0);
 });
 
 test('activity: expired festival and missing period never spend activity items', async () => {
   const f = await moduleRun('activity', { midAutumn: { enabled: true, signIn: true } }, ({ ctx }) => ctx.pushes.set('SCAllActivity', { festivalActivities: [{ type: '中秋国庆活动', openTime: 1, closeTime: 2 }] }), { dryRun: true });
-  assert.ok(f.ctx.results.some(r => /结束/.test(r.reason))); assert.equal(f.ctx.results.filter(r => r.request).length, 0);
+  // 过期活动在挂机链路静默：不发送请求，也不产生任何跳过记录。
+  assert.equal(f.ctx.results.length, 0); assert.equal(f.ctx.results.filter(r => r.request).length, 0);
+});
+
+test('activity: delisted collab stays silent in the main loop until it reopens', async () => {
+  const f = await moduleRun('activity', { edict: { enabled: true }, snowball: { enabled: true } }, ({ ctx }) => ctx.pushes.set('SCAllActivity', { festivalActivities: [] }), { dryRun: true });
+  // 下架联动不产生记录或请求；官方复开后由 activity-availability 数据判定自动恢复执行。
+  assert.equal(f.ctx.results.length, 0); assert.equal(f.ctx.results.filter(r => r.request).length, 0);
 });
 
 test('snap: valid placements share energy and obey per-zone card limit', () => {
@@ -3832,8 +3860,19 @@ test('pet training: served pet levels to the configured target and no further', 
 });
 
 test('equipment: only selected current-season recipe with sufficient materials is crafted', async () => {
-  const f = await moduleRun('equip', { make: true, makeIds: [1001] }, ({ ctx, client }) => { ctx.season = 1; table(ctx, 'BuildingEquipMakeCfg', [{ makeId: 1001, season: 1, costItem: [['蓝武器材料', 5]] }, { makeId: 1002, season: 2, costItem: [] }]); client.items.set('蓝武器材料', 5); }, { dryRun: true, states: { OnWaterRequest: { building: [{ buildingId: '1打造台', equipMaking: {} }] } } });
-  assert.deepEqual(f.ctx.results.find(r => r.request === 'MakeEquipRequest').body, { buildingId: '1打造台', makeId: 1001, universal: false });
+  const f = await moduleRun('equip', { make: true, makeIds: [1001] }, ({ ctx, client }) => { ctx.season = 1; table(ctx, 'BuildingUnlockCfg', [{ buildingId: '1装备厂', buildingType: '装备厂' }]); table(ctx, 'BuildingEquipMakeCfg', [{ makeId: 1001, season: 1, costItem: [['蓝武器材料', 5]] }, { makeId: 1002, season: 2, costItem: [] }]); client.items.set('蓝武器材料', 5); }, { dryRun: true, states: { OnWaterRequest: { building: [{ buildingId: '1装备厂', equipMaking: {} }] } } });
+  assert.deepEqual(f.ctx.results.find(r => r.request === 'MakeEquipRequest').body, { buildingId: '1装备厂', makeId: 1001, universal: false });
+});
+
+test('equipment: an idle factory without equipMaking state still starts the selected recipe', async () => {
+  const f = await moduleRun('equip', { make: true, makeIds: [1001] }, ({ ctx, client }) => { ctx.season = 1; table(ctx, 'BuildingUnlockCfg', [{ buildingId: '1装备厂', buildingType: '装备厂' }]); table(ctx, 'BuildingEquipMakeCfg', [{ makeId: 1001, season: 1, costItem: [['蓝武器材料', 5]] }]); client.items.set('蓝武器材料', 5); }, { dryRun: true, states: { OnWaterRequest: { building: [{ buildingId: '1装备厂' }, { buildingId: '2农田', equipMaking: null }] } } });
+  assert.deepEqual(f.ctx.results.find(r => r.request === 'MakeEquipRequest').body, { buildingId: '1装备厂', makeId: 1001, universal: false });
+});
+
+test('equipment: leaves a skip record when the idle factory has no affordable recipe', async () => {
+  const f = await moduleRun('equip', { make: true, makeIds: [1001] }, ({ ctx }) => { ctx.season = 1; table(ctx, 'BuildingUnlockCfg', [{ buildingId: '1装备厂', buildingType: '装备厂' }]); table(ctx, 'BuildingEquipMakeCfg', [{ makeId: 1001, season: 1, costItem: [['蓝武器材料', 5]] }]); }, { dryRun: true, states: { OnWaterRequest: { building: [{ buildingId: '1装备厂' }] } } });
+  assert.ok(f.ctx.results.some(r => r.status === 'skipped' && /配方/.test(r.reason)));
+  assert.ok(!f.ctx.results.some(r => r.request === 'MakeEquipRequest'));
 });
 
 test('guild aid: preserves stock threshold, skips own request and helps the selected ally once', async () => {
@@ -5299,7 +5338,7 @@ test('guild order and tech: daily cap stops recruitment, technology uses remaini
   const f = await moduleRun('guild', { order: { enabled: true, cityIds: [3], dailyLimit: 1 }, tech: { enabled: true, items: [4] } }, ({ ctx, client }) => {
     table(ctx, 'GuildTechCfg', [{ techId: 4, season: 0, techPointCost: 10, techPointCostGrowth: 5 }]); client.items.set('公会科技点', 15); client.items.set('木材', 1);
   }, { states: {
-    GuildInfoRequest: { guild: { guildId: '1' } }, GuildCityInfoRequest: { cities: [{ cityId: 3, recommended: true }] }, CounterInfoRequest: { counters: [{ type: 'DAILY_FINISH_GUILD_ORDER', num: '0' }] }, GuildOrderRequest: { order: { requirements: [{ type: 0, id: '木材', num: '1' }] } }, GuildTechInfoRequest: { tech: [{ techId: 4, level: 1 }, { techId: 5, level: 1 }] },
+    GuildInfoRequest: { guild: { guildId: '1' } }, GuildCityInfoRequest: { cities: [{ cityId: 3, recommended: true }] }, CounterInfoRequest: { counters: [{ type: 'DAILY_FINISH_GUILD_ORDER', num: '0' }] }, GuildOrderRequest: { order: { requirements: [{ type: 0, id: '木材', num: '1' }], nextRefreshTime: fixedNow / 1000 + 3600 } }, GuildTechInfoRequest: { tech: [{ techId: 4, level: 1 }, { techId: 5, level: 1 }] },
   }, handlers: {
     FinishGuildOrderRequest: async (_, response, client) => { client.states.CounterInfoRequest.counters[0].num = '1'; client.items.set('木材', 0); return {}; },
     UpgradeGuildTechRequest: async (_, response, client) => { client.items.set('公会科技点', 0); return {}; },
@@ -5315,7 +5354,7 @@ for (const [day, expected] of [
   const f = await moduleRun('guild', { order: { enabled: true, cityIds: [3], dailyLimit: 1, mondayLimit: 3 } }, ({ ctx, client }) => {
     client.items.set('木材', 10);
   }, { now: () => Date.parse(`${day}T12:00:00+08:00`), states: {
-    GuildInfoRequest: { guild: { guildId: '1' } }, GuildCityInfoRequest: { cities: [{ cityId: 3, recommended: true }] }, CounterInfoRequest: { counters: [{ type: 'DAILY_FINISH_GUILD_ORDER', num: '0' }] }, GuildOrderRequest: { order: { requirements: [{ type: 0, id: '木材', num: '1' }] } },
+    GuildInfoRequest: { guild: { guildId: '1' } }, GuildCityInfoRequest: { cities: [{ cityId: 3, recommended: true }] }, CounterInfoRequest: { counters: [{ type: 'DAILY_FINISH_GUILD_ORDER', num: '0' }] }, GuildOrderRequest: { order: { requirements: [{ type: 0, id: '木材', num: '1' }], nextRefreshTime: Date.parse(`${day}T13:00:00+08:00`) / 1000 } },
   }, handlers: {
     FinishGuildOrderRequest: async (_, response, client) => {
       const counter = client.states.CounterInfoRequest.counters[0];
@@ -5325,6 +5364,44 @@ for (const [day, expected] of [
     },
   } });
   assert.equal(f.client.calls.filter(c => c.name === 'FinishGuildOrderRequest').length, expected);
+});
+
+/** 募兵只消费居民、贸易港、周商人和英雄突袭预留之外的余量；刷新中的居民槽位不占用。 */
+test('guild order reservation: active resident demand keeps its materials from recruitment', async () => {
+  const f = await moduleRun('guild', { order: { enabled: true, cityIds: [3], dailyLimit: 3, mondayLimit: 20 } }, ({ ctx, client }) => {
+    client.items.set('木材', 5); ctx.pushes.set('SCHeroRaidOpen', { raid: {} });
+  }, { states: {
+    GuildInfoRequest: { guild: { guildId: '1' } }, GuildCityInfoRequest: { cities: [{ cityId: 3, recommended: true }] }, CounterInfoRequest: { counters: [{ type: 'DAILY_FINISH_GUILD_ORDER', num: '0' }] }, GuildOrderRequest: { order: { requirements: [{ type: 0, id: '木材', num: '2' }], nextRefreshTime: fixedNow / 1000 + 3600 } },
+    OnWaterRequest: { workerOrder: [
+      { index: 1, requirements: [{ type: 0, id: '木材', num: '4' }] },
+      // 刷新中的槽位沿用旧需求的过期标记，不作为有效预留。
+      { index: 2, refreshTime: fixedNow / 1000 + 9999, requirements: [{ type: 0, id: '木材', num: '99' }] },
+    ] },
+  } });
+  assert.ok(f.client.calls.some(c => c.name === 'GuildOrderRequest'), 'reservation check must run after the order gate');
+  assert.equal(f.client.calls.filter(c => c.name === 'FinishGuildOrderRequest').length, 0);
+  assert.match(f.ctx.results.find(r => r.status === 'skipped')?.reason ?? '', /留足/);
+});
+
+/** 周商人开放期内的整单材料先被预留；余量只够一单时募兵提交一次后停止。 */
+test('guild order reservation: week merchant demand limits recruitment to the surplus', async () => {
+  const f = await moduleRun('guild', { order: { enabled: true, cityIds: [3], dailyLimit: 3, mondayLimit: 20 } }, ({ ctx, client }) => {
+    table(ctx, 'WeekOrderPeriodCfg', [{ periodId: 2 }]);
+    client.items.set('木材', 5); ctx.pushes.set('SCHeroRaidOpen', { raid: {} });
+  }, { states: {
+    GuildInfoRequest: { guild: { guildId: '1' } }, GuildCityInfoRequest: { cities: [{ cityId: 3, recommended: true }] }, CounterInfoRequest: { counters: [{ type: 'DAILY_FINISH_GUILD_ORDER', num: '0' }] }, GuildOrderRequest: { order: { requirements: [{ type: 0, id: '木材', num: '2' }], nextRefreshTime: fixedNow / 1000 + 3600 } },
+    WeekInfoRequest: { activityTime: [{ period: 2, startTime: fixedNow / 1000 - 60, endTime: fixedNow / 1000 + 3600 }] },
+    WeekOrderInfoRequest: { order: [{ type: 0, id: '木材', num: '3' }] },
+  }, handlers: {
+    FinishGuildOrderRequest: async (_, response, client) => {
+      const counter = client.states.CounterInfoRequest.counters[0];
+      counter.num = String(Number(counter.num) + 1);
+      client.items.set('木材', client.items.get('木材') - 2);
+      return {};
+    },
+  } });
+  assert.equal(f.client.calls.filter(c => c.name === 'FinishGuildOrderRequest').length, 1);
+  assert.match(f.ctx.results.find(r => r.status === 'skipped')?.reason ?? '', /留足/);
 });
 
 test('guild order switch migration: date enums revert to a boolean switch and mondayLimit fills from the template', () => {
@@ -5349,7 +5426,7 @@ test('guild order switch migration: date enums revert to a boolean switch and mo
 });
 
 test('welfare: existing valid entitlements and free rewards claim once; expired cards are untouched', async () => {
-  const f = await moduleRun('welfare', { daily: true, dailyTask: false, growth: false, events: true, email: false }, ({ ctx, client }) => {
+  const f = await moduleRun('welfare', { daily: true, dailyTask: false, growth: false, events: true, email: false, limitedFree: false, skinGift: false }, ({ ctx, client }) => {
     ctx.pushes.set('SCAllActivity', { sevenDayLogin: { day: 3, isGot: false } }); table(ctx, 'VipFreeCfg', [{ level: 1 }]);
     client.handlers.MonthCardDailyRewardRequest = async ({ type }) => { client.states.MonthCardRequest.cardItem.find(c => c.type === type).gotDailyReward = true; };
     client.handlers.SeasonCardGotDailyRequest = async () => { client.states.SeasonCardRequest.gotDaily = true; };
@@ -5369,7 +5446,7 @@ test('welfare: existing valid entitlements and free rewards claim once; expired 
 
 /** 未阅读当日漫画时只跳过领取，避免服务端返回“not read”。 */
 test('welfare: unread comic drama is not claimed', async () => {
-  const f = await moduleRun('welfare', { daily: true, dailyTask: false, growth: false, events: false, email: false }, null, {
+  const f = await moduleRun('welfare', { daily: true, dailyTask: false, growth: false, events: false, email: false, limitedFree: false, skinGift: false }, null, {
     states: {
       MonthCardRequest: { cardItem: [] },
       SeasonCardRequest: { isPaid: false, gotDaily: false },
@@ -5385,7 +5462,7 @@ test('welfare: unread comic drama is not claimed', async () => {
 
 /** 周抽奖免费礼包必须显式开启，且不依赖日奖开关。 */
 test('welfare: weekly lottery free pack has an independent default-off switch', async () => {
-  const f = await moduleRun('welfare', { daily: false, weeklyLottery: true, uniqueLottery: false, dailyTask: false, growth: false, events: false, email: false }, ({ ctx }) => {
+  const f = await moduleRun('welfare', { daily: false, weeklyLottery: true, uniqueLottery: false, dailyTask: false, growth: false, events: false, email: false, limitedFree: false, skinGift: false }, ({ ctx }) => {
     table(ctx, 'WeekLotteryPackCfg', [{ packId: 1000, price: 0, limitedTimes: 1 }]);
   }, { dryRun: true, states: { WeekLotteryInfoRequest: { gift: [{ giftId: 1000, gotTimes: 0 }] } } });
   assert.equal(f.client.calls.filter(call => call.name === 'WeekLotteryInfoRequest').length, 1);
@@ -5393,13 +5470,73 @@ test('welfare: weekly lottery free pack has an independent default-off switch', 
 });
 
 test('welfare: unique weekly lottery is independently enabled by its own switch', async () => {
-  const f = await moduleRun('welfare', { daily: false, uniqueLottery: true, dailyTask: false, growth: false, events: false, email: false }, null, { states: {
+  const f = await moduleRun('welfare', { daily: false, uniqueLottery: true, dailyTask: false, growth: false, events: false, email: false, limitedFree: false, skinGift: false }, null, { states: {
     WeekUniqueLotteryRequest: { gotFree: false },
   }, handlers: {
     GotUniqueLotteryFreeRequest: async (_, response, client) => { client.items.set('木材', 1); return response ? {} : undefined; },
   } });
   assert.equal(f.client.calls.filter(call => call.name === 'WeekUniqueLotteryRequest').length, 1);
   assert.equal(f.client.calls.filter(call => call.name === 'GotUniqueLotteryFreeRequest').length, 1);
+});
+
+/** 限购商城零元日礼包：零元档全领（含军备竞赛 weekDay>0），周礼包与付费档不动，状态缺字段可见跳过。 */
+test('welfare: limited shop free daily packs claim once; paid and weekly packs untouched', async () => {
+  const options = { daily: false, dailyTask: false, growth: false, events: false, email: false, weeklyLottery: false, uniqueLottery: false, limitedFree: true, skinGift: false };
+  const rows = [
+    { id: 1000, name: '免费礼包', type: '日礼包', price: 0, limitedTimes: 1, weekDay: 0 },
+    { id: 90000, name: '免费礼包', type: '日礼包', price: 0, limitedTimes: 1, weekDay: 1 },
+    { id: 2000, name: '免费礼包', type: '周礼包', price: 0, limitedTimes: 1, weekDay: 0 },
+    { id: 1001, name: '金币礼包', type: '日礼包', price: 6, limitedTimes: 2, weekDay: 0 },
+  ];
+  const f = await moduleRun('welfare', options, ({ ctx, client }) => {
+    table(ctx, 'LimitedPackCfg', rows);
+    client.handlers.LimitedShopGotFreeRequest = async ({ id }, response, client) => {
+      client.states.LimitedShopRequest.shopItem.push({ id, gotTimes: 1, charge: 0 });
+      client.items.set('钻石', (client.items.get('钻石') ?? 0) + 10);
+    };
+  }, { states: { LimitedShopRequest: { shopItem: [], resetTime: 1794585600 } } });
+  assert.deepEqual(f.client.calls.filter(call => call.name === 'LimitedShopGotFreeRequest').map(call => call.body), [{ type: 1, id: 1000 }, { type: 1, id: 90000 }]);
+  // 同日重跑不重发：已领档位与当日计数共同拦截。
+  const rerun = createContext({ ...f.args, initialPushes: f.ctx.pushes }); rerun.setModule('welfare');
+  try { await rerun.refreshStock(); await HANDLERS.welfare(rerun, f.settings.modules.welfare); }
+  finally { rerun.dispose(); }
+  assert.equal(f.client.calls.filter(call => call.name === 'LimitedShopGotFreeRequest').length, 2);
+});
+
+/** 皮肤活动免费赠礼：状态取自 SCAllActivity 推送，窗口外或服务端标记已领时不请求。 */
+test('welfare: skin active free gift claims only inside the window with gotFree false', async () => {
+  const second = Math.floor(fixedNow / 1000);
+  const options = { daily: false, dailyTask: false, growth: false, events: false, email: false, weeklyLottery: false, uniqueLottery: false, limitedFree: false, skinGift: true };
+  const skin = overrides => ({ skinActive: { activeId: 20003, startTime: second - 10, endTime: second + 10, gotDay: 0, paid: false, gotFree: false, ...overrides } });
+  const f = await moduleRun('welfare', options, ({ ctx, client }) => {
+    ctx.pushes.set('SCAllActivity', skin({}));
+    client.handlers.SkinActiveGotFreeRequest = async () => { client.items.set('皮肤赠礼', 1); };
+  });
+  assert.equal(f.client.calls.filter(call => call.name === 'SkinActiveGotFreeRequest').length, 1);
+  assert.deepEqual(f.client.calls.find(call => call.name === 'SkinActiveGotFreeRequest').body, { activeId: 20003 });
+  for (const [name, overrides] of [['已领标记', { gotFree: true }], ['窗口未开始', { startTime: second + 5 }], ['窗口已结束', { endTime: second - 5 }]]) {
+    const g = await moduleRun('welfare', options, ({ ctx }) => ctx.pushes.set('SCAllActivity', skin(overrides)));
+    assert.equal(g.client.calls.filter(call => call.name === 'SkinActiveGotFreeRequest').length, 0, name);
+  }
+});
+
+/** 周抽奖活动关闭时查询被拒曾中断整个福利模块，导致限购零元礼包与皮肤赠礼陪葬；现在只跳过本项。 */
+test('welfare: a rejected weekly lottery query no longer blocks later blocks', async () => {
+  const second = Math.floor(fixedNow / 1000);
+  const options = { daily: false, dailyTask: false, growth: false, events: false, email: false, weeklyLottery: true, uniqueLottery: false, limitedFree: true, skinGift: true };
+  const f = await moduleRun('welfare', options, ({ ctx, client }) => {
+    table(ctx, 'LimitedPackCfg', [{ id: 1000, name: '免费礼包', type: '日礼包', price: 0, limitedTimes: 1, weekDay: 0 }]);
+    client.handlers.WeekLotteryInfoRequest = async () => { throw Object.assign(new Error('活动未开放'), { prompt: { prompt: 'ACTIVE_END' } }); };
+    client.handlers.LimitedShopGotFreeRequest = async ({ id }, response, client) => {
+      client.states.LimitedShopRequest.shopItem.push({ id, gotTimes: 1, charge: 0 });
+      client.items.set('钻石', (client.items.get('钻石') ?? 0) + 10);
+    };
+    ctx.pushes.set('SCAllActivity', { skinActive: { activeId: 20003, startTime: second - 10, endTime: second + 10, gotFree: false } });
+    client.handlers.SkinActiveGotFreeRequest = async () => { client.items.set('皮肤赠礼', 1); };
+  }, { states: { LimitedShopRequest: { shopItem: [], resetTime: 1794585600 } } });
+  assert.equal(f.client.calls.filter(call => call.name === 'WeekLotteryInfoRequest').length, 1);
+  assert.deepEqual(f.client.calls.filter(call => call.name === 'LimitedShopGotFreeRequest').map(call => call.body), [{ type: 1, id: 1000 }]);
+  assert.equal(f.client.calls.filter(call => call.name === 'SkinActiveGotFreeRequest').length, 1);
 });
 
 test('farm priority: an order crop wins over a higher-priority ordinary stock target', async () => {
@@ -5617,17 +5754,24 @@ test('daily breed: pet off still supplements once, lowest available quality and 
   assert.equal(f.client.calls.filter(row => row.name === 'PetBreedRequest').length, 1); restored.dispose();
 });
 
-for (const situation of ['complete', 'claimed', 'missing task', 'missing progress', 'full', 'materials', 'closed']) test(`daily breed: skip ${situation}`, async () => {
+for (const situation of ['complete', 'claimed', 'missing task', 'full', 'materials', 'closed']) test(`daily breed: skip ${situation}`, async () => {
   const f = breedFixture(), state = f.client.states.WeekBattlePassInfoRequest;
   if (situation === 'complete') state.task[0].progress = 1;
   if (situation === 'claimed') state.task[0].isGot = true;
   if (situation === 'missing task') state.task = [];
-  if (situation === 'missing progress') delete state.task[0].progress;
   if (situation === 'full') f.client.states.OnWaterRequest.building[0].petBreed.maxQLength = 0;
   if (situation === 'materials') f.client.items.clear();
   if (situation === 'closed') f.client.states.WeekInfoRequest.activityTime = [];
   await prepareDailyBreed(f.ctx);
   assert.equal(f.client.calls.filter(row => row.name === 'PetBreedRequest' || row.name === 'GetMaturePetRequest').length, 0); f.ctx.dispose();
+});
+
+test('daily breed: proto3 omits zero progress on the wire, fresh task still breeds once', async () => {
+  const f = breedFixture();
+  delete f.client.states.WeekBattlePassInfoRequest.task[0].progress;
+  await prepareDailyBreed(f.ctx);
+  assert.deepEqual(f.client.calls.filter(row => row.name === 'PetBreedRequest').map(row => row.body), [{ petId: '蓝A', universal: false }]);
+  f.ctx.dispose();
 });
 
 test('daily breed: unresolved intent blocks repeats after restart, late queue confirmation settles without another request', async () => {
