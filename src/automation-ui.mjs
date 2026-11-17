@@ -28,7 +28,7 @@ const automationLabels = {
   maxActions:'每轮最多挑战次数',stage:'主线',samePowerRetryCount:'同战力战败重试次数',claimReward:'领取章节奖励',arena:'竞技场',sweep:'扫荡',challenge:'挑战',trial:'试炼',heroExp:'英雄经验试炼',forge:'强化石试炼',petExp:'宠物经验试炼',rubySweep:'允许钻石扫荡',league:'联盟赛',reservePoints:'保留挑战券',hangupReward:'领取挂机奖励',danReward:'领取段位奖励',passReward:'领取战令奖励',expedition:'远征',finalReward:'领取最终奖励',freePass:'领取远征战令',challengeStopOnHeroDeath:'英雄阵亡时停止',challengeMinTeamHpPct:'最低队伍血量百分比',dailySweepLimit:'每日扫荡次数（目标）',times:'扫荡次数',
 report:'领取战报',fleet:'舰队',repair:'维修',repairThresholds:'各舰队维修耐久阈值（按列表顺序）',repairSpeedUp:'加速维修（可使用钻石）',repairSpeedUpMinRemainSecs:'维修加速剩余秒数门槛',pirate:'海盗',attack:'挑战',attackTypes:'挑战海盗类型',sweepTypes:'扫荡海盗类型',attackTime:'执行时段',start:'开始时间',end:'结束时间',radar:'雷达',kinds:'雷达事件类型',fixed:'固定事件',resField:'已有资源田配比',oasis:'种子田权重',tank:'汽油田权重',chipMine:'芯片矿',hours:'执行小时（空为全天）',fleets:'舰队规则',treasureLoot:'宝藏掠夺',merchantShip:'搁浅商船（万吨货轮）',retryMinutes:'重新夺取间隔（分钟，0 不重试）',rewardMaterials:'奖励材料筛选',cityWar:'城战',online:'领取在线奖',reattack:'允许重复进攻',worldBoss:'世界 Boss',attackTimes:'每轮挑战次数',limitedBoss:'限时 Boss',challenge:'挑战',challengeReward:'领取挑战奖',trade:'海商王',profitLimit:'航行加速最低累计利润',speedUpDailyLimit:'每日航行加速次数',
   packs:'联盟礼包',guild:'联盟礼包',title:'职级奖励',order:'募兵订单',cityIds:'城市 ID',aid:'互助',receive:'领取帮助',ask:'发起求助',askItems:'求助物品',help:'帮助盟友',helpItems:'帮助物品',helpNicknameKeywords:'盟友昵称关键词',helpMinStock:'帮助后库存保留门槛',helpDailyLimit:'每日帮助次数',tech:'联盟科技',items:'科技 ID',ship:'联盟商船',captain:'应聘船长',crew:'补货登船',qualities:'船只品质',rewardItems:'期望奖励物品',minWaterCoin:'最低水姆币奖励',forbiddenMaterials:'禁用补货材料',relaxFilters:'允许放宽品质与奖励筛选',
-  daily:'免费日奖与已有卡权益',weeklyLottery:'周抽奖（领取免费礼包）',uniqueLottery:'每周专属抽奖（领取免费次数）',dailyTask:'任务与活跃度奖励',growth:'成长、支线与成就',events:'成长活动奖励',email:'邮件奖励',midAutumn:'中秋日奖',signIn:'签到',freeGift:'免费礼包',activeReward:'活跃奖励',blindBox:'盲盒',scoreReward:'积分奖',play:'开始新局',keepCards:'保留盲盒卡',catcher:'海底捞月',repeat:'重复挑战最高开放关卡',keepHooks:'保留捞月钩',maxStage:'最高关卡',sweepStage:'扫荡关卡',workshop:'活动工坊',produce:'生产',keepStock:'备货目标',keepClaws:'保留爪钩',blessing:'祝福',boost:'消耗福运结祝福',skinId:'祝福皮肤 ID',boostTimes:'每次祝福数量',keepKnots:'保留福运结',weekOrder:'不差钱商人',buyMissingMaterials:'允许钻石补齐整单缺料',weekLottery:'幸运转盘',prize:'使用现有转盘币',snowball:'走江踏浪',minEnergy:'启动所需能量（瓶）',autoStart:'有能量就连续开局',pve:'水世界牌 PVE',freeMatch:'免费匹配',diamondMatch:'允许钻石匹配',diamondMatchDailyLimit:'每日钻石匹配次数上限（0 禁止）',matchWindows:'匹配时段',dailies:'原有付费日常',dailiesDiscountTickets2x:'2折英雄藏品券'
+  daily:'免费日奖与已有卡权益',limitedFree:'限购免费日礼包',skinGift:'皮肤活动免费赠礼',weeklyLottery:'周抽奖（领取免费礼包）',uniqueLottery:'每周专属抽奖（领取免费次数）',dailyTask:'任务与活跃度奖励',growth:'成长、支线与成就',events:'成长活动奖励',email:'邮件奖励',midAutumn:'中秋日奖',signIn:'签到',freeGift:'免费礼包',activeReward:'活跃奖励',blindBox:'盲盒',scoreReward:'积分奖',play:'开始新局',keepCards:'保留盲盒卡',catcher:'海底捞月',repeat:'重复挑战最高开放关卡',keepHooks:'保留捞月钩',maxStage:'最高关卡',sweepStage:'扫荡关卡',workshop:'活动工坊',produce:'生产',keepStock:'备货目标',keepClaws:'保留爪钩',blessing:'祝福',boost:'消耗福运结祝福',skinId:'祝福皮肤 ID',boostTimes:'每次祝福数量',keepKnots:'保留福运结',weekOrder:'不差钱商人',buyMissingMaterials:'允许钻石补齐整单缺料',weekLottery:'幸运转盘',prize:'使用现有转盘币',snowball:'走江踏浪',minEnergy:'启动所需能量（瓶）',autoStart:'有能量就连续开局',pve:'水世界牌 PVE',freeMatch:'免费匹配',diamondMatch:'允许钻石匹配',diamondMatchDailyLimit:'每日钻石匹配次数上限（0 禁止）',matchWindows:'匹配时段',dailies:'原有付费日常',dailiesDiscountTickets2x:'2折英雄藏品券'
 };
 // 酆都玩法沿用活动模块，只增加本期参与开关。
 automationLabels.edict = '酆都捞尸人';
@@ -77,7 +77,7 @@ const automationSettingCopy = {
   'spending.minRubyStock': { note:'当前角色游戏内钻石余额的下限，不是每日可用额度。每次消费后（含未确认预留）余额仍须不少于此值；10000 会按原值保存。' },
   'spending.clickGoldTimes': { note:'每日付费点金总目标；0 关闭。免费次数不计入该目标，但会先于付费点金自动用完；挂机收益模块开启后才会执行，且仍受总额度、挂机额度和最低钻石保留量限制。' },
   'spending.modules': { note:'各玩法每日的独立额度，同一账号的所有角色合计；它还必须不超过“每日总额度”，设置更高不会增加总额度。' },
-  'spending.dailiesDiscountTickets2x': { note:'强烈建议开启。发现2折或更低折扣的抽卡券、藏品券时必定购买，并使用免费刷新继续查找另一类；此开关会突破钻石购买上限，但仍要求实际钻石余额足够。' },
+  'spending.dailiesDiscountTickets2x': { note:'强烈建议开启。发现2折或更低折扣的抽卡券、藏品券时必定购买，并使用免费刷新继续查找另一类；此开关会突破钻石购买上限，但仍要求实际钻石余额足够。开启后挂机循环也会自动检查折扣商店（无需再开旧「折扣店购买」开关），未命中2折券时会按旧逻辑购买最便宜商品。' },
   'modules.world.fleet.repairSpeedUp': { note:'仅对城战规则中已启用的舰队生效，优先使用现有加速器；无道具或道具被明确拒绝、业务失败时改用钻石。剩余分钟数向上取整，每分钟 10 钻：60 秒 10 钻，61 秒 20 钻；提交前按完整费用检查钻石总额度、模块额度和余额保留量。' },
   'modules.world.fleet.repairSpeedUpMinRemainSecs': { note:'维修剩余时间达到此秒数才尝试加速，避免为即将结束的维修消耗道具或钻石。' },
   'modules.world.pirate.dailySweepLimit': { note:'自动化每日最多扫荡此次数。实际总上限为基础 10 次加当前角色 VIP 的“野怪扫荡次数”额外配置；手动已扫次数也会计入，达到设置值后当天不再扫荡。' },
@@ -313,6 +313,8 @@ const automationFieldActionCopy = {
   guild:'领取当前可领取的联盟礼包；不影响联盟募兵、互助、科技或联盟商船',
   title:'领取当前已满足条件的联盟职级奖励；不变更联盟职位或成员关系',
   daily:'领取现有月卡、季卡、VIP 和其他免费日奖；不会购买权益',
+  limitedFree:'领取限购商城的零元日礼包（每日免费档与军备竞赛免费补给）；不会购买任何付费礼包',
+  skinGift:'领取当前皮肤活动的免费赠礼；活动未开放或服务端标记已领时不请求',
   weeklyLottery:'领取本周可用的免费抽奖礼包；默认关闭且不使用付费次数',
   uniqueLottery:'领取每周专属抽奖的免费次数；不会使用钻石或购买资格',
   dailyTask:'领取已完成的每日任务和活跃宝箱奖励',

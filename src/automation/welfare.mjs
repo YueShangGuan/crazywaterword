@@ -56,22 +56,61 @@ export async function welfare(ctx, options) {
   }
   if (options.weeklyLottery) {
     // 周抽奖活动未开放时会拒绝信息查询，所以必须由独立开关显式授权。
-    const lottery = await ctx.query('WeekLotteryInfoRequest');
-    const freePack = ctx.rows('WeekLotteryPackCfg').find(r => r.price === 0);
-    const requests = [];
-    if (freePack && (lottery.gift?.find(g => g.giftId === freePack.packId)?.gotTimes ?? 0) < freePack.limitedTimes) requests.push('WeekLotteryFreePackRequest');
-    for (const request of requests) {
-      if (ctx.count(`free.${request}`)) continue;
-      const result = await rewardAction(ctx, request);
-      if (result.status === 'success' || result.status === 'rejected') ctx.count(`free.${request}`, 1);
+    // 拒绝只能中断本项：后面的限购零元礼包、皮肤赠礼与本活动无关，不能陪葬。
+    let lottery = null;
+    try {
+      lottery = await ctx.query('WeekLotteryInfoRequest');
+    } catch (error) {
+      skip(ctx, `周抽奖活动未开放或查询被拒绝（${error.message}），跳过本项`, '周抽奖免费礼包');
+    }
+    if (lottery) {
+      const freePack = ctx.rows('WeekLotteryPackCfg').find(r => r.price === 0);
+      const requests = [];
+      if (freePack && (lottery.gift?.find(g => g.giftId === freePack.packId)?.gotTimes ?? 0) < freePack.limitedTimes) requests.push('WeekLotteryFreePackRequest');
+      for (const request of requests) {
+        if (ctx.count(`free.${request}`)) continue;
+        const result = await rewardAction(ctx, request);
+        if (result.status === 'success' || result.status === 'rejected') ctx.count(`free.${request}`, 1);
+      }
     }
   }
   if (options.uniqueLottery) {
     // 专属抽奖独立于日奖：用户可以仅领取免费次数，也能完全禁止访问该玩法。
-    const unique = await ctx.query('WeekUniqueLotteryRequest');
-    if (!unique.gotFree && !ctx.count('free.GotUniqueLotteryFreeRequest')) {
+    let unique = null;
+    try {
+      unique = await ctx.query('WeekUniqueLotteryRequest');
+    } catch (error) {
+      skip(ctx, `专属抽奖活动未开放或查询被拒绝（${error.message}），跳过本项`, '专属抽奖免费次数');
+    }
+    if (unique && !unique.gotFree && !ctx.count('free.GotUniqueLotteryFreeRequest')) {
       const result = await rewardAction(ctx, 'GotUniqueLotteryFreeRequest');
       if (result.status === 'success' || result.status === 'rejected') ctx.count('free.GotUniqueLotteryFreeRequest', 1);
+    }
+  }
+  if (options.limitedFree) {
+    // 限购商城零元日礼包：每日免费档(id 1000)与军备竞赛免费补给(weekDay>0)同一接口；
+    // 服务器用 shopItem.gotTimes 记录已领次数，条目缺失代表 gotTimes=0 而不是礼包不存在。
+    const packs = ctx.rows('LimitedPackCfg').filter(row => row.type === '日礼包' && row.price === 0 && row.limitedTimes > 0);
+    if (packs.length) {
+      const shop = await ctx.query('LimitedShopRequest', { type: 1 });
+      if (Array.isArray(shop.shopItem)) {
+        for (const pack of packs) {
+          const got = shop.shopItem.find(item => item.id === pack.id)?.gotTimes ?? 0;
+          if (got >= pack.limitedTimes || ctx.count(`free.limited:${pack.id}`)) continue;
+          const result = await rewardAction(ctx, 'LimitedShopGotFreeRequest', { type: 1, id: pack.id }, { label: `限购商城 · ${pack.name}${pack.weekDay > 0 ? '（军备竞赛补给）' : ''}` });
+          if (result.status === 'success' || result.status === 'rejected') ctx.count(`free.limited:${pack.id}`, 1);
+        }
+      } else skip(ctx, '限购商城免费礼包状态未同步');
+    }
+  }
+  if (options.skinGift) {
+    // 皮肤活动免费赠礼：状态只随 SCAllActivity 推送（gotFree 是服务端已领标记），
+    // 协议没有专用回包，与周抽奖一样由库存变化确认；活动窗口外不发送请求。
+    const skin = (await activities(ctx))?.skinActive;
+    const second = Math.floor(ctx.now() / 1000);
+    if (skin?.activeId && skin.startTime <= second && second < skin.endTime && !skin.gotFree && !ctx.count('free.SkinActiveGotFree')) {
+      const result = await rewardAction(ctx, 'SkinActiveGotFreeRequest', { activeId: skin.activeId }, { label: '皮肤活动 · 免费赠礼' });
+      if (result.status === 'success' || result.status === 'rejected') ctx.count('free.SkinActiveGotFree', 1);
     }
   }
   if (options.events) {
