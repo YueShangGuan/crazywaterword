@@ -18,7 +18,7 @@ import { claimRewards } from './claim-rewards.mjs';
 import { fishView, newbieView } from './collections.mjs';
 import { normalize } from './worlds.mjs';
 import { pirateDailySweepLimit, pirateSweepProgress, pirateTracker, pirateHuntOptions, startPirateHunt, inspectHunt } from './pirates.mjs';
-import { activityView, runActivity, runWeekOrder } from './activities.mjs';
+import { activityView, runActivity, runWeekOrder, extrasActivity } from './activities.mjs';
 import { applyActiveScore, syncFestivalDay } from './free-rewards.mjs';
 import { pirateBoard, claimCampaignReports } from './pirate-board.mjs';
 import { displayMaterial, getConfig } from './config.mjs';
@@ -32,7 +32,7 @@ import { planRadarPreview, pendingPetrol } from './dispatch-preview.mjs';
 import { readWorldOnlineReward, worldOnlineRewardKey } from './world-online-rewards.mjs';
 import { readPirateSweeps } from './pirate-sweeps.mjs';
 import { readAntiqueUpgrade, planAntiqueUpgrade } from './antique-upgrade.mjs';
-import { makeTypeResolver, weekFactoryInfo, surveyWorld, planWorld, runWorldRound, submitResidentOrder, formatWorldPlan, formatFieldReport, loadMapAsset } from './world.mjs';
+import { makeTypeResolver, weekFactoryInfo, surveyWorld, planWorld, runWorldRound, submitResidentOrder, rerollResidentOrder, formatWorldPlan, formatFieldReport, loadMapAsset } from './world.mjs';
 import { buildMapLayout, buildWorldMapState, readWorldMapState, cityNameMap, forceInfoMap } from './world-map.mjs';
 import { dispatchCityWarFleet, readCityWar, planCityWar, cityWarEnabled, cityWarReservedFleets } from './city-war.mjs';
 import { runLoop, formatLoopRound, formatLoopStep } from './loop.mjs';
@@ -1314,6 +1314,9 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog = null }
         manualDecision: order.orderKey ? planWorld({ ...survey, orders: [order] }, {
           config, enabled: kind => kind === 'finishOrder',
         }).orderDecisions[0] : { status: 'unknown', reason: '无法确认这条居民订单，请刷新后再试' },
+        // 换单是用户逐单点掉的显式动作，不受 resident.reroll（无人值守拒单）开关约束；
+        // 只有拿不到 orderKey（无法定位这一单）时才不可用。
+        manualRefresh: order.orderKey ? { allowed: true } : { allowed: false, reason: '无法确认这条居民订单，请刷新后再试' },
         requirements: order.requirements.map((need) => ({ ...need, name: displayMaterial(config, need.id), sources: config?.materialSources(need.id), icon: materialIcon(need.id) })),
         missing: (order.missing ?? []).map((need) => ({ ...need, name: displayMaterial(config, need.id), sources: config?.materialSources(need.id), icon: materialIcon(need.id) })),
       })),
@@ -1617,9 +1620,10 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog = null }
           }
           if(category==='worldBoss'){
             const state=await readWorldBoss(client,config,session.player,settings,usageFor(session),{cityReservedFleetIds:previewCityReserved});
+            const eligible=state.fleets.filter(f=>!f.reason).map(f=>f.buildingId);
             const plan={actions:[],notes:[state.reason||'当前可执行每日首战派遣']};
             if(!settings.worldBoss.enabled)plan.notes.push('世界Boss自动首战未开启');
-            else if(!state.reason)plan.actions.push({kind:'worldBoss',label:state.fleets.find(f=>!f.reason).buildingId+' → 世界Boss '+state.boss.bossId,costs:[{id:'汽油',num:state.cost}]});
+            else if(!state.reason)plan.actions.push({kind:'worldBoss',label:eligible.join('、')+' → 世界Boss '+state.boss.bossId,costs:[{id:'汽油',num:state.cost*eligible.length}]});
             return {...output(plan,{fleets:state.fleets.length},'世界Boss首战'),dispatch:{fleets:state.fleets,fuel:state.fuel,pending:pendingPetrol(usageFor(session))}};
           }
           if (category === 'radar') {
@@ -2444,6 +2448,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog = null }
         json(await progressionJob(session, account, key, '单次执行活动', (client, enabled) =>
           runActivity(client, loadConfigSafe(), {
             activityId: payload.activityId, taskKey: payload.taskKey, enabled, playerLevel: session.player?.level, player: session.player, spinCount: payload.spinCount ?? session.loop.compassSpinCount,
+            // 赛季宝箱读取执行记录核对开箱进度；与挂机循环共用同一账号账本。
+            ledger: sessionUsageLedger(session),
             report: entry => emit(session, entry.error ? 'error' : 'info',
               [entry.label, entry.error || entry.reason].filter(Boolean).join(' · ')),
           })));
@@ -2479,7 +2485,9 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog = null }
         }
         if (view.lotteryError) emit(session, 'error', '读取周抽奖进度失败：' + view.lotteryError);
         if (view.orderError) emit(session, 'error', '读取周订单失败：' + view.orderError);
-        const activityTasks = new Set(['fishBook', 'vipDaily', 'campaignReports', 'openRankRewards', ...view.activities.flatMap(row => row.taskKeys)]);
+        // 长期福利六项没有服务端活动行，由前端常驻卡片渲染；这里仍要把开关交给活动页。
+        const activityTasks = new Set(['fishBook', 'vipDaily', 'campaignReports', 'openRankRewards',
+          ...extrasActivity.taskKeys, ...view.activities.flatMap(row => row.taskKeys)]);
         view.eventTasks = automationTasks.filter(task => activityTasks.has(task.key)).map(({ key, label }) => ({ key, label, enabled: session.loop.tasks[key] }));
         view.serverNow = (Date.now() + (client.serverClockOffsetMs || 0)) / 1000;
         json(view);
@@ -2773,6 +2781,32 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog = null }
             emit(session, 'info', result.label, { worldUpdated: true });
             return { ok: true, ...result };
           }, '手动提交居民订单 #' + index).finally(() => session.residentJobs.delete(key));
+          session.residentJobs.set(key, job);
+        }
+        json(await job);
+        return;
+      }
+      if (route === 'POST /api/world/order/reroll') {
+        const { account, session } = scoped_(parsed);
+        const payload = jsonBody();
+        needConfirm(payload);
+        const { index, orderKey } = payload;
+        if (!Number.isSafeInteger(index) || index < 0 || index > 2147483647 || typeof orderKey !== 'string' || !orderKey.length || orderKey.length > 512) {
+          throw new Error('订单信息不完整，请刷新居民订单');
+        }
+        const key = index + ':' + orderKey;
+        let job = session.residentJobs.get(key);
+        if (!job) {
+          const client = session.client, generation = session.generation;
+          const enabled = () => client?.connected && session.client === client && !session.paused && session.generation === generation;
+          job = enqueue(session, async () => {
+            if (!enabled()) throw new Error('账号连接已变化，请刷新居民订单');
+            const result = await rerollResidentOrder(client, protocol, { index, orderKey, enabled,
+              // 换单同样进入账号级业务锁，沿用当前请求的账号范围。
+              accountId: account.id, config: loadConfigSafe(), player: session.player });
+            emit(session, 'info', result.label, { worldUpdated: true });
+            return { ok: true, ...result };
+          }, '手动换单 #' + index).finally(() => session.residentJobs.delete(key));
           session.residentJobs.set(key, job);
         }
         json(await job);

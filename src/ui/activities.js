@@ -26,6 +26,8 @@ function activityRows() {
   if (activitiesData) rows.push({ id: 'fish', name: '钓鱼图鉴', kind: 'permanent', taskKeys: ['fishBook'] });
   if (activitiesData?.vipLevel > 0) rows.push({ id: 'vip', name: 'VIP 每日奖励', kind: 'permanent', taskKeys: ['vipDaily'] });
   rows.push({ id: 'pirates', name: '海盗首杀', kind: 'permanent', taskKeys: !activitiesData ? [] : activitiesData.status?.pirates?.rankOpen ? ['campaignReports', 'openRankRewards'] : ['campaignReports'] });
+  // 长期福利没有服务端活动行；开关来自 eventTasks 固定集，事件未开放时执行只回报无可执行动作。
+  rows.push({ id: 'extras', name: '长期福利', kind: 'permanent', taskKeys: ['comicDrama', 'tournamentDailyGift', 'armsRaceRewards', 'beautyVotes', 'beautyGift', 'seasonChest'] });
   const order = Object.keys(activityKinds);
   return rows.sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind) || (a.group || '').localeCompare(b.group || '') || (a.endTime ?? 0) - (b.endTime ?? 0));
 }
@@ -173,6 +175,12 @@ function renderActivityTask(box, row, task) {
     vipDaily: '领取已达到 VIP 等级的每日免费奖励。',
     campaignReports: '海盗战斗等奖励留在战报里，这里一键领取。开启后收到新战报会马上领，不用开挂机。',
     openRankRewards: '领取各个开服冲榜已达标的积分奖励。排名奖励由游戏在活动结束后发放。',
+    comicDrama: '领取当天可观看剧集的免费奖励，不消耗钻石解锁。',
+    tournamentDailyGift: '领取擂台赛每日礼包；活动未开放时本轮自动跳过。',
+    armsRaceRewards: '领取军备竞赛已达标的积分档位奖励，不消耗任何道具。',
+    beautyVotes: '投出风采大赛的每日免费票，不花钻石。',
+    beautyGift: '领取风采大赛投票已达标的礼包。',
+    seasonChest: '用背包里的赛季钥匙开赛季宝箱；没有钥匙时跳过。',
   };
   if (descriptions[task.key]) item.appendChild(el('p', 'dim', descriptions[task.key]));
   const bar = el('div', 'activity-controls');

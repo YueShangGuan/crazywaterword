@@ -946,6 +946,24 @@ export async function submitResidentOrder(client, protocol, { index, orderKey, c
   return { index, label: '已' + entry.step.label + '，获得' + prize, reward };
 }
 
+// 手动换单：与自动拒单（allowReroll 计划）共用 runWorld 的 denyOrder 通道，但不受 resident.reroll
+// 开关约束——那是无人值守时的门槛，这里是用户在确认框里逐单点掉的显式动作。
+export async function rerollResidentOrder(client, protocol, { index, orderKey, config, player, accountId, actionExecutor, enabled = () => true }) {
+  if (!Number.isSafeInteger(index) || index < 0 || index > 2147483647 || typeof orderKey !== 'string' || !orderKey) {
+    throw new Error('请从当前居民订单列表中选择要换单的一单');
+  }
+  if (!enabled()) throw new Error('账号托管状态已变化，已取消手动换单');
+  if (trackResidentOrders(client).get(index)?.key !== orderKey) throw new Error('这条居民订单已刷新或已处理，请查看当前订单');
+  const step = { kind: 'denyOrder', request: 'DenyOrderRequest', response: null,
+    body: { index }, orderKey, label: '拒绝居民订单 #' + index };
+  const { results } = await runWorld(client, protocol, { actions: [step] }, {
+    config, player, accountId, actionExecutor, allowMutate: true, enabled,
+  });
+  const [entry] = results;
+  if (!entry?.ok) throw new Error(entry?.error || '账号托管状态已变化，已取消手动换单');
+  return { index, label: '已' + entry.step.label + '，新需求按游戏刷新时间到达' };
+}
+
 // 逐条执行。同类动作失败就跳过该类的剩余动作；被服务端拒过的具体动作记进 rejected，
 // 循环模式下后续轮次不再重发（否则每轮都会骚扰一次同一个必败请求）。
 /** 旧海面计划共用自动化写入、读回和停止控制，不把静默当成执行成功。 */

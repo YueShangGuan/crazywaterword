@@ -28,7 +28,7 @@ export const PAGE = `<!doctype html>
 <head>
 <meta charset="utf-8">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect fill='%23102d39' width='40' height='40' rx='8'/%3E%3Cpath fill='%23ffbd77' d='m20 3 4 13 13 4-13 4-4 13-4-13-13-4 13-4z'/%3E%3C/svg%3E">
-<title>疯狂水世界</title>
+<title>Crazy Water World</title>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
 <meta name="format-detection" content="telephone=no">
@@ -850,7 +850,7 @@ $('single-go-mutual').onclick=()=>activateConsolePage(document.querySelector('#t
 $('idle-search').oninput=filterIdleControls;$('idle-filter').onchange=filterIdleControls;
 function renderLoop(data) {
   renderAutomationOverview(data);
-  renderPirateAdvance(data.pirateAdvance);
+  renderPirateAdvance(data.singleTasks?.pirate ?? data.pirateAdvance);
   $('runtime-version').textContent='当前服务加载时间：'+(data.runVersion?new Date(data.runVersion).toLocaleString('zh-CN'):'旧版服务，等待加载本次更新');
   if(data.singleTasks)$('single-task-status').textContent='需单独启动 · 首杀：'+(data.singleTasks.pirate?.running?'运行中':'未启动')+' · 主线：'+(data.singleTasks.stages?.running?'运行中':'未启动')+' · 互助：'+(data.singleTasks.mutual?.running?'运行中':'未启动')+'。入口：世界 / 挑战 / 资源与玩法 → 联盟。';
   loopSettingsRevision = data.settingsRevision;

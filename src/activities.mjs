@@ -8,8 +8,14 @@ import { readOrderMaterialState, settleOrderMaterialState, beginOrderMaterialSpe
 import { campaignReportState, claimCampaignReports, claimOpenRanks, openRankState, openRanks } from './pirate-board.mjs';
 import { claimFestivalRewards, claimWeeklyRewards, claimVipDaily, festivalRewardKeys, weeklyRewardKeys, festivalRewardState, snowballState,
   compassState, weekChargeState, weekHeroStarState, weekFreePackState, weekOrderState, vipDailyState, syncFestivalDay } from './free-rewards.mjs';
+import { claimTournamentDaily, openSeasonChests, claimComicDrama } from './side-rewards.mjs';
+import { beautyActivity, militaryRewards } from './seasonal-activities.mjs';
 
 const weekNames = { 1: '周战令', 2: '累计充值', 3: '英雄升星', 4: '周抽奖', 5: '周订单', 6: '芯片活动', 7: '周翻牌' };
+// 长期福利：服务端没有活动行、循环里只由 loop.tasks 驱动的免费领取项。
+// 服务端按各自活动的开放状态自行判断，活动页始终展示入口，事件未开放时执行只回报“无可执行动作”。
+export const extrasActivity = { id: 'extras', name: '长期福利', kind: 'permanent',
+  taskKeys: ['comicDrama', 'tournamentDailyGift', 'armsRaceRewards', 'beautyVotes', 'beautyGift', 'seasonChest'] };
 const serverNow = client => (Date.now() + (client.serverClockOffsetMs || 0)) / 1000;
 const open = (activity, now) => activity.startTime <= now && now < activity.endTime;
 const linkageNames = { 28: '风水罗盘', 29: '酆都法旨', 30: '驱邪除祟' };
@@ -229,7 +235,7 @@ export function activityEntries(client, week = [], festivals = client.festivals 
 
 // A manual run uses the same routines as the idle loop, but never changes its settings.
 // Bind it to the selected occurrence so a repeated event cannot run another activity.
-export async function runActivity(client, config, { activityId, taskKey, enabled = () => true, playerLevel, player = null, spinCount, report = () => {} }) {
+export async function runActivity(client, config, { activityId, taskKey, enabled = () => true, playerLevel, player = null, spinCount, ledger = null, report = () => {} }) {
   if (typeof activityId !== 'string' || typeof taskKey !== 'string') throw new Error('请选择活动和操作');
   if (!enabled()) throw new Error('账号连接已变化，请刷新后再试');
   const week = activityId.startsWith('weekly:') ? await weekly(client) : [];
@@ -237,19 +243,32 @@ export async function runActivity(client, config, { activityId, taskKey, enabled
     : activityId === 'vip' ? { id: 'vip', name: 'VIP 每日奖励', taskKeys: ['vipDaily'] }
     : activityId === 'pirates' ? { id: 'pirates', name: '海盗首杀', taskKeys: ['campaignReports', 'openRankRewards'] }
     : activityId === 'openrank' ? { id: 'openrank', name: '开服冲榜', taskKeys: ['openRankRewards'] }
+    : activityId === 'extras' ? extrasActivity
     : activityEntries(client, week).find(row => row.id === activityId);
   if (!activity) throw new Error('活动已结束或尚未开放，请刷新活动');
   if (!activity.taskKeys.includes(taskKey)) throw new Error('该活动不支持所选操作');
   if (activity.kind === 'weekly' && week.filter(row => row.type === activity.weekType).length !== 1) {
     throw new Error('当前周活动期次不唯一，请刷新后再试');
   }
-  const allowed = key => key === taskKey && enabled() && (['fish', 'vip', 'pirates', 'openrank'].includes(activityId)
+  const allowed = key => key === taskKey && enabled() && (['fish', 'vip', 'pirates', 'openrank', 'extras'].includes(activityId)
     || activityEntries(client, week).some(row => row.id === activityId));
   const results = [];
   const collect = entry => { results.push(entry); report(entry); };
   if (taskKey === 'vipDaily') await claimVipDaily(client, config, player, allowed, collect);
   else if (taskKey === 'campaignReports') await claimCampaignReports(client, config, player, allowed, collect);
   else if (taskKey === 'openRankRewards') await claimOpenRanks(client, config, player, allowed, collect);
+  else if (activityId === 'extras') {
+    // 与挂机循环 extraServices/activityServices 相同的服务；ledger 供赛季宝箱读取执行记录。
+    const services = {
+      comicDrama: (c, cfg, ctx) => claimComicDrama(c, cfg, ctx),
+      tournamentDailyGift: (c, cfg, ctx) => claimTournamentDaily(c, cfg, ctx),
+      armsRaceRewards: militaryRewards, beautyVotes: beautyActivity, beautyGift: beautyActivity,
+      seasonChest: openSeasonChests,
+    };
+    const service = services[taskKey];
+    if (!service) throw new Error('该活动不支持所选操作');
+    await service(client, config, { player, key: taskKey, label: activity.name, enabled: allowed, ledger, report: collect });
+  }
   else if (festivalRewardKeys.includes(taskKey)) {
     await claimFestivalRewards(client, config, allowed, collect, null, (row, type) => activityId.startsWith('linkage:' + toNumber(row.activityId) + ':')
       && (activity.taskKeys.includes(taskKey) && (taskKey === 'festivalGifts' || activityId.endsWith(':' + type))), { spinCount });

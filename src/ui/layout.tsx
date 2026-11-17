@@ -23,7 +23,7 @@ const tabs = [
 export function chrome() {
   return renderToStaticMarkup(<header>
     <div className="headline">
-      <div className="mast"><span className="mast-icon"><Ship aria-hidden="true" /></span><h1>疯狂水世界</h1><span className="brand-label">航行控制台</span></div>
+      <div className="mast"><span className="mast-icon"><Ship aria-hidden="true" /></span><h1>Crazy Water World</h1><span className="brand-label">航行控制台</span></div>
       <div className="connection">
         <Badge id="busy" variant="outline" className="status-pill" data-state="off" role="status">未连接</Badge>
         <label className="account-label" htmlFor="account">当前账号</label>
