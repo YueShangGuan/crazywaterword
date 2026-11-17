@@ -70,6 +70,8 @@ export const automationTasks = [
   ['adShop', '广告商店资源（需免广告权益）', '领奖', false],
   ['mail', '邮件附件', '领奖', true],
   ['afk', '闯关挂机收益（满额领取）', '领奖', true],
+  // 英雄技能展示奖励是免费领奖；此前不在任务表里，循环的领奖回调永远读不到它，只有手动一键领取能领。
+  ['heroShowRewards', '英雄技能展示奖励', '领奖', true],
   ['freeRecruit', '免费招募', '日常', true],
   ['freeGold', '免费点金', '日常', true],
   ['heroGrowth', '主线阵容自动养成（每轮最多 5 步，不用万能碎片）', '成长', false],

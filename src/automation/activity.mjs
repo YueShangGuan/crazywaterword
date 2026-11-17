@@ -32,11 +32,9 @@ async function reward(ctx, request, body, key) {
 export async function activity(ctx, options) {
   const all = await activities(ctx);
   // 联动活动（酆都捞尸人、走江踏浪）按 activity-availability 数据驱动下线：
-  // 2026-11-12 到期即停，官方复开联动节庆（festival 子活动重新开放）时自动恢复执行。
-  if (options.edict.enabled) {
-    if (isActivityTaskAvailable('edict', ctx.client)) await edict(ctx, all);
-    else skip(ctx, '酆都捞尸人联动已下架，复开后自动恢复', '酆都捞尸人');
-  }
+  // 2026-11-12 到期即停；下架期间挂机链路静默不执行、不产生任何记录，
+  // 官方复开联动节庆（festival 子活动重新开放）时数据判定自动恢复执行。
+  if (options.edict.enabled && isActivityTaskAvailable('edict', ctx.client)) await edict(ctx, all);
   const event = all?.festivalActivities?.find(f => (f.type === '中秋国庆活动' || f.type.includes('中秋')) && f.openTime <= ctx.now() / 1000 && f.closeTime > ctx.now() / 1000);
   if (event) {
     const id = idString(event.activityId);
@@ -64,13 +62,10 @@ export async function activity(ctx, options) {
     if (options.catcher.enabled && sub(7)) await catcher(ctx, event, options.catcher, openDays(sub(7).openTime, ctx.now()));
     if (options.workshop.enabled) await workshop(ctx, event, options.workshop);
     if (options.blessing.enabled && sub(25)) await blessing(ctx, event, options.blessing);
-  } else if (['midAutumn', 'blindBox', 'catcher', 'workshop', 'blessing'].some(k => options[k].enabled)) skip(ctx, '中秋活动未开放或已经结束');
+  } // 未开放时不产生记录：与下架联动一样静默等待，推送重新出现即自动恢复执行。
   if (options.weekOrder.enabled) await weekOrder(ctx, options.weekOrder);
   if (options.weekLottery.enabled) await lottery(ctx, options.weekLottery);
-  if (options.snowball.enabled) {
-    if (isActivityTaskAvailable('snowballFree', ctx.client)) await snowball(ctx, options.snowball);
-    else skip(ctx, '走江踏浪联动已下架，复开后自动恢复', '走江踏浪');
-  }
+  if (options.snowball.enabled && isActivityTaskAvailable('snowballFree', ctx.client)) await snowball(ctx, options.snowball);
 }
 
 /** 校验本局答案、四张显化状态和耐心；缺失状态不能作为未显化或正确答案处理。 */

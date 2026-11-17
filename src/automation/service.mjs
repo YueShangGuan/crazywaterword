@@ -15,6 +15,21 @@ import { modeActive, serverTime, moduleActive, moduleConfigured } from './schedu
 export const HANDLERS = Object.fromEntries(MODULES.map(id => [id, base[id] ?? cultivation[id] ?? { battle, world, guild, welfare, activity, snap }[id]]));
 const runs = new Map();
 
+/**
+ * 活动窗口已经关闭时，网关会把相应状态查询也拒绝为 ACTIVE_END。
+ *
+ * 这类提示表示当前模块没有可执行动作，而不是连接、协议或代码错误；将其留作运行错误会让
+ * 持续挂机把一项正常下架活动误判成整轮失败并停止。写入请求的 PromptResponse 已在 action()
+ * 内转换为业务拒绝，这里只处理从状态查询冒出的同类提示。
+ *
+ * @param {import('./context.mjs').AutomationContext} ctx 当前自动化上下文。
+ * @param {unknown} error 模块执行期间捕获的错误。
+ * @returns {boolean} 是否为活动结束这一正常业务状态。
+ */
+function isActivityEndedPrompt(ctx, error) {
+  return ctx.client.promptNames?.[error?.prompt?.prompt] === 'ACTIVE_END';
+}
+
 /** 查询或停止不发送网关请求，运行结果保留在对应账号本地会话中。 */
 export function automationStatus(accountId, roleId) {
   const stored = runs.get(accountId);
@@ -120,7 +135,10 @@ export async function runAutomation({ selector = 'all', settings, onModuleComple
         try { await HANDLERS[id](ctx, options); }
         catch (error) {
           // 停止信号只是中断了模块，具体原因已由触发方记录；再记一条无标题错误会显示成「检查任务失败」。
-          if (!(ctx.stop.aborted && error.message === '自动化已停止')) {
+          if (isActivityEndedPrompt(ctx, error)) {
+            // 活动已下架时跳过当前模块，下一轮仍可继续处理其他独立的挂机项目。
+            ctx.record({ status: 'skipped', label: LABELS[id], reason: '活动已结束，本轮跳过' });
+          } else if (!(ctx.stop.aborted && error.message === '自动化已停止')) {
             state.error = error.message; ctx.record({ status: 'error', reason: error.message });
           }
           ctx.assertReady();
