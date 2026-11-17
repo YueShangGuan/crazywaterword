@@ -38,7 +38,7 @@ export const DEFAULT_SETTINGS = {
   tasks: { main: true, branch: true, achievements: true },
   trials: { paid: false, ads: false, raidIds: ['1','2','3'], paidPerRaidLimit: 1, dailyDiamondBudget: 450, maxSingleCost: 50 },
   fleetDispatch: { priority: ['cityWar','pirateHunt','worldBoss','follow','treasure','radar'] },
-  worldBoss: { enabled: false, fleetIds: [], minDurabilityPercent: 80, petrolReserve: 0 },
+  worldBoss: { enabled: false, fleetIds: [], minDurabilityPercent: 80, petrolReserve: 0, teamsEnabled: false, teams: [] },
   radar: { enabled:false, fleetIds:[], types:['pirate','collect','refugee','spy','fixed'], allowMaterials:false, minDurabilityPercent:80, petrolReserve:1000, dailyPetrolLimit:10000, checkEverySeconds:30 },
   pirateSweep: { type: '1' },
   pirateHunt: { fleetIds: [], types: [], maxLevel: 0, minDurabilityPercent: 80, petrolReserve: 0, fuelBudget: 10000, checkEverySeconds: 15 },
@@ -63,6 +63,7 @@ const constraints = {
   'ads.waitSeconds':int(120,5),
   'fleetDispatch.priority': {...strings(6),values:['cityWar','pirateHunt','worldBoss','follow','treasure','radar']},
   'worldBoss.fleetIds': strings(10), 'worldBoss.minDurabilityPercent': int(100), 'worldBoss.petrolReserve': int(),
+  'worldBoss.teams': { kind: 'bossTeams' },
   'events.otherOption': int(2,1), 'radar.fleetIds': strings(10), 'radar.types': {...strings(5),values:['pirate','collect','refugee','spy','fixed']},
   'radar.minDurabilityPercent':int(100), 'radar.petrolReserve':int(), 'radar.dailyPetrolLimit':int(), 'radar.checkEverySeconds':int(300,10),
   'loop.rounds': int(100000), 'loop.everySeconds': int(86400, 1),
@@ -201,11 +202,27 @@ export function validateSettings(input, { partial = false, catalog = null } = {}
           }
           if (!errors[name]) output[group][key] = copy(value);
         }
+      } else if (rule?.kind === 'bossTeams') {
+        // 世界Boss队伍名单：每行一支远征舰队加一份不重复的英雄列表；舰队之间不允许重复。
+        if (!Array.isArray(value) || value.length > 10) errors[name] = '队伍名单最多 10 行';
+        else {
+          const dockIds = new Set();
+          for (const row of value) {
+            if (!plain(row) || Object.keys(row).some(k => !['buildingId', 'heroes'].includes(k))
+              || typeof row.buildingId !== 'string' || !/^[1-9]\d*远征船$/.test(row.buildingId) || dockIds.has(row.buildingId)) { errors[name] = '每行请选择一支不重复的远征舰队'; break; }
+            dockIds.add(row.buildingId);
+            const heroes = row.heroes;
+            if (!Array.isArray(heroes) || !heroes.length || heroes.length > 20
+              || heroes.some(hero => typeof hero !== 'string' || !hero.trim() || hero.length > 120) || new Set(heroes).size !== heroes.length) { errors[name] = row.buildingId + ' 的英雄名单必须是不重复的非空列表'; break; }
+          }
+          if (!errors[name]) output[group][key] = copy(value);
+        }
       }
     }
   }
   if(output.forge.decompose && !output.forge.decomposeQualities.length)errors['forge.decomposeQualities']='请选择可自动分解的装备品质';
   if(output.pet.release && !output.pet.releaseQualities.length)errors['pet.releaseQualities']='请选择可自动放生的海兽品质';
+  if(output.worldBoss.teamsEnabled && !output.worldBoss.teams.length && !errors['worldBoss.teams'])errors['worldBoss.teams']='开启队伍名单后请至少添加一支舰队';
   if (output.antique.enabled && ![output.antique.activate, output.antique.star, output.antique.master, output.antique.suit].some(Boolean)) errors['antique.enabled'] = '请至少开启一项藏品养成动作';
   if (output.antique.activate && !output.antique.activateQualities.length) errors['antique.activateQualities'] = '请选择自动激活的藏品品质';
   if (output.antique.star && !output.antique.starQualities.length) errors['antique.starQualities'] = '请选择自动升星的藏品品质';
@@ -249,6 +266,13 @@ export function validateSettings(input, { partial = false, catalog = null } = {}
     }
     const crops = new Set((catalog.crops ?? []).map(v => v.value));
     if (output.farm.crops.some(v => !crops.has(v.id))) errors['farm.crops'] = '包含当前游戏中不存在的作物';
+    // 队伍名单是对象数组，舰队与英雄候选项在这里单独核对。
+    const fleetCatalog = new Set((catalog.expeditionFleets ?? []).map(v => String(v.value)));
+    const heroCatalog = new Set((catalog.heroes ?? []).map(v => String(v.value)));
+    for (const team of output.worldBoss.teams) {
+      if (!fleetCatalog.has(team.buildingId)) { errors['worldBoss.teams'] = '队伍名单包含当前游戏配置中不存在的舰队，请重新选择'; break; }
+      if (team.heroes.some(hero => !heroCatalog.has(hero))) { errors['worldBoss.teams'] = '队伍名单包含当前游戏配置中不存在的英雄，请重新选择'; break; }
+    }
   }
   if (Object.keys(errors).length) throw new SettingsError(errors);
   output.schedule = nativeTaskValues(output, output.schedule);
@@ -352,6 +376,7 @@ export function importAutomationSettings(document, options) {
   }
   if (plain(input?.cityWar) && !Object.hasOwn(input.cityWar, 'targetPriority')) input.cityWar = { ...input.cityWar, targetPriority: DEFAULT_SETTINGS.cityWar.targetPriority };
   if (plain(input?.cityWar) && !Object.hasOwn(input.cityWar, 'nativeCommissionLimit')) input.cityWar = { ...input.cityWar, nativeCommissionLimit: DEFAULT_SETTINGS.cityWar.nativeCommissionLimit };
+  if (plain(input?.worldBoss)) input.worldBoss = { teamsEnabled: false, teams: [], ...input.worldBoss };
   if (plain(input?.schedule) && !Object.hasOwn(input.schedule, 'worldOnlineRewards')) input.schedule = { ...input.schedule, worldOnlineRewards: false };
   if (plain(input?.schedule)) input.schedule = { ...taskSettings(), ...input.schedule };
   if (plain(input?.events)) input.events = {otherOption:1,...input.events};

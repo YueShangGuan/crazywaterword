@@ -67,6 +67,11 @@
 .config-add select { flex:1; min-width:0; width:auto }
 .config-crop-quantity { display:flex; align-items:center; gap:8px }
 .config-crop-quantity input { width:88px }
+/* 世界Boss队伍名单行：编号 / 舰队 / 英雄多选 / 操作 */
+.config-team-row { display:grid; grid-template-columns:20px minmax(110px,170px) minmax(0,1fr) auto; align-items:center; gap:8px; border-bottom:1px solid var(--border); padding:8px 0 }
+.config-team-row:last-child { border-bottom:0 }
+.config-team-row .config-team-heroes { width:100%; min-width:0 }
+.config-team-heroes summary { cursor:pointer; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding:2px 0; line-height:1.5 }
 .config-empty { padding:16px 24px; color:var(--muted-foreground) }
 .config-order-list>.config-empty { padding:10px 0 }
 

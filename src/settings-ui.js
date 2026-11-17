@@ -273,9 +273,11 @@ const configGroups = [
   ] },
   { id:'worldBoss',title:'世界Boss',category:'world',fields:[
     configField('worldBoss.enabled','每日首战自动派遣'),
-    configField('worldBoss.fleetIds','首战可用舰队','multi',{catalog:'expeditionFleets',empty:'未选择，使用任意符合条件的空闲舰队',help:'每次仅派遣一队，遵守统一任务顺序和在途保护。'}),
+    configField('worldBoss.fleetIds','首战可用舰队','multi',{catalog:'expeditionFleets',empty:'未选择，使用任意符合条件的空闲舰队',help:'开启队伍名单时，名单舰队与未配名单的合格舰队都会出征。'}),
+    configField('worldBoss.teamsEnabled','启用队伍名单','switch',{when:d=>d.worldBoss.enabled,help:'开启后每日首战前把名单舰队的编队切换为所选英雄；名单英雄被其他舰队占用时先自动下阵再上阵（打完Boss换回）。未配置名单的舰队按原编队照常出征。打完Boss、舰队回港空闲后自动恢复所有被改动的编队；恢复与首战开关无关。'}),
+    configField('worldBoss.teams','队伍名单','bossTeams',{wide:true,when:d=>d.worldBoss.teamsEnabled,help:'每行一支舰队：选择远征舰队并勾选英雄。同一英雄只能出现在一个名单；人数不能超过当前解锁的编队位。'}),
     configField('worldBoss.minDurabilityPercent','最低耐久','number',{unit:'%',help:'0表示不设百分比门槛，仍须有耐久。'}),
-    configField('worldBoss.petrolReserve','汽油保留量','number',{unit:'汽油',help:'0表示不保留，仍核对实际库存和其他任务待确认费用。'}),
+    configField('worldBoss.petrolReserve','汽油保留量','number',{unit:'汽油',help:'0表示不保留，仍核对实际库存和其他任务待确认费用。出征舰队数量按每队一份汽油核对。'}),
   ]},
   { id:'fleet-dispatch',title:'舰队调度',category:'world',fields:[configField('fleetDispatch.priority','任务优先顺序','dispatchOrder',{wide:true,help:'从上到下检查，已出征舰队不抢占。有效城战时段预留优先；已启动首杀对较低优先级任务预留舰队，无目标后释放。巨轮跟随独立排序；当天世界Boss首战完成后释放舰队。'})]},
   { id: 'runtime', title: '运行安排', category: 'runtime', fields: [
@@ -544,6 +546,8 @@ function configRenderField(spec) {
     control = configPriorityEditor(spec, id); box.append(control);
   } else if (spec.kind === 'crops') {
     control = configCropEditor(spec, id); box.append(control);
+  } else if (spec.kind === 'bossTeams') {
+    control = configBossTeamEditor(spec, id); box.append(control);
   }
   if (control) {
     control.dataset.configKey = spec.key;
@@ -802,6 +806,87 @@ function configPriorityEditor(spec, id) {
     const button = configButton('添加', () => { if (select.value) { configSet(spec.key, [...values, select.value]); paint(); } }); button.setAttribute('aria-label', '添加所选需求来源'); button.disabled = true;
     select.disabled = !available.length; select.onchange = () => { button.disabled = !select.value; };
     add.append(select, button); root.append(list, add); if (focus && !focus.disabled) focus.focus();
+  }
+  paint(); return root;
+}
+
+// 世界Boss队伍名单：每行一支舰队，行内下拉多选英雄；英雄面板复用多选下拉结构。
+function configBossTeamEditor(spec, id) {
+  const root = el('div'); root.id = id; root.tabIndex = -1; root.setAttribute('role', 'group'); root.setAttribute('aria-label', spec.label);
+  const fleets = configEditor.data.catalog.expeditionFleets ?? [];
+  const heroes = configEditor.data.catalog.heroes ?? [];
+  const heroLabel = value => heroes.find(item => item.value === value)?.label || value;
+  function heroPicker(team, index) {
+    const wrap = el('details', 'config-multi config-team-heroes'); wrap.setAttribute('aria-label', '选择英雄'); wrap.tabIndex = -1;
+    const summary = el('summary'); summary.setAttribute('aria-label', '选择英雄'); wrap.append(summary);
+    const panel = el('div', 'config-multi-panel');
+    const search = el('input', 'config-input'); search.type = 'search'; search.placeholder = '搜索英雄'; search.setAttribute('aria-label', '搜索英雄');
+    const list = el('div', 'config-option-list'); const foot = el('div', 'config-select-foot');
+    const count = el('span'); let limit = 120;
+    const more = configButton('显示更多选项', () => { limit += 120; paintList(); });
+    const options = () => {
+      const all = [...heroes];
+      for (const value of team.heroes) if (!all.some(item => item.value === value)) all.unshift({ value, label: value + '（当前配置中未找到）' });
+      return all;
+    };
+    const paintSummary = () => {
+      const names = team.heroes.map(heroLabel);
+      summary.textContent = names.length ? names.slice(0, 2).join('、') + (names.length > 2 ? ' 等 ' + names.length + ' 名英雄' : '') : '选择英雄';
+    };
+    function paintList() {
+      const oldScroll = list.scrollTop; clear(list);
+      const query = search.value.trim().toLocaleLowerCase();
+      const matches = options().filter(item => (item.label + ' ' + item.value).toLocaleLowerCase().includes(query));
+      const selected = new Set(team.heroes);
+      for (const item of matches.slice(0, limit)) {
+        const label = el('label', 'config-option'); const input = el('input'); input.type = 'checkbox'; input.checked = selected.has(item.value);
+        input.onchange = () => {
+          const current = configGet(spec.key).map(row => ({ ...row }));
+          current[index].heroes = input.checked ? [...current[index].heroes, item.value] : current[index].heroes.filter(value => value !== item.value);
+          configSet(spec.key, current); team.heroes = current[index].heroes;
+          paintSummary(); count.textContent = '已选 ' + team.heroes.length + ' 名英雄 · 匹配 ' + matches.length + ' 项';
+        };
+        label.append(input, el('span', '', item.label)); list.append(label);
+      }
+      if (!matches.length) list.append(el('p', 'config-help', '没有匹配项，试试其他名称。'));
+      count.textContent = '已选 ' + team.heroes.length + ' 名英雄 · 匹配 ' + matches.length + ' 项';
+      more.hidden = matches.length <= limit; list.scrollTop = oldScroll;
+    }
+    search.oninput = () => { limit = 120; paintList(); };
+    wrap.ontoggle = () => { if (wrap.open) { paintList(); configPlacePanel(wrap, panel); search.focus(); } else wrap.classList.remove('open-up'); };
+    wrap.onkeydown = event => { if (event.key === 'Escape') { wrap.open = false; summary.focus(); event.stopPropagation(); } };
+    foot.append(count, configButton('清空英雄', () => {
+      const current = configGet(spec.key).map(row => ({ ...row })); current[index].heroes = [];
+      configSet(spec.key, current); team.heroes = []; paintSummary(); paintList();
+    }));
+    panel.append(search, list, more, foot); wrap.append(panel); paintSummary(); return wrap;
+  }
+  function paint() {
+    clear(root); const values = configGet(spec.key); const list = el('ol', 'config-order-list');
+    values.forEach((team, index) => {
+      const row = el('li', 'config-team-row');
+      const select = el('select', 'config-select'); select.setAttribute('aria-label', '名单舰队');
+      const used = new Set(values.filter((_, i) => i !== index).map(item => item.buildingId));
+      const blank = el('option', '', '选择舰队'); blank.value = ''; select.append(blank);
+      for (const item of fleets) { if (item.value !== team.buildingId && used.has(item.value)) continue; const option = el('option', '', item.label); option.value = item.value; select.append(option); }
+      if (team.buildingId && ![...select.options].some(option => option.value === team.buildingId)) { const option = el('option', '', team.buildingId + '（当前配置中未找到）'); option.value = team.buildingId; select.append(option); }
+      select.value = team.buildingId || '';
+      select.onchange = () => { const next = configGet(spec.key).map(item => ({ ...item })); next[index].buildingId = select.value; configSet(spec.key, next); paint(); };
+      const move = delta => { const next = [...configGet(spec.key)]; [next[index], next[index + delta]] = [next[index + delta], next[index]]; configSet(spec.key, next); paint(); };
+      const up = configButton('上移', () => move(-1)); up.disabled = index === 0; up.setAttribute('aria-label', '名单上移');
+      const down = configButton('下移', () => move(1)); down.disabled = index === values.length - 1; down.setAttribute('aria-label', '名单下移');
+      const remove = configButton('移除', () => { configSet(spec.key, configGet(spec.key).filter((_, i) => i !== index)); paint(); }, 'remove'); remove.setAttribute('aria-label', '移除名单');
+      row.append(el('span', 'config-order-num', String(index + 1)), select, heroPicker(team, index), el('div', 'config-order-tools', up, down, remove));
+      list.append(row);
+    });
+    if (!values.length) list.append(el('li', 'config-empty', '添加舰队，再为每支舰队勾选出征英雄。'));
+    const add = el('div', 'config-add'); const select = el('select', 'config-select'); select.setAttribute('aria-label', '添加名单舰队');
+    const available = fleets.filter(item => !values.some(row => row.buildingId === item.value));
+    const blank = el('option', '', available.length ? '选择舰队' : '已添加全部舰队'); blank.value = ''; select.append(blank);
+    for (const item of available) { const option = el('option', '', item.label); option.value = item.value; select.append(option); }
+    const button = configButton('添加舰队', () => { if (select.value) { configSet(spec.key, [...configGet(spec.key), { buildingId: select.value, heroes: [] }]); paint(); } }); button.disabled = true;
+    select.disabled = !available.length; select.onchange = () => { button.disabled = !select.value; };
+    add.append(select, button); root.append(list, add);
   }
   paint(); return root;
 }
