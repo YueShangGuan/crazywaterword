@@ -323,6 +323,8 @@ export function planWorld(survey, {
   allowReroll = false,
   minOrderExp = 0,
   maxUpgrades = Infinity,
+  // 'population'：先为只差材料的民居整单预留升级材料；'time'（默认）：材料够就升。
+  upgradePriority = 'time',
   enabled = () => true,
 } = {}) {
   const { now, have } = survey;
@@ -739,6 +741,7 @@ export function planWorld(survey, {
   }
 
   // 6. 余料升级建筑：把订单与排产占用的材料扣掉之后再比升级消耗，按人口需求升序（便宜的先生效）。
+  //    人口优先模式会先为只差材料的民居整单预留材料，再按剩余库存执行其他升级。
   planUpgrades(false);
 
   function planUpgrades(priority) {
@@ -771,8 +774,44 @@ export function planWorld(survey, {
       const gain = Math.max(0, sumEffect(row.effect, '人口增加') - (b.population ?? 0));
       upgrades.push({ building: b, row, consume, gain, costTime: row.costTime ?? 0 });
     }
-    upgrades.sort((a, b) => a.row.curPeople - b.row.curPeople || a.costTime - b.costTime);
+    // 人口优先时民居整体插队：只靠预留还不够——材料刚好够民居、但民居排在更便宜建筑
+    // 之后时，材料会在同一轮被抢先消耗，民居在升级门槛附近永久震荡。插队保证一旦材料
+    // 够了，民居先于其他建筑拿到材料。
+    const populationFirst = !priority && upgradePriority === 'population';
+    upgrades.sort((a, b) => populationFirst
+      ? Number(b.gain > 0) - Number(a.gain > 0) || a.row.curPeople - b.row.curPeople || a.costTime - b.costTime
+      : a.row.curPeople - b.row.curPeople || a.costTime - b.costTime);
+    // 人口优先：再把「其余条件都满足、只差材料」的民居升级成本整单预留出来，其他建筑
+    // 只能用预留之外的库存升级，避免用量最大、耗时最长的民居被小建筑反复抢料而长期
+    // 卡级——民居卡级会一直压住人口，进而卡住更多升级。只按下一级实际人口增量识别
+    // 民居（当前配置里只有 A/B/C 民居带「人口增加」），不维护手工建筑名单，类型改名
+    // 或新增民居时无需改动。
+    const populationReserved = new Map();
+    if (populationFirst) {
+      // 缺口按预留前的可用库存一次算清；逐个预留会让后面民居的缺口被前面的预留放大。
+      const snapshot = new Map();
+      const beforeFree = id => {
+        if (!snapshot.has(id)) snapshot.set(id, free(id));
+        return snapshot.get(id);
+      };
+      // 人口增量大的先预留；同增量时更耗时的先预留，让最长的工程先开始攒料。
+      for (const u of [...upgrades].sort((a, b) => b.gain - a.gain || b.costTime - a.costTime)) {
+        if (u.gain <= 0 || !u.consume.length) continue;
+        // 人口上限不够时缺口在指标楼，预留材料也升不了；等上限到位后再预留。
+        if (plannedPopulation + u.gain > survey.maxPopulation) continue;
+        const short = u.consume.filter(c => beforeFree(c.id) < c.num);
+        if (!short.length) continue;
+        u.reservedNote = buildingName(u.building) + '人口优先：缺'
+          + short.map(c => name(c.id) + ' ×' + (c.num - beforeFree(c.id))).join('、')
+          + '，已为本建筑整单预留升级材料，其他建筑不占用，攒齐后自动升级';
+        for (const c of u.consume) {
+          reserve(c.id, c.num);
+          populationReserved.set(c.id, (populationReserved.get(c.id) ?? 0) + c.num);
+        }
+      }
+    }
     for (const u of upgrades) {
+      if (u.reservedNote) { upgradeReasons.push(u.reservedNote); continue; }
       if (upgradeCount >= maxUpgrades) {
         notes.push(`${buildingName(u.building)} 本轮升级额度用完，下一轮再升`);
         continue;
@@ -783,7 +822,14 @@ export function planWorld(survey, {
       }
       const short = u.consume.filter(c => free(c.id) < c.num);
       if (short.length) {
-        upgradeReasons.push(buildingName(u.building) + '缺' + short.map(c => name(c.id) + ' ×' + (c.num - free(c.id))).join('、'));
+        const held = short.filter(c => populationReserved.has(c.id)).map(c => name(c.id));
+        // 人口优先预留可能把可用库存压成负数；差额最多按整份消耗表述，避免夸大缺口。
+        if (held.length && short.every(c => have(c.id) >= c.num)) {
+          upgradeReasons.push(buildingName(u.building) + '的材料已按人口优先为民居预留（' + held.join('、') + '），本轮让位，下一轮重新检查');
+          continue;
+        }
+        upgradeReasons.push(buildingName(u.building) + '缺' + short.map(c => name(c.id) + ' ×' + Math.min(c.num, Math.max(0, c.num - free(c.id)))).join('、')
+          + (held.length ? `（${held.join('、')}已按人口优先预留）` : ''));
         continue;
       }
       upgradeCount++;

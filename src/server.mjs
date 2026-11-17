@@ -2979,7 +2979,9 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog = null }
         const config = loadConfigSafe();
         const protectCargo = session.loop.tasks.cargo;
         const survey = await surveyWorld(instance, protocol, { config, player: session.player, includeCargo: protectCargo });
-        const plan = planWorld(survey, { config, allowSpeedUp: payload.speedUp === true, allowReroll: payload.reroll === true });
+        // 手动海面计划与挂机共用账号保存的升级优先排序，避免同一账号两条入口行为不一致。
+        const plan = planWorld(survey, { config, allowSpeedUp: payload.speedUp === true, allowReroll: payload.reroll === true,
+          upgradePriority: loadSettings(account.id)?.modules?.island?.upgradePriority });
         const { results } = await runWorldRound(instance, protocol, plan, {
           // 海面计划可触发账号级写入上下文，手动执行与挂机使用同一账号隔离规则。
           accountId: account.id, config, player: session.player, allowMutate: true,

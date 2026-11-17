@@ -250,7 +250,7 @@ export async function island(ctx, options) {
   const survey = await surveyWorld({ request: (name, body, response) => ctx.query(name, body, response) }, ctx.protocol, { config: ctx.config, player: ctx.player });
   // 免广告加速先于普通加速器执行，免费次数优先；同步快照后再生成加速器计划。
   await adSpeedUps(ctx, options, survey);
-  const plan = planWorld(survey, { config: ctx.config, allowSpeedUp: options.speedUp });
+  const plan = planWorld(survey, { config: ctx.config, allowSpeedUp: options.speedUp, upgradePriority: options.upgradePriority });
   const enabledKinds = { collectProduct: options.collect, gainFactory: options.factory.gain, finishUpgrade: options.finish, build: options.build, upgrade: options.upgrade, speedUpUpgrade: options.speedUp };
   const resolver = makeTypeResolver(ctx.config);
   for (const step of plan.actions) {

@@ -592,6 +592,8 @@ export async function runLoop(client, protocol, {
           allowSpeedUp: isEnabled ? enabled('speedUp') : allowSpeedUp,
           allowReroll: isEnabled ? enabled('denyOrder') : allowReroll,
           minOrderExp: isEnabled && enabled('denyOrder') ? null : 0,
+          // 旧调度接管升级时沿用账号里保存的升级优先排序；未登录账号保持默认耗时最短。
+          upgradePriority: settings?.modules?.island?.upgradePriority,
         });
         summary.world = { planned: plan.actions.length, population: survey.population + '/' + survey.maxPopulation,
           notes: [...survey.notes, ...plan.notes], results: [] };
@@ -806,7 +808,7 @@ export async function runLoop(client, protocol, {
                   if (kind === 'upgrade') return checkUpgrade && enabled('upgrade') && orderRead;
                   return kind === 'startProduce' && enabled('startProduce') && orderRead;
                 };
-                const plan = planWorld(survey, { config, enabled: allow });
+                const plan = planWorld(survey, { config, enabled: allow, upgradePriority: settings?.modules?.island?.upgradePriority });
                 const result = await runWorldRound(client, protocol, plan, { ...harvestOptions, allowMutate, enabled: allow, onStep: stepLog('world') });
                 summary.world.planned += result.results.length;
                 summary.world.results.push(...result.results);

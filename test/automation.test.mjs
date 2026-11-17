@@ -16,6 +16,7 @@ const { defaultSettings, saveSettings, loadSettings, businessDate, loadLedger, v
 const { createContext, idString, validateMessage, withRoleLock } = await import('../src/automation/context.mjs');
 const { runAutomation, HANDLERS, handledDailyIds, guardedDailyAction, legacyAction, runPriorityDiscountShop, discountPurchaseKey, automationStatus, releaseExpiredLocks } = await import('../src/automation/service.mjs');
 const { resetRepairSpeedUpFallbackState } = await import('../src/automation/world.mjs');
+const { planWorld, surveyWorld } = await import('../src/world.mjs');
 const { pirateDailySweepLimit, pirateSweepProgress } = await import('../src/pirates.mjs');
 const { inWindows } = await import('../src/automation/common.mjs');
 const { placementsFor } = await import('../src/automation/snap.mjs');
@@ -474,6 +475,90 @@ test('settings: migrates legacy pirate sweep type IDs without widening an implic
   assert.deepEqual(loadSettings('legacy-pirate-target').modules.world.pirate.sweepTypes, [{ type: 1, times: 2 }, { type: 2, times: 2 }, { type: 3, times: 1 }]);
   const persisted = JSON.parse(fs.readFileSync(path.join(accountDirectory('legacy-pirate-target'), 'settings.json'), 'utf8'));
   assert.deepEqual(persisted.modules.world.pirate.sweepTypes, [{ type: 1, times: 2 }, { type: 2, times: 2 }, { type: 3, times: 1 }]);
+});
+
+/** 升级优先排序是固定枚举；错误值必须在保存前被拒绝，不能静默回落。 */
+test('settings: island upgrade priority accepts only the documented enum', () => {
+  const settings = defaultSettings();
+  assert.equal(settings.modules.island.upgradePriority, 'time');
+  settings.modules.island.upgradePriority = 'population';
+  assert.equal(validateSettings(settings).modules.island.upgradePriority, 'population');
+  settings.modules.island.upgradePriority = 'cheapest';
+  assert.throws(() => validateSettings(settings), /优先排序无效/);
+});
+
+/**
+ * 人口优先排序：只差材料的民居整单预留材料，其他建筑只能用剩余库存升级；
+ * 材料充足或缺口在人口上限时保持原有行为。
+ */
+test('island upgrade priority: population mode reserves materials for starved residences', async () => {
+  const config = { materialName: id => id, tables: {
+    GameParamCfg: { data: [{ paramName: '初始人口', paramValue: 20 }, { paramName: '初始人口上限', paramValue: 60 }] },
+    BuildingCfg: { data: [{ buildingType: 'A民居', name: '民居' }, { buildingType: '仓库', name: '仓库' }] },
+    BuildingUnlockCfg: { data: [] },
+    BuildingUpgradeCfg: { data: [
+      { buildingType: 'A民居', level: 1, effect: [['人口增加', 4]], curPeople: 0, costTime: 60 },
+      { buildingType: 'A民居', level: 2, effect: [['人口增加', 8]], curPeople: 15, costTime: 7200, consume: [['木材', 100]] },
+      { buildingType: '仓库', level: 1, effect: [['人口上限', 20]], curPeople: 0, costTime: 60 },
+      { buildingType: '仓库', level: 2, effect: [['人口上限', 30]], curPeople: 5, costTime: 300, consume: [['木材', 50]] },
+    ] },
+    BuildingProduceCfg: { data: [] },
+    FarmlandPlantCfg: { data: [] },
+  } };
+  const protocol = Object.fromEntries(['OnWater', 'AllItem'].flatMap(type => [[type + 'Request', true], [type + 'Response', true]]));
+  const client = wood => ({
+    connected: true,
+    async request(name) {
+      if (name === 'OnWaterRequest') return { building: [
+        { buildingId: '1A民居', level: 1 }, { buildingId: '2A民居', level: 1 }, { buildingId: '1仓库', level: 1 },
+      ] };
+      if (name === 'AllItemRequest') return { items: [{ itemId: '木材', num: wood }] };
+      return {};
+    },
+  });
+  const plan = async (wood, priority) => planWorld(
+    await surveyWorld(client(wood), protocol, { config, player: { level: 30 }, includeWeekOrder: false }),
+    { config, upgradePriority: priority, enabled: key => key === 'upgrade' });
+
+  // 耗时最短（默认）：仓库先升掉木材，两座民居继续缺料。
+  const fastest = await plan(90, 'time');
+  assert.deepEqual(fastest.actions.map(a => a.body.buildingId), ['1仓库']);
+  assert.deepEqual(fastest.reserved, [['木材', 50]]);
+  assert.match(fastest.upgradeReasons.join('；'), /民居.*缺木材 ×60/);
+  assert.doesNotMatch(fastest.upgradeReasons.join('；'), /人口优先/);
+
+  // 人口优先：两座民居各整单预留 100 木材，仓库和民居本轮都不再升级。
+  const held = await plan(90, 'population');
+  assert.deepEqual(held.actions, []);
+  assert.deepEqual(held.reserved, [['木材', 200]]);
+  const reasons = held.upgradeReasons.join('；');
+  assert.equal((reasons.match(/人口优先：缺木材 ×10/g) ?? []).length, 2, '两座民居都按预留前的库存报告缺口');
+  assert.match(reasons, /仓库的材料已按人口优先为民居预留（木材），本轮让位/);
+
+  // 门槛区间（100 ≤ 木材 < 150）：民居插队先升，仓库本轮让位；若只预留不插队，
+  // 仓库会先抢走 50 把库存打回缺料区，民居在门槛附近永久震荡。
+  const band = await plan(110, 'population');
+  assert.deepEqual(band.actions.map(a => a.body.buildingId), ['1A民居']);
+  assert.deepEqual(band.reserved, [['木材', 100]]);
+  assert.deepEqual((await plan(110, 'time')).actions.map(a => a.body.buildingId), ['1仓库']);
+
+  // 材料充足时人口优先不改变结果：三座建筑按现有顺序全部升级。
+  const rich = await plan(320, 'population');
+  assert.deepEqual(rich.actions.map(a => a.body.buildingId).sort(), ['1A民居', '1仓库', '2A民居']);
+  assert.deepEqual(rich.reserved, [['木材', 250]]);
+
+  // 缺口在人口上限时（需要指标楼）不预留材料，避免白占库存。
+  const stock = new Map([['木材', 90]]);
+  const capped = planWorld({
+    now: 0, serverNow: 0, player: { level: 30 }, stock, have: id => stock.get(id) ?? 0,
+    buildings: [{ buildingId: '1A民居', type: 'A民居', level: 1, buildStartTime: 0, buildFinishTime: 0, population: 4, factory: null, product: [] }],
+    factories: [], orders: [], weekOrder: [], cargoOrder: new Map(), orderCheckError: '',
+    orderOfTheDay: { orderNum: 0, rewardedNum: 0 }, population: 40, futurePopulation: 40, maxPopulation: 42,
+    stockCap: 999, factorySlots: 6, notes: [], autoFarming: true,
+  }, { config, upgradePriority: 'population', enabled: key => key === 'upgrade' });
+  assert.deepEqual(capped.actions, []);
+  assert.deepEqual(capped.reserved, []);
+  assert.match(capped.upgradeReasons.join('；'), /升级后人口超过上限 42/);
 });
 
 test('automation UI: merchant ship uses form controls instead of a fleet JSON textarea', () => {

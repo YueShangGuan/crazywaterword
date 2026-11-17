@@ -18,9 +18,13 @@ const executionModes = {
   'modules.antique.suit.activate': ['wednesday', '周三开启'],
   'modules.equip.enabled': ['friday', '周五开启']
 };
+// 枚举型字符串设置用固定下拉提交代码值，避免自由文本输入绕过服务端枚举校验。
+const enumSettingChoices = {
+  'modules.island.upgradePriority': [['time','耗时最短'],['population','人口优先']],
+};
 const automationLabels = {
   season:'当前赛季',vipFreeAd:'VIP免广告',spending:'钻石消费',enabled:'开启',dailyLimit:'每日总额度',mondayLimit:'周一总额度',minRubyStock:'最低钻石保留量',clickGoldTimes:'钻石点金次数',modules:'各模块每日额度',adSpeedUp:'免广告加速（建造/生产）',
-  collect:'领取产物',finish:'自动竣工',build:'自动建造',upgrade:'自动升级',speedUp:'使用加速道具',disabledBuildings:'禁用建筑',factory:'工厂',gain:'领取成品',autoProduce:'自动生产',products:'工厂产品（建筑类型 → 产品）',disabledFactories:'禁用工厂',priorityProduce:'需求优先生产',proposedPriority:'需求顺序',speedUpForDemand:'为需求加速',
+  collect:'领取产物',finish:'自动竣工',build:'自动建造',upgrade:'自动升级',upgradePriority:'升级优先排序',speedUp:'使用加速道具',disabledBuildings:'禁用建筑',factory:'工厂',gain:'领取成品',autoProduce:'自动生产',products:'工厂产品（建筑类型 → 产品）',disabledFactories:'禁用工厂',priorityProduce:'需求优先生产',proposedPriority:'需求顺序',speedUpForDemand:'为需求加速',
   harvest:'收割',plant:'种植',cropPriorities:'作物优先级（数字越小越优先）',cropKeepStock:'作物库存水位',priorityPlant:'订单需求优先',seedOnDemand:'缺种子时安排生产',speedUpMaxActions:'每轮最多加速次数',orderReward:'领取订单档位奖',blockedMaterials:'禁止交单材料',skipCropOrders:'跳过作物订单',minExp:'最低经验奖励',minGold:'最低金币奖励',dailyCap:'每日次数上限（0 不设本地上限）',fill:'装填货船',reward:'领取奖励',optionIndex:'选择选项（1 或 2）',
   fishing:'钓鱼',maxFishCasts:'每轮最多钓鱼次数',floater:'拾取浮漂',floaterCollectWhenFull:'满仓仍收取浮漂',openChests:'使用钥匙开箱',maxChests:'每轮最多开箱次数',diving:'潜水',divingEach:'每种潜水材料数量',salvage:'拾荒',salvageEach:'每种拾荒材料数量',enhance:'采集强化',enhanceTargetLevel:'强化目标等级',claim:'领取',levelUp:'升级',levelReward:'领取等级奖励',claimAfterHours:'累计挂机几小时后领取',
   heroes:'指定英雄',levelUpMaxActions:'每轮升级轮数',starUp:'升星',skillLevelUp:'技能升级',skillAdvance:'技能进阶',exclusiveLevelUp:'专武升级',exclusiveStarUp:'专武升星',equipEnhance:'强化所选英雄装备',badgeEnhance:'强化所选英雄徽章',badgeExpItemNum:'徽章经验道具数量',appoint:'委任',positions:'委任位置（按英雄顺序）',watchSkillVideo:'请求英雄广告奖励',universal:'允许万能材料',fragRecruit:'使用碎片招募所选英雄',recruit:'招募',free:'免费次数',tickets:'使用现有券',points:'领取招募积分奖',maxDraws:'每轮最多抽取次数',activate:'激活',suit:'套装',
@@ -71,6 +75,7 @@ const automationSettingCopy = {
   season: { note:'赛季 0 不执行依赖赛季配置的玩法；这里填地图场景编号（1 世界地图 / 2 黑潮侵袭），填写后赛季城市和科技等候选项才会刷新。居民订单档位奖励与此设置无关，按 worldId 推导的档位表领取。' },
   vipFreeAd: { note:'仅当前连接角色等级达到 10 级且 VIP 达到 3 级时显示。开启后，在挑战模块已启用、对应试炼已通关且广告额度未用尽时，自动领取英雄经验、强化石、宠物经验试炼的每日免广告额外扫荡奖励，无需开启钻石扫荡；在挂机模块已启用且当日广告额度未用尽时，自动领取挂机收益的每日免广告额外奖励（每日 1 次，无需等待挂机时长）。工厂生产与建筑升级广告加速由“建筑与工厂”中的独立开关控制；英雄广告招募、藏品广告招募和广告商店奖励暂未接入此开关。' },
   'modules.island.adSpeedUp': { title:'使用免广告加速（建造/生产）', note:'仅当前连接角色 VIP 达到 3 级时生效。只对剩余时间严格超过 30 分钟的建造或生产使用：29 分钟跳过，31 分钟执行；每次先登记广告权益，再按抓包确认的 type=3、useNum=0 加速，不消耗加速器或钻石。建筑和工厂分别按 AdvEffectCfg 的每日额度（当前各 3 次）执行，本地按北京时间记录当天已用次数；用完后不再查询广告次数，跨天后自动恢复。' },
+  'modules.island.upgradePriority': { title:'升级优先排序', note:'“耗时最短”与现有行为一致：材料够就升级。“人口优先”先找出其余条件都满足、只差材料的民居（按下一级真实人口增量识别，当前配置里只有 A/B/C 民居升级会增加人口），为它们整单预留升级材料，并让民居升级排在其他建筑之前；其他建筑升级只能使用预留之外的库存，人口增量大的民居先预留，攒齐材料后自动升级，避免民居被小建筑抢料长期卡级、进而卡住依赖人口的其他升级。只影响升级的执行顺序与材料预留，不改变周订单工厂、建造和生产排产的现有优先级。' },
   spending: { note:'这是所有钻石操作的共同护栏，不会自行触发消费；每一次消费都要同时通过总开关、总额度、模块额度和余额保留量。' },
   'spending.enabled': { note:'只允许已经在玩法中勾选的钻石操作；关闭时任何模块都不会花钻石。' },
   'spending.dailyLimit': { note:'同一账号所有角色每日合计的消费上限，已确认消费和结果未确认的预留都会占用；0 禁止全部钻石消费。' },
@@ -1026,7 +1031,10 @@ function settingFields(value, path, parent) {
     }
     const label = el('label', 'automation-field'); label.appendChild(settingText(title, copy.note));
     const mode = executionModes[pathName];
-    const input = mode ? editorSelect([{value:'off',label:'关闭'},{value:'always',label:'开启'},{value:mode[0],label:mode[1]}], sample, title) : editorInput(key, sample);
+    const enumChoice = enumSettingChoices[pathName];
+    const input = mode ? editorSelect([{value:'off',label:'关闭'},{value:'always',label:'开启'},{value:mode[0],label:mode[1]}], sample, title)
+      : enumChoice ? editorSelect(enumChoice.map(([value, choiceLabel]) => ({ value, label: choiceLabel })), sample, title)
+      : editorInput(key, sample);
     if (copy.note) input.title = copy.note;
     // 城市与科技候选项依赖赛季；切换时重新生成候选项并保留当前表单选择。
     if (key === 'season') input.onchange = refreshEditorOptions;

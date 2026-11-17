@@ -37,7 +37,7 @@ export function defaultSettings() {
     notifications: { wecom: { enabled: false, webhook: '' } },
     spending: { enabled: false, dailyLimit: 0, minRubyStock: 0, clickGoldTimes: 0, dailiesDiscountTickets2x: false, modules: Object.fromEntries([...MODULES, 'dailies'].map(id => [id, 0])) },
     modules: {
-      island: { enabled: false, collect: true, finish: true, build: false, upgrade: false, speedUp: false, adSpeedUp: false, disabledBuildings: [], factory: {
+      island: { enabled: false, collect: true, finish: true, build: false, upgrade: false, upgradePriority: 'time', speedUp: false, adSpeedUp: false, disabledBuildings: [], factory: {
         gain: true, autoProduce: false, products: {}, disabledFactories: [], priorityProduce: false, mondayGuildPriority: false, proposedPriority: ['resident', 'cargo', 'guild'], speedUpForDemand: false,
         // 分档只使用单件实际耗时；库存目标是订单/配方消耗之外的余量，不默认补满仓。
         fastTimeSecs: 300, shortTimeSecs: 600, fastStockLow: 5, fastStockHigh: 10, shortStockLow: 3, shortStockHigh: 5,
@@ -232,6 +232,7 @@ export function validateSettings(value, { pirateDailyLimit = null } = {}) {
   if (pirateDailyLimit !== null && pirate.dailySweepLimit > pirateDailyLimit)
     throw new Error(`每日扫荡次数不能超过当前角色上限 ${pirateDailyLimit} 次`);
   if (![1, 2].includes(result.modules.choiceEvent.optionIndex)) throw new Error('选择事件选项必须为 1 或 2');
+  if (!['time', 'population'].includes(result.modules.island.upgradePriority)) throw new Error('建筑升级优先排序无效');
   if (result.modules.activity.snowball.minEnergy < 1) throw new Error('走江踏浪启动能量必须至少为 1');
   if (result.modules.battle.expedition.challengeMinTeamHpPct > 100) throw new Error('远征最低血量不能超过 100%');
   if (result.modules.island.factory.proposedPriority.some(id => !['resident', 'cargo', 'guild'].includes(id))) throw new Error('需求来源无效');
