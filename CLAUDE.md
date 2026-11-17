@@ -84,6 +84,7 @@ CLI 模式见 `src/app.mjs` 的 `main()`。本地只读：`accounts`、`actions`
 ### 容易踩的数据细节
 
 - 未安装 Long 库，int64 解码为 `{ low, high, unsigned }`。比较前用 `client.mjs` 的 `toNumber`；UID 这类超出安全整数的值要按字符串处理，如 `hero-equipment.mjs` 的 `uidText`。
+- 部分秒级时间戳字段（如培育队列 `finishTime`）按 int32 传输：测试夹具里填超过 2^31 的「远未来」值会在 protobuf 编解码往返中静默回绕成过去时间，导致「仍在进行」类判断意外为假。夹具时间戳要落在 int32 秒范围内（≤ 2038 年）。
 - 服务端时间用 `Date.now() + client.serverClockOffsetMs`，每日重置按北京时间计算。
 - 合服后 `GameWorldInfo.worldId` 可能不等于角色的 `worldId`。
 

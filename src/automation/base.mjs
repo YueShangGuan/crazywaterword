@@ -3,7 +3,7 @@ import { nextOrderTier } from '../tasks.mjs';
 import { amount, idString } from './context.mjs';
 import { costs, discardExpiredVipRegistration, repeat, succeeded, skip, awaitPush, mutate, reconcileFactoryHarvestPending } from './common.mjs';
 import { scheduleProduction } from './production.mjs';
-import { serverTime, shanghaiWeekday } from './schedule.mjs';
+import { moduleActive, serverTime, shanghaiWeekday } from './schedule.mjs';
 
 /**
  * 仅从当前连接的活动推送读取仍在进行中的英雄突袭订单，防止过期活动或上一连接的状态进入排产。
@@ -64,7 +64,7 @@ async function completeHeroRaidOrder(ctx) {
 }
 
 /**
- * 汇总居民、货船、联盟和当前英雄突袭的实际需求，按来源顺序分配同一份库存。
+ * 汇总居民、货船、联盟、当前英雄突袭和海兽喂养的实际需求，按来源顺序分配同一份库存。
  *
  * @param {object} ctx 自动化上下文。
  * @param {string[]} sources 需要参与汇总的业务来源。
@@ -83,6 +83,13 @@ export async function demand(ctx, sources = ['resident', 'cargo', 'guild'], { in
       if (source === 'heroRaid') {
         const current = await activeHeroRaidOrder(ctx);
         if (current) add(current.order.orderList.map(([id, num]) => ({ type: 0, id, num })), source);
+      }
+      if (source === 'petFeed') {
+        const water = await ctx.query('OnWaterRequest');
+        for (const building of water.building ?? []) for (const job of building.petBreed?.breedQ ?? []) {
+          // 只为仍在培育且服务端还列出喂养材料的任务补产；已喂满或到点待成熟的队列没有喂养动作。
+          if (job.feedRequirements?.length && job.finishTime > ctx.now() / 1000) add(job.feedRequirements, source);
+        }
       }
     } catch (error) { skip(ctx, `${source} 需求不可用：${error.message}`); }
   }
@@ -274,8 +281,10 @@ export async function island(ctx, options) {
   // 英雄突袭订单属于需求优先排产的一部分；关闭该排产时不能仅因进入海岛模块就额外消耗库存。
   if (f.priorityProduce) await completeHeroRaidOrder(ctx);
   // 预读募兵供跨午夜策略切换；排产器只在周一纳入额外来源，其他日期保持保存的来源顺序。
-  // 英雄突袭只有当前活动推送有效时才贡献缺口。
-  const needs = f.priorityProduce ? await demand(ctx, [...new Set([...f.proposedPriority, ...(f.mondayGuildPriority ? ['guild'] : []), 'heroRaid'])], { includeCovered: true }) : [];
+  // 英雄突袭只有当前活动推送有效时才贡献缺口；海兽喂养只在宠物执行日为培育队列补产材料。
+  const petOptions = ctx.settings.modules.pet;
+  const petFeedSource = petOptions.feed && moduleActive('pet', petOptions, ctx) ? ['petFeed'] : [];
+  const needs = f.priorityProduce ? await demand(ctx, [...new Set([...f.proposedPriority, ...(f.mondayGuildPriority ? ['guild'] : []), 'heroRaid', ...petFeedSource])], { includeCovered: true }) : [];
   const water = await ctx.query('OnWaterRequest');
   for (const building of water.building ?? []) {
     if (!building.factory) continue;

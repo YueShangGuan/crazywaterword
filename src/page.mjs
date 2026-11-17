@@ -1373,9 +1373,10 @@ function putCell(td, spec) {
     const list = spec.cells ?? [{ name: spec.text, icon: spec.cell }];
     if (spec.prefix) td.appendChild(el('span', 'dim', spec.prefix));
     for (const entry of list) {
+      const label = (entry ? entry.name ?? entry.tip : spec.text) ?? '';
       const who = el('span', 'who-cell');
-      if (entry?.icon) who.appendChild(iconEl(entry.icon, 26, entry.name));
-      who.appendChild(el('span', null, entry ? entry.name + (entry.num != null ? ' x' + fmt(entry.num) : '') : spec.text));
+      if (entry?.icon) who.appendChild(iconEl(entry.icon, 26, label));
+      who.appendChild(el('span', null, label + (entry?.num != null ? ' x' + fmt(entry.num) : '')));
       td.appendChild(who);
       td.appendChild(document.createTextNode(' '));
     }
@@ -2092,6 +2093,17 @@ function renderOverviewCityWar(stats) {
   ]);
 }
 
+/** 复用万吨货轮奖品清单的展示：只画图标，名字收进悬停提示，不再渲染文字列。 */
+function iconTipList(items) {
+  const list = el('div', 'overview-reward-list');
+  for (const item of items) {
+    const box = el('span', 'overview-reward-item');
+    box.appendChild(iconEl(item.icon, 26, item.tip || item.name || ''));
+    list.appendChild(box);
+  }
+  return list;
+}
+
 /** Renders every farm crop and factory queue item so operators can distinguish an empty queue from a finished product. */
 function renderOverviewProduction(data) {
   const box = clear($('overview-production'));
@@ -2111,8 +2123,8 @@ function renderOverviewProduction(data) {
     const ripe = farm.productId && farm.ripeTime && farm.ripeTime <= Date.now() / 1000;
     const status = !farm.productId ? chip('paid', '空闲') : ripe ? chip('done', '已成熟')
       : chip('ready', farm.ripeTime ? '生长至 ' + when(farm.ripeTime * 1000) : '种植中');
-    // 作物只留图标，名字收进悬停提示，让面板默认保持紧凑。
-    return [farm.buildingId, farm.productId ? { cells: [{ icon: farm.icon, tip: farm.name || farm.productId }] } : '未种植', status];
+    // 作物只留图标，名字收进悬停提示（同货轮奖品清单），面板默认保持紧凑。
+    return [farm.buildingId, farm.productId ? iconTipList([{ icon: farm.icon, tip: farm.name || farm.productId }]) : '未种植', status];
   }));
   // 默认只展示两行，保留滚动容器让较长的农田列表仍可在卡片内浏览；悬停时由 CSS 展开完整内容。
   const farmScroll = el('div', 'overview-production-scroll');
@@ -2123,14 +2135,14 @@ function renderOverviewProduction(data) {
   factoryPane.appendChild(el('h4', null, '工厂（' + factories.length + ' 座）'));
   const factoryTable = table(['工厂', '产品', '状态 / 完成时间'], factories.map((factory) => {
     const queue = factory.queue || [];
-    // 队列每项只留图标、名字收进悬停提示，避免长队列把面板撑成竖条。
+    // 队列每项只留图标、名字收进悬停提示（同货轮奖品清单），避免长队列把面板撑成竖条。
     const products = queue.length ? queue.map((job) => ({ icon: job.icon, tip: job.name || job.productId || '' }))
       : factory.autoProductId ? [{ icon: factory.autoIcon, tip: '自动：' + (factory.autoName || factory.autoProductId) }] : [];
     const finish = queue.filter((job) => job.finishTime).map((job) => when(job.finishTime * 1000)).join('、');
     const status = queue.length ? chip('ready', '生产中 ' + queue.length + ' 项')
       : factory.autoProductId ? chip('ready', '自动生产')
         : factory.finished?.length ? chip('paid', '待领取 ' + factory.finished.length + ' 项') : chip('paid', '空闲');
-    return [factory.buildingId, products.length ? { cells: products } : '无排产', finish ? '生产中至 ' + finish : status];
+    return [factory.buildingId, products.length ? iconTipList(products) : '无排产', finish ? '生产中至 ' + finish : status];
   }));
   // 工厂队列可能比农田更长；使用同样的容器规则，避免低优先级信息挤占总览首屏空间。
   const factoryScroll = el('div', 'overview-production-scroll');

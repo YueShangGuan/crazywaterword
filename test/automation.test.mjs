@@ -5921,6 +5921,71 @@ test('demand sources: preserve guild identity and share stock once, crop shortag
   assert.equal(crops.length, 1); assert.equal(crops[0].lack, 5); f.ctx.dispose();
 });
 
+test('demand sources: petFeed counts only unfed in-progress breeding jobs', async () => {
+  const { demand } = await import('../src/automation/base.mjs');
+  const f = fixture({ states: { OnWaterRequest: { building: [{ buildingId: '1海兽培育室', level: 1, petBreed: { breedQ: [
+    { idx: 1, feedRequirements: [{ id: '烤鱼', type: 0, num: 2 }, { id: '生鱼片', type: 0, num: 1 }], finishTime: fixedNow / 1000 + 3600 },
+    { idx: 2, feedRequirements: [{ id: '烤鱼', type: 0, num: 3 }], finishTime: fixedNow / 1000 - 10 },
+    { idx: 3, finishTime: fixedNow / 1000 + 7200 },
+  ] } }] } } });
+  f.client.items.set('烤鱼', 1); await f.ctx.refreshStock();
+  const full = await demand(f.ctx, ['petFeed'], { includeCovered: true });
+  // 到点待成熟的 idx=2 和已喂满的 idx=3 都不产生喂养需求；现货先抵扣烤鱼缺口。
+  assert.deepEqual(full.map(row => [row.source, row.need, row.lack]), [['petFeed', 2, 1], ['petFeed', 1, 1]]);
+  const lacking = await demand(f.ctx, ['petFeed']);
+  assert.deepEqual(lacking.map(row => [row.id, row.lack]), [['烤鱼', 1], ['生鱼片', 1]]);
+  f.ctx.dispose();
+});
+
+test('island: pet feed day schedules feeding materials on their own factories', async () => {
+  const f = await moduleRun('island', { collect: false, finish: false }, ({ ctx, client, settings }) => {
+    Object.assign(settings.modules.island.factory, { gain: false, priorityProduce: true, proposedPriority: [],
+      fastStockLow: 0, fastStockHigh: 0, shortStockLow: 0, shortStockHigh: 0 });
+    settings.modules.pet.feed = true; settings.modules.pet.enabled = 'tuesday';
+    table(ctx, 'BuildingCfg', [{ buildingType: '食品厂' }, { buildingType: '切鱼厂' }, { buildingType: '海兽培育室' }]);
+    table(ctx, 'BuildingProduceParamCfg', [{ paramName: '制造位上限', paramValue: 4 }]);
+    table(ctx, 'GameParamCfg', [{ paramName: '产品存量初始上限', paramValue: 50 }]);
+    table(ctx, 'BuildingProduceCfg', [
+      { buildType: '食品厂', itemId: '烤鱼', unlockLevel: 1, produceTime: 300, costItem: [['鱼', 1], ['木材', 5]] },
+      { buildType: '切鱼厂', itemId: '生鱼片', unlockLevel: 1, produceTime: 90, costItem: [['鱼', 6]] },
+    ]);
+    client.items.set('鱼', 30); client.items.set('木材', 20);
+  }, { now: () => Date.parse('2026-11-17T12:00:00+08:00'),
+    states: { OnWaterRequest: { building: [
+      { buildingId: '1海兽培育室', level: 1, petBreed: { breedQ: [{ idx: 1, feedRequirements: [{ id: '烤鱼', type: 0, num: 2 }, { id: '生鱼片', type: 0, num: 2 }], finishTime: 1800000000 }] } },
+      { buildingId: '1食品厂', level: 1, factory: { factoryQ: [], finishedProducts: [] } },
+      { buildingId: '1切鱼厂', level: 1, factory: { factoryQ: [], finishedProducts: [] } },
+    ] } },
+    handlers: { StartFactoryProduceRequest: async (body, _response, client) => {
+      const factory = client.states.OnWaterRequest.building.find(row => row.buildingId === body.buildingId).factory;
+      const recipes = { 烤鱼: { costItem: [['鱼', 1], ['木材', 5]] }, 生鱼片: { costItem: [['鱼', 6]] } };
+      for (const [id, num] of recipes[body.productId].costItem) client.items.set(id, client.items.get(id) - num);
+      factory.factoryQ.push({ idx: factory.factoryQ.length + 1, productId: body.productId, finishTime: 0 });
+    } } });
+  const starts = f.client.calls.filter(call => call.name === 'StartFactoryProduceRequest').map(call => call.body.productId).sort();
+  assert.deepEqual(starts, ['烤鱼', '烤鱼', '生鱼片', '生鱼片']);
+});
+
+test('island: outside the pet feed day feeding materials are not scheduled', async () => {
+  const f = await moduleRun('island', { collect: false, finish: false }, ({ ctx, client, settings }) => {
+    Object.assign(settings.modules.island.factory, { gain: false, priorityProduce: true, proposedPriority: [],
+      fastStockLow: 0, fastStockHigh: 0, shortStockLow: 0, shortStockHigh: 0 });
+    settings.modules.pet.feed = true; settings.modules.pet.enabled = 'tuesday';
+    table(ctx, 'BuildingCfg', [{ buildingType: '食品厂' }, { buildingType: '切鱼厂' }, { buildingType: '海兽培育室' }]);
+    table(ctx, 'BuildingProduceParamCfg', [{ paramName: '制造位上限', paramValue: 4 }]);
+    table(ctx, 'GameParamCfg', [{ paramName: '产品存量初始上限', paramValue: 50 }]);
+    table(ctx, 'BuildingProduceCfg', [
+      { buildType: '食品厂', itemId: '烤鱼', unlockLevel: 1, produceTime: 300, costItem: [['鱼', 1], ['木材', 5]] },
+      { buildType: '切鱼厂', itemId: '生鱼片', unlockLevel: 1, produceTime: 90, costItem: [['鱼', 6]] },
+    ]);
+    client.items.set('鱼', 30); client.items.set('木材', 20);
+  }, { states: { OnWaterRequest: { building: [
+    { buildingId: '1海兽培育室', level: 1, petBreed: { breedQ: [{ idx: 1, feedRequirements: [{ id: '烤鱼', type: 0, num: 2 }], finishTime: 1800000000 }] } },
+    { buildingId: '1食品厂', level: 1, factory: { factoryQ: [], finishedProducts: [] } },
+  ] } } });
+  assert.equal(f.client.calls.filter(call => call.name === 'StartFactoryProduceRequest').length, 0);
+});
+
 test('legacy task entry: guild order follows the plain switch while pet/equipment keep their off-day modes', async () => {
   const f = fixture(); f.settings.modules.guild.enabled = true; f.settings.modules.guild.order.enabled = false;
   f.settings.modules.pet.enabled = 'tuesday'; f.settings.modules.equip.enabled = 'friday';
