@@ -175,9 +175,11 @@ export async function prepareDailyBreed(ctx) {
   if (!(cfg?.target > 0)) return skip(ctx, '缺少勇士战令培育任务配置，不补做');
   const state = await ctx.query('WeekBattlePassInfoRequest');
   const task = state.task?.find(row => row.taskId === cfg.taskId);
-  if (!task) return skip(ctx, '缺少勇士战令培育任务状态，不补做');
+  // 服务器只下发已产生进度的任务（2026-11-18 实测 2014 期列表只有 1001/1005/1006 在列），
+  // 零进度的一次性任务不在列表里；缺条目按未开始（进度 0）处理，培育一次让任务上线，
+  // 否则守卫会永远等不到它出现，本期战令培育分丢失。已领取的任务会留在列表里，不缺条目。
   // proto3 默认值不上线：progress 字段缺省即 0，不能视作任务状态缺失。
-  if (task.isGot || amount(task.progress) >= cfg.target) return skip(ctx, '勇士战令海兽培育任务已达标');
+  if (task?.isGot || amount(task?.progress) >= cfg.target) return skip(ctx, '勇士战令海兽培育任务已达标');
   await ctx.refreshStock();
   const water = await ctx.query('OnWaterRequest'), room = breedRoom(ctx, water);
   if (!room || !(room.petBreed.maxQLength > (room.petBreed.breedQ?.length ?? 0))) return skip(ctx, '每日培育缺少真实培育室空位，下一轮重查');

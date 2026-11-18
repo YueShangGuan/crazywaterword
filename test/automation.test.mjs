@@ -5987,16 +5987,25 @@ test('daily breed: pet off still supplements once, lowest available quality and 
   assert.equal(f.client.calls.filter(row => row.name === 'PetBreedRequest').length, 1); restored.dispose();
 });
 
-for (const situation of ['complete', 'claimed', 'missing task', 'full', 'materials', 'closed']) test(`daily breed: skip ${situation}`, async () => {
+for (const situation of ['complete', 'claimed', 'full', 'materials', 'closed']) test(`daily breed: skip ${situation}`, async () => {
   const f = breedFixture(), state = f.client.states.WeekBattlePassInfoRequest;
   if (situation === 'complete') state.task[0].progress = 1;
   if (situation === 'claimed') state.task[0].isGot = true;
-  if (situation === 'missing task') state.task = [];
   if (situation === 'full') f.client.states.OnWaterRequest.building[0].petBreed.maxQLength = 0;
   if (situation === 'materials') f.client.items.clear();
   if (situation === 'closed') f.client.states.WeekInfoRequest.activityTime = [];
   await prepareDailyBreed(f.ctx);
   assert.equal(f.client.calls.filter(row => row.name === 'PetBreedRequest' || row.name === 'GetMaturePetRequest').length, 0); f.ctx.dispose();
+});
+
+/** 服务器只下发已产生进度的任务：列表里没有培育任务（进度 0 未上线）必须照常补做一次。 */
+test('daily breed: task absent from server list (zero progress not listed) still breeds once', async () => {
+  const f = breedFixture(), state = f.client.states.WeekBattlePassInfoRequest;
+  // 模拟 2026-11-18 实测形状：列表只有已开始的 1001/1005，培育任务 1003 缺席。
+  state.task = [{ taskId: 1001, progress: 1, isGot: true }];
+  await prepareDailyBreed(f.ctx); await prepareDailyBreed(f.ctx);
+  assert.deepEqual(f.client.calls.filter(row => row.name === 'PetBreedRequest').map(row => row.body), [{ petId: '蓝A', universal: false }]);
+  f.ctx.dispose();
 });
 
 test('daily breed: proto3 omits zero progress on the wire, fresh task still breeds once', async () => {
