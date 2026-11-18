@@ -11,6 +11,13 @@ export async function activities(ctx) {
   return state;
 }
 
+/** 周活动档期由 WeekInfo 下发，只有开放中的行（type：4=周抽奖，7=周翻牌）。 */
+async function openWeekRow(ctx, type) {
+  const second = ctx.now() / 1000;
+  return ((await ctx.query('WeekInfoRequest')).activityTime ?? [])
+    .find(row => row.type === type && row.startTime <= second && second < row.endTime) ?? null;
+}
+
 /** 福利领取使用服务端已达标状态；周抽奖和专属抽奖均独立于日奖开关。 */
 export async function welfare(ctx, options) {
   if (options.growth) await repeat(ctx, 50, async () => {
@@ -55,13 +62,15 @@ export async function welfare(ctx, options) {
     if (comic?.isRead && !comic.gotDaily) await mutate(ctx, 'ComicDramaGotDailyRequest', {}, 'MainTaskInfoRequest', s => s.comicDrama?.gotDaily);
   }
   if (options.weeklyLottery) {
-    // 周抽奖活动未开放时会拒绝信息查询，所以必须由独立开关显式授权。
-    // 拒绝只能中断本项：后面的限购零元礼包、皮肤赠礼与本活动无关，不能陪葬。
+    // 周抽奖按期次排期：档期没开时服务器会直接拒绝信息查询（提示码 74），
+    // 与礼包是否已领无关——已领判断在下面 gotTimes 处，只有查询成功才会走到。
+    // 未开放保持安静不刷记录；真正的查询拒绝仍要可见，且只能中断本项：
+    // 后面的限购零元礼包、皮肤赠礼与本活动无关，不能陪葬。
     let lottery = null;
     try {
-      lottery = await ctx.query('WeekLotteryInfoRequest');
+      if (await openWeekRow(ctx, 4)) lottery = await ctx.query('WeekLotteryInfoRequest');
     } catch (error) {
-      skip(ctx, `周抽奖活动未开放或查询被拒绝（${error.message}），跳过本项`, '周抽奖免费礼包');
+      skip(ctx, `周抽奖活动查询被拒绝（${error.message}），跳过本项`, '周抽奖免费礼包');
     }
     if (lottery) {
       const freePack = ctx.rows('WeekLotteryPackCfg').find(r => r.price === 0);
@@ -76,11 +85,12 @@ export async function welfare(ctx, options) {
   }
   if (options.uniqueLottery) {
     // 专属抽奖独立于日奖：用户可以仅领取免费次数，也能完全禁止访问该玩法。
+    // 与周抽奖同理：档期未开时查询会被拒绝，先看 WeekInfo，未开放保持安静。
     let unique = null;
     try {
-      unique = await ctx.query('WeekUniqueLotteryRequest');
+      if (await openWeekRow(ctx, 7)) unique = await ctx.query('WeekUniqueLotteryRequest');
     } catch (error) {
-      skip(ctx, `专属抽奖活动未开放或查询被拒绝（${error.message}），跳过本项`, '专属抽奖免费次数');
+      skip(ctx, `专属抽奖活动查询被拒绝（${error.message}），跳过本项`, '专属抽奖免费次数');
     }
     if (unique && !unique.gotFree && !ctx.count('free.GotUniqueLotteryFreeRequest')) {
       const result = await rewardAction(ctx, 'GotUniqueLotteryFreeRequest');

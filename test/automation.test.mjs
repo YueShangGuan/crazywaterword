@@ -5674,13 +5674,33 @@ test('welfare: unread comic drama is not claimed', async () => {
 test('welfare: weekly lottery free pack has an independent default-off switch', async () => {
   const f = await moduleRun('welfare', { daily: false, weeklyLottery: true, uniqueLottery: false, dailyTask: false, growth: false, events: false, email: false, limitedFree: false, skinGift: false }, ({ ctx }) => {
     table(ctx, 'WeekLotteryPackCfg', [{ packId: 1000, price: 0, limitedTimes: 1 }]);
-  }, { dryRun: true, states: { WeekLotteryInfoRequest: { gift: [{ giftId: 1000, gotTimes: 0 }] } } });
+  }, { dryRun: true, states: {
+    WeekInfoRequest: { activityTime: [{ type: 4, period: 1001, startTime: fixedNow / 1000 - 10, endTime: fixedNow / 1000 + 10 }] },
+    WeekLotteryInfoRequest: { gift: [{ giftId: 1000, gotTimes: 0 }] },
+  } });
   assert.equal(f.client.calls.filter(call => call.name === 'WeekLotteryInfoRequest').length, 1);
   assert.equal(f.ctx.results.filter(result => result.request === 'WeekLotteryFreePackRequest' && result.status === 'planned').length, 1);
 });
 
+/** 本周没有周抽奖档期时安静跳过：不发信息查询，也不留“服务器拒绝”的误导记录。 */
+test('welfare: weekly lottery outside its scheduled period stays silent', async () => {
+  const f = await moduleRun('welfare', { daily: false, weeklyLottery: true, uniqueLottery: true, dailyTask: false, growth: false, events: false, email: false, limitedFree: false, skinGift: false }, ({ ctx }) => {
+    table(ctx, 'WeekLotteryPackCfg', [{ packId: 1000, price: 0, limitedTimes: 1 }]);
+  }, { states: {
+    // 档期表里只有周战令与周翻牌（type 7 开放中），没有周抽奖（type 4）。
+    WeekInfoRequest: { activityTime: [{ type: 1, period: 2014, startTime: fixedNow / 1000 - 10, endTime: fixedNow / 1000 + 10 }, { type: 7, period: 20002, startTime: fixedNow / 1000 - 10, endTime: fixedNow / 1000 + 10 }] },
+    WeekUniqueLotteryRequest: { gotFree: false },
+  }, handlers: {
+    GotUniqueLotteryFreeRequest: async (_, response, client) => { client.items.set('木材', 1); return response ? {} : undefined; },
+  } });
+  assert.equal(f.client.calls.filter(call => call.name === 'WeekLotteryInfoRequest').length, 0);
+  assert.equal(f.client.calls.filter(call => call.name === 'WeekUniqueLotteryRequest').length, 1);
+  assert.equal(f.ctx.results.filter(result => result.label === '周抽奖免费礼包').length, 0);
+});
+
 test('welfare: unique weekly lottery is independently enabled by its own switch', async () => {
   const f = await moduleRun('welfare', { daily: false, uniqueLottery: true, dailyTask: false, growth: false, events: false, email: false, limitedFree: false, skinGift: false }, null, { states: {
+    WeekInfoRequest: { activityTime: [{ type: 7, period: 20002, startTime: fixedNow / 1000 - 10, endTime: fixedNow / 1000 + 10 }] },
     WeekUniqueLotteryRequest: { gotFree: false },
   }, handlers: {
     GotUniqueLotteryFreeRequest: async (_, response, client) => { client.items.set('木材', 1); return response ? {} : undefined; },
@@ -5743,7 +5763,10 @@ test('welfare: a rejected weekly lottery query no longer blocks later blocks', a
     };
     ctx.pushes.set('SCAllActivity', { skinActive: { activeId: 20003, startTime: second - 10, endTime: second + 10, gotFree: false } });
     client.handlers.SkinActiveGotFreeRequest = async () => { client.items.set('皮肤赠礼', 1); };
-  }, { states: { LimitedShopRequest: { shopItem: [], resetTime: 1794585600 } } });
+  }, { states: {
+    WeekInfoRequest: { activityTime: [{ type: 4, period: 1001, startTime: fixedNow / 1000 - 10, endTime: fixedNow / 1000 + 10 }] },
+    LimitedShopRequest: { shopItem: [], resetTime: 1794585600 },
+  } });
   assert.equal(f.client.calls.filter(call => call.name === 'WeekLotteryInfoRequest').length, 1);
   assert.deepEqual(f.client.calls.filter(call => call.name === 'LimitedShopGotFreeRequest').map(call => call.body), [{ type: 1, id: 1000 }]);
   assert.equal(f.client.calls.filter(call => call.name === 'SkinActiveGotFreeRequest').length, 1);
