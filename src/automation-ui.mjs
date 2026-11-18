@@ -30,7 +30,7 @@ const automationLabels = {
   heroes:'指定英雄',levelUpMaxActions:'每轮升级轮数',starUp:'升星',skillLevelUp:'技能升级',skillAdvance:'技能进阶',exclusiveLevelUp:'专武升级',exclusiveStarUp:'专武升星',equipEnhance:'强化所选英雄装备',badgeEnhance:'强化所选英雄徽章',badgeExpItemNum:'徽章经验道具数量',appoint:'委任',positions:'委任位置（按英雄顺序）',watchSkillVideo:'请求英雄广告奖励',universal:'允许万能材料',fragRecruit:'使用碎片招募所选英雄',recruit:'招募',free:'免费次数',tickets:'使用现有券',points:'领取招募积分奖',maxDraws:'每轮最多抽取次数',activate:'激活',suit:'套装',
   breed:'培育',breedSpecies:'培育物种名称',breedMinQuality:'培育最低品质',feed:'喂养',decompose:'放生 / 分解',decomposeBelowQuality:'只处理低于此品质的闲置对象',protectedUids:'保护对象 UID',levelUpTargetLevel:'培养目标等级',advance:'进阶',advanceRooms:'进阶战备室建筑 ID（空为全部）',make:'打造',makeIds:'打造配方 ID',speedUpMinRemainSecs:'剩余秒数达到此值才加速',collectRevenue:'领取博物馆收益',explore:'开新探宝',factor:'探宝倍率',maps:'探宝地图 ID',speedUpDailyLimit:'每日加速次数上限（0 禁止）',speedUpKeepStock:'加速道具保留数量',
   maxActions:'每轮最多挑战次数',stage:'主线',samePowerRetryCount:'同战力战败重试次数',claimReward:'领取章节奖励',arena:'竞技场',sweep:'扫荡',challenge:'挑战',trial:'试炼',heroExp:'英雄经验试炼',forge:'强化石试炼',petExp:'宠物经验试炼',rubySweep:'允许钻石扫荡',league:'联盟赛',reservePoints:'保留挑战券',hangupReward:'领取挂机奖励',danReward:'领取段位奖励',passReward:'领取战令奖励',expedition:'远征',finalReward:'领取最终奖励',freePass:'领取远征战令',challengeStopOnHeroDeath:'英雄阵亡时停止',challengeMinTeamHpPct:'最低队伍血量百分比',dailySweepLimit:'每日扫荡次数（目标）',times:'扫荡次数',
-report:'领取战报',fleet:'舰队',repair:'维修',repairThresholds:'各舰队维修耐久阈值（按列表顺序）',repairSpeedUp:'加速维修（可使用钻石）',repairSpeedUpMinRemainSecs:'维修加速剩余秒数门槛',pirate:'海盗',attack:'挑战',attackTypes:'挑战海盗类型',sweepTypes:'扫荡海盗类型',attackTime:'执行时段',start:'开始时间',end:'结束时间',radar:'雷达',kinds:'雷达事件类型',fixed:'固定事件',resField:'已有资源田配比',oasis:'种子田权重',tank:'汽油田权重',chipMine:'芯片矿',hours:'执行小时（空为全天）',fleets:'舰队规则',treasureLoot:'宝藏掠夺',merchantShip:'搁浅商船（万吨货轮）',retryMinutes:'重新夺取间隔（分钟，0 不重试）',rewardMaterials:'奖励材料筛选',cityWar:'城战',online:'领取在线奖',reattack:'允许重复进攻',worldBoss:'世界 Boss',schedules:'进攻计划',hour:'几点进攻',teamsEnabled:'启用队伍名单',teams:'队伍名单',limitedBoss:'限时 Boss',challenge:'挑战',challengeReward:'领取挑战奖',trade:'海商王',profitLimit:'航行加速最低累计利润',speedUpDailyLimit:'每日航行加速次数',
+report:'领取战报',fleet:'舰队',repair:'维修',repairThresholds:'各舰队维修耐久阈值（按列表顺序）',repairSpeedUp:'加速维修（可使用钻石）',repairSpeedUpMinRemainSecs:'维修加速剩余秒数门槛',pirate:'海盗',attack:'挑战',attackTypes:'挑战海盗类型',sweepTypes:'扫荡海盗类型',attackTime:'执行时段',start:'开始时间',end:'结束时间',radar:'雷达',kinds:'雷达事件类型',fixed:'固定事件',resField:'已有资源田配比',oasis:'种子田权重',tank:'汽油田权重',chipMine:'芯片矿',hours:'执行小时（空为全天）',fleets:'舰队规则',treasureLoot:'宝藏掠夺',merchantShip:'搁浅商船（万吨货轮）',retryMinutes:'重新夺取间隔（分钟，0 不重试）',rewardMaterials:'奖励材料筛选',cityWar:'城战',online:'领取在线奖',reattack:'允许重复进攻',worldBoss:'世界 Boss',schedules:'进攻计划',hour:'几点进攻',minute:'起始分钟',teamsEnabled:'启用队伍名单',teams:'队伍名单',limitedBoss:'限时 Boss',challenge:'挑战',challengeReward:'领取挑战奖',trade:'海商王',profitLimit:'航行加速最低累计利润',speedUpDailyLimit:'每日航行加速次数',
   packs:'联盟礼包',guild:'联盟礼包',title:'职级奖励',order:'募兵订单',cityIds:'城市 ID',aid:'互助',receive:'领取帮助',ask:'发起求助',askItems:'求助物品',help:'帮助盟友',helpItems:'帮助物品',helpNicknameKeywords:'盟友昵称关键词',helpMinStock:'帮助后库存保留门槛',helpDailyLimit:'每日帮助次数',tech:'联盟科技',items:'科技 ID',ship:'联盟商船',captain:'应聘船长',crew:'补货登船',qualities:'船只品质',rewardItems:'期望奖励物品',minWaterCoin:'最低水姆币奖励',forbiddenMaterials:'禁用补货材料',relaxFilters:'允许放宽品质与奖励筛选',
   daily:'免费日奖与已有卡权益',limitedFree:'限购免费日礼包',skinGift:'皮肤活动免费赠礼',weeklyLottery:'周抽奖（领取免费礼包）',uniqueLottery:'每周专属抽奖（领取免费次数）',dailyTask:'任务与活跃度奖励',growth:'成长、支线与成就',events:'成长活动奖励',email:'邮件奖励',midAutumn:'中秋日奖',signIn:'签到',freeGift:'免费礼包',activeReward:'活跃奖励',blindBox:'盲盒',scoreReward:'积分奖',play:'开始新局',keepCards:'保留盲盒卡',catcher:'海底捞月',repeat:'重复挑战最高开放关卡',keepHooks:'保留捞月钩',maxStage:'最高关卡',sweepStage:'扫荡关卡',workshop:'活动工坊',produce:'生产',keepStock:'备货目标',keepClaws:'保留爪钩',blessing:'祝福',boost:'消耗福运结祝福',skinId:'祝福皮肤 ID',boostTimes:'每次祝福数量',keepKnots:'保留福运结',weekOrder:'不差钱商人',buyMissingMaterials:'允许钻石补齐整单缺料',weekLottery:'幸运转盘',prize:'使用现有转盘币',snowball:'走江踏浪',minEnergy:'启动所需能量（瓶）',autoStart:'有能量就连续开局',pve:'水世界牌 PVE',freeMatch:'免费匹配',diamondMatch:'允许钻石匹配',diamondMatchDailyLimit:'每日钻石匹配次数上限（0 禁止）',matchWindows:'匹配时段',dailies:'原有付费日常',dailiesDiscountTickets2x:'2折英雄藏品券'
 };
@@ -86,7 +86,7 @@ const automationSettingCopy = {
   'modules.world.fleet.repairSpeedUp': { note:'仅对城战规则中已启用的舰队生效，优先使用现有加速器；无道具或道具被明确拒绝、业务失败时改用钻石。剩余分钟数向上取整，每分钟 10 钻：60 秒 10 钻，61 秒 20 钻；提交前按完整费用检查钻石总额度、模块额度和余额保留量。' },
   'modules.world.fleet.repairSpeedUpMinRemainSecs': { note:'维修剩余时间达到此秒数才尝试加速，避免为即将结束的维修消耗道具或钻石。' },
   'modules.world.pirate.dailySweepLimit': { note:'自动化每日最多扫荡此次数。实际总上限为基础 10 次加当前角色 VIP 的“野怪扫荡次数”额外配置；手动已扫次数也会计入，达到设置值后当天不再扫荡。' },
-  'modules.world.worldBoss.schedules': { note:'多组「整点小时 + 该小时进攻次数」。命中小时的轮次里换上名单编队并进攻，舰队打完回港后继续，打满该小时次数或小时结束后自动恢复原编队。次数按角色业务日逐小时计数；只允许整点小时，避开万吨货轮的分钟级派遣。' },
+  'modules.world.worldBoss.schedules': { note:'多组「整点小时 + 起始分钟 + 该小时进攻次数」。从该小时的起始分钟起换上名单编队并进攻，舰队打完回港后继续，打满该小时次数或小时结束后自动恢复原编队。次数按角色业务日逐小时计数；同一小时只允许一行，避开万吨货轮的分钟级派遣。' },
   'modules.world.worldBoss.teamsEnabled': { note:'开启后命中进攻小时时把名单舰队的编队切换为所选英雄；名单英雄被其他舰队占用时先自动下阵再上阵。未配置名单的舰队不参与。打满该小时次数或小时结束后自动恢复原编队。' },
   'modules.world.worldBoss.teams': { note:'每行一支舰队：选择远征舰队并勾选英雄。同一英雄只能出现在一个名单；人数不能超过当前解锁的编队位。' },
   'modules.world.trade.speedUpDailyLimit': { note:'每日最多加速航行的次数；0 表示不允许该玩法的航行加速。每次使用 1 个海商王加速道具，不会使用钻石。' },
@@ -603,10 +603,11 @@ function worldBossFields(value, path) {
   panel.appendChild(settingHeading(scheduleCopy.title, scheduleCopy.note));
   const scheduleEditor = structuredEditor('schedules', path.concat('schedules').join('.'), 'boss-schedules');
   const addSchedule = el('button', 'tiny', '添加小时'); addSchedule.type = 'button'; addSchedule.title = '新增一个小时的进攻计划';
-  scheduleEditor.palette.append(addSchedule, el('p', 'automation-editor-note', '例如「0 点 3 次」：0 点这一小时内换上名单编队，舰队打完回港就继续派，打满 3 次后自动恢复原编队。只允许整点小时，避免和万吨货轮抢舰队。'));
-  /** 一行计划读取为 {hour, times}；次数复用通用数值校验，拒绝空白和负数。 */
+  scheduleEditor.palette.append(addSchedule, el('p', 'automation-editor-note', '例如「23 点 40 分 3 次」：从 23:40 起换上名单编队并进攻，舰队打完回港就继续派，打满 3 次后自动恢复原编队。计划从该小时的起始分钟生效到小时结束；同一小时只能配一行，避免和万吨货轮抢舰队。'));
+  /** 一行计划读取为 {hour, minute, times}；次数与分钟复用通用数值校验，拒绝空白和负数。 */
   scheduleEditor.root.readSetting = () => [...scheduleEditor.rows.children].map(row => ({
     hour: Number(row.querySelector('[data-schedule-hour]').value),
+    minute: Number(row.querySelector('[data-schedule-minute]').value),
     times: readEditorInput(row.querySelector('[data-schedule-times]'), 'number', '进攻次数'),
   }));
   const addScheduleRow = plan => {
@@ -614,16 +615,18 @@ function worldBossFields(value, path) {
     const hour = el('select'); hour.dataset.scheduleHour = ''; hour.setAttribute('aria-label', '几点进攻');
     for (const value of Array.from({ length: 24 }, (_, item) => item)) hour.appendChild(new Option(value + ' 点', String(value)));
     hour.value = String(plan.hour ?? 0);
+    const minute = el('input'); minute.type = 'number'; minute.min = '0'; minute.max = '59'; minute.step = '1'; minute.value = String(plan.minute ?? 0);
+    minute.dataset.scheduleMinute = ''; minute.setAttribute('aria-label', '几分的进攻'); minute.title = '该小时第几分钟开始进攻；从这一分钟起生效到小时结束';
     const times = el('input'); times.type = 'number'; times.min = '1'; times.max = '99'; times.step = '1'; times.value = String(plan.times ?? 1);
     times.dataset.scheduleTimes = ''; times.setAttribute('aria-label', '进攻次数'); times.title = '该小时内最多进攻的次数；舰队打完回港后才派下一次';
     const remove = el('button', 'tiny', '移除'); remove.type = 'button'; remove.title = '移除此小时计划';
     remove.onclick = () => { row.remove(); scheduleEditor.rows.dispatchEvent(new Event('change', { bubbles:true })); };
-    row.append(hour, times, remove); scheduleEditor.rows.appendChild(row);
+    row.append(hour, minute, times, remove); scheduleEditor.rows.appendChild(row);
   };
   addSchedule.onclick = () => {
     const used = new Set([...scheduleEditor.rows.children].map(row => Number(row.querySelector('[data-schedule-hour]').value)));
     const hour = Array.from({ length: 24 }, (_, item) => item).find(value => !used.has(value)) ?? 0;
-    addScheduleRow({ hour, times: 1 }); scheduleEditor.sync();
+    addScheduleRow({ hour, minute: 40, times: 1 }); scheduleEditor.sync();
   };
   for (const plan of value.schedules ?? []) addScheduleRow(plan);
   panel.appendChild(scheduleEditor.root); scheduleEditor.sync();

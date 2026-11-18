@@ -443,13 +443,17 @@ test('settings: defaults off; account isolation; strict arrays, dictionaries and
   assert.throws(() => validateSettings(merchantMaterialSettings), /非空字符串数组/);
   const bossTeamSettings = defaultSettings();
   bossTeamSettings.modules.world.worldBoss = {
-    enabled: true, teamsEnabled: true, schedules: [{ hour: 0, times: 3 }, { hour: 8, times: 1 }],
+    enabled: true, teamsEnabled: true, schedules: [{ hour: 0, times: 3 }, { hour: 8, minute: 40, times: 1 }],
     teams: [{ buildingId: '1远征船', heroes: ['坦克A', '战士A'] }, { buildingId: '2远征船', heroes: ['坦克B'] }],
   };
   const validatedBoss = validateSettings(bossTeamSettings).modules.world.worldBoss;
   assert.deepEqual(validatedBoss.teams,
     [{ buildingId: '1远征船', heroes: ['坦克A', '战士A'] }, { buildingId: '2远征船', heroes: ['坦克B'] }]);
-  assert.deepEqual(validatedBoss.schedules, [{ hour: 0, times: 3 }, { hour: 8, times: 1 }]);
+  // 缺省分钟按 0 点整归一，已配置的分钟原样保留。
+  assert.deepEqual(validatedBoss.schedules, [{ hour: 0, minute: 0, times: 3 }, { hour: 8, minute: 40, times: 1 }]);
+  bossTeamSettings.modules.world.worldBoss.schedules[1].minute = 60;
+  assert.throws(() => validateSettings(bossTeamSettings), /0–59 的整数分钟/);
+  bossTeamSettings.modules.world.worldBoss.schedules[1].minute = 40;
   bossTeamSettings.modules.world.worldBoss.teams[1].buildingId = '1远征船';
   assert.throws(() => validateSettings(bossTeamSettings), /不能重复配置舰队/);
   bossTeamSettings.modules.world.worldBoss.teams[1].buildingId = '1船';
@@ -502,17 +506,18 @@ test('settings: migrates legacy pirate sweep type IDs without widening an implic
   assert.deepEqual(persisted.modules.world.pirate.sweepTypes, [{ type: 1, times: 2 }, { type: 2, times: 2 }, { type: 3, times: 1 }]);
 });
 
-/** 世界Boss旧配置（每日总次数 + 时段）一次性升级为「小时 + 次数」计划，未配置过的账号不凭空创造进攻。 */
-test('settings: migrates legacy world boss daily count and window into hourly schedules', () => {
+/** 世界Boss旧配置（每日总次数 + 时段）一次性升级为「小时 + 分钟 + 次数」计划，未配置过的账号不凭空创造进攻。 */
+test('settings: migrates legacy world boss daily count and window into minute-level schedules', () => {
   const configured = defaultSettings();
-  configured.modules.world.worldBoss = { enabled: true, attackTimes: 3, attackTime: { start: '08:00', end: '09:00' }, teamsEnabled: true, teams: [] };
+  configured.modules.world.worldBoss = { enabled: true, attackTimes: 3, attackTime: { start: '08:30', end: '09:00' }, teamsEnabled: true, teams: [] };
   writeJson(path.join(accountDirectory('legacy-boss-window'), 'settings.json'), configured);
   const migrated = loadSettings('legacy-boss-window').modules.world.worldBoss;
-  assert.deepEqual(migrated.schedules, [{ hour: 8, times: 3 }]);
+  // 旧开始时间的分钟保留为计划的起始分钟，不丢精度。
+  assert.deepEqual(migrated.schedules, [{ hour: 8, minute: 30, times: 3 }]);
   assert.equal(Object.hasOwn(migrated, 'attackTimes'), false);
   assert.equal(Object.hasOwn(migrated, 'attackTime'), false);
   const persisted = JSON.parse(fs.readFileSync(path.join(accountDirectory('legacy-boss-window'), 'settings.json'), 'utf8'));
-  assert.deepEqual(persisted.modules.world.worldBoss.schedules, [{ hour: 8, times: 3 }]);
+  assert.deepEqual(persisted.modules.world.worldBoss.schedules, [{ hour: 8, minute: 30, times: 3 }]);
 
   const neverConfigured = defaultSettings();
   writeJson(path.join(accountDirectory('legacy-boss-default'), 'settings.json'), neverConfigured);
@@ -2784,8 +2789,29 @@ test('world boss: hours without a plan never attack', async () => {
     table(ctx, 'WorldBossDamageRewardCfg', []);
   }, { player: { worldId: 2002002002 }, states: { WorldBossInfoRequest: { info: { bossId: 5 } }, OnWaterRequest: water } });
   assert.equal(f.client.calls.filter(call => call.name === 'ChallengeWorldBossRequest').length, 0);
-  assert.match(f.ctx.results.find(row => row.status === 'skipped')?.reason ?? '', /当前小时没有世界Boss进攻计划/);
+  assert.match(f.ctx.results.find(row => row.status === 'skipped')?.reason ?? '', /当前时间没有命中的世界Boss进攻计划/);
   assert.equal(fs.existsSync(path.join(directory, 'automation-boss-teams.json')), false);
+});
+
+/** 固定时钟 12:45：起始分钟 46 未到不进攻，起始分钟 45 命中即进攻。 */
+test('world boss: minute-level start gates the attack inside the hour', async () => {
+  const water = { building: [{ buildingId: '1远征船', level: 1, fleet: { formation: { presetId: 1, heroPositions: [{ heroId: '坦克A', pos: { x: 1, y: 3 } }] } } }] };
+  const fleets = [{ buildingId: '1远征船', state: protocol.FleetState.IDLE, maxDura: 2000, durability: 2000 }];
+  const run = async minute => moduleRun('world', {
+    radar: { enabled: false },
+    worldBoss: { enabled: true, teamsEnabled: false, teams: [], schedules: [{ hour: 12, minute, times: 1 }] },
+  }, ({ ctx, client }) => {
+    table(ctx, 'WorldBossDamageRewardCfg', []);
+    client.handlers.MyFleetsRequest = async () => ({ fleets: structuredClone(fleets) });
+    client.handlers.ChallengeWorldBossRequest = async body => {
+      fleets.find(row => row.buildingId === body.fleetBuildingIds[0]).state = protocol.FleetState.MOVING;
+    };
+  }, { player: { worldId: 2002002002 }, states: { WorldBossInfoRequest: { info: { bossId: 5 } }, OnWaterRequest: water } });
+  const early = await run(46);
+  assert.equal(early.client.calls.filter(call => call.name === 'ChallengeWorldBossRequest').length, 0, '12:45 未到 12:46 不进攻');
+  assert.match(early.ctx.results.find(row => row.status === 'skipped')?.reason ?? '', /当前时间没有命中的世界Boss进攻计划/);
+  const onTime = await run(45);
+  assert.equal(onTime.client.calls.filter(call => call.name === 'ChallengeWorldBossRequest').length, 1, '12:45 命中 45 分计划即进攻');
 });
 
 test('world radar: refugee event skips dispatch when the server-provided materials are insufficient', async () => {

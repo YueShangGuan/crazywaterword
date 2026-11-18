@@ -145,10 +145,10 @@ function migrateLegacyPirateSweepTypes(value) {
 }
 
 /**
- * 世界Boss旧配置（每日总次数 + 时段）一次性升级为「小时 + 次数」计划。
+ * 世界Boss旧配置（每日总次数 + 时段）一次性升级为「小时 + 分钟 + 次数」计划。
  *
- * 旧时段的开始小时即进攻小时；旧默认全天（00:00）映射到 0 点，保持"早期进攻"意图。
- * 未配置过次数的账号只补空计划，不凭空创造进攻。
+ * 旧时段的开始时间即进攻起点（小时与分钟都保留）；旧默认全天（00:00）映射到 0 点整，
+ * 保持"早期进攻"意图。未配置过次数的账号只补空计划，不凭空创造进攻。
  *
  * @param {unknown} value 从账号 settings.json 读取的原始设置。
  * @returns {{value: unknown, changed: boolean}} 可继续严格校验的设置及是否已迁移。
@@ -159,8 +159,10 @@ function migrateWorldBossSchedule(value) {
   const migrated = structuredClone(value);
   const next = migrated.modules.world.worldBoss;
   const times = Number.isSafeInteger(next.attackTimes) && next.attackTimes > 0 ? next.attackTimes : 0;
-  const hour = /^(\d{1,2})/.exec(String(next.attackTime?.start ?? ''))?.[1];
-  next.schedules = times > 0 && hour !== undefined && Number(hour) <= 23 ? [{ hour: Number(hour), times }] : Array.isArray(next.schedules) ? next.schedules : [];
+  const [, hourText, minuteText] = /^(\d{1,2})(?::([0-5]\d))?/.exec(String(next.attackTime?.start ?? '')) ?? [];
+  const hour = hourText !== undefined && Number(hourText) <= 23 ? Number(hourText) : undefined;
+  const minute = minuteText !== undefined ? Number(minuteText) : 0;
+  next.schedules = times > 0 && hour !== undefined ? [{ hour, minute, times }] : Array.isArray(next.schedules) ? next.schedules : [];
   delete next.attackTimes;
   delete next.attackTime;
   return { value: migrated, changed: true };
@@ -217,17 +219,19 @@ export function validateSettings(value, { pirateDailyLimit = null } = {}) {
         });
       }
       if (key === 'schedules') {
-        // 世界Boss进攻计划：每行一个整点小时加该小时内的进攻次数；小时不允许重复，避免同小时两组互相抢舰队。
+        // 世界Boss进攻计划：每行「整点小时 + 起始分钟 + 该小时内的进攻次数」，从该小时的第
+        // minute 分钟起生效到小时结束；小时不允许重复，避免同小时两组互相抢舰队。
         if (input.length > 24) throw new Error(`${location} 最多配置 24 个小时`);
         const hours = new Set();
         return input.map((row, i) => {
           object(row, `${location}.${i}`);
-          for (const field of Object.keys(row)) if (!['hour', 'times'].includes(field)) throw new Error(`未知设置 ${location}.${i}.${field}`);
+          for (const field of Object.keys(row)) if (!['hour', 'minute', 'times'].includes(field)) throw new Error(`未知设置 ${location}.${i}.${field}`);
           if (!Number.isSafeInteger(row.hour) || row.hour < 0 || row.hour > 23) throw new Error(`${location}.${i}.hour 必须为 0–23 的整点小时`);
+          if (row.minute !== undefined && (!Number.isSafeInteger(row.minute) || row.minute < 0 || row.minute > 59)) throw new Error(`${location}.${i}.minute 必须为 0–59 的整数分钟`);
           if (hours.has(row.hour)) throw new Error(`${location} 不能重复配置 ${row.hour} 点`);
           hours.add(row.hour);
           if (!Number.isSafeInteger(row.times) || row.times < 1 || row.times > 99) throw new Error(`${location}.${i}.times 必须为 1–99 的整数`);
-          return { hour: row.hour, times: row.times };
+          return { hour: row.hour, minute: row.minute ?? 0, times: row.times };
         });
       }
       if (key === 'teams') {

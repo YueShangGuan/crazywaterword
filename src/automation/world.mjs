@@ -198,10 +198,11 @@ function hourAllowed(ctx, hours) {
   return !hours.length || hours.includes(Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Shanghai', hour: '2-digit', hour12: false }).format(ctx.now())));
 }
 
-/** 当前上海小时命中的世界Boss进攻计划；只允许整点小时，避开万吨货轮的分钟级派遣。 */
+/** 上海时间命中当前世界Boss进攻计划；从该小时的起始分钟（缺省 0 分）起生效到小时结束。 */
 function worldBossScheduleGroup(wb, now) {
-  const hour = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Shanghai', hour: '2-digit', hour12: false }).format(new Date(now)));
-  return (wb?.schedules ?? []).find(group => group.hour === hour) ?? null;
+  const [hour, minute] = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hour12: false })
+    .format(new Date(now)).split(':').map(Number);
+  return (wb?.schedules ?? []).find(group => group.hour === hour && minute >= (group.minute ?? 0)) ?? null;
 }
 
 /** 世界玩法逐项查询最新舰队；派遣结果未确认时阻断本模块后续写入，但不终止独立模块。 */
@@ -300,7 +301,7 @@ async function worldBossModule(ctx, wb) {
   }
   // 命中当前小时的进攻计划才进攻；伤害奖励随时可领。
   const group = worldBossScheduleGroup(wb, ctx.now());
-  if (!group) return skip(ctx, '当前小时没有世界Boss进攻计划', '世界Boss');
+  if (!group) return skip(ctx, '当前时间没有命中的世界Boss进攻计划', '世界Boss');
   if (!state) return;
   const countKey = `worldBoss.attack.${group.hour}`;
   if (ctx.count(countKey) >= group.times) return;

@@ -81,6 +81,8 @@
   .automation-editor-row input[type=text], .automation-editor-row input[type=number] { min-width:0; width:100%; }
   /* 海盗类型行只需录入一个小整数，不能继承通用编辑器的整行宽度。 */
   .automation-editor-row input.automation-pirate-sweep-times[type=number] { flex:0 0 72px; width:72px; }
+  /* 进攻计划行是「小时 + 分钟 + 次数」三个短控件，分钟和次数都不吃整行宽度。 */
+  .automation-schedule-row [data-schedule-minute], .automation-schedule-row [data-schedule-times] { flex:0 0 72px; width:72px; }
   .automation-editor-row > select { flex:1; min-width:0; }
   .automation-editor input:not([type=checkbox]), .automation-editor select { min-width:0; max-width:100%; width:100%; border:1px solid #ccd9d9; border-radius:4px; background:#fff; color:#29494e; }
   .automation-editor select { color-scheme:light; }
