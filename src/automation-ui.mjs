@@ -603,7 +603,7 @@ function worldBossFields(value, path) {
   panel.appendChild(settingHeading(scheduleCopy.title, scheduleCopy.note));
   const scheduleEditor = structuredEditor('schedules', path.concat('schedules').join('.'), 'boss-schedules');
   const addSchedule = el('button', 'tiny', '添加小时'); addSchedule.type = 'button'; addSchedule.title = '新增一个小时的进攻计划';
-  scheduleEditor.palette.append(addSchedule, el('p', 'automation-editor-note', '例如「23 点 40 分 3 次」：从 23:40 起换上名单编队并进攻，舰队打完回港就继续派，打满 3 次后自动恢复原编队。计划从该小时的起始分钟生效到小时结束；同一小时只能配一行，避免和万吨货轮抢舰队。'));
+  scheduleEditor.palette.append(addSchedule, el('p', 'automation-editor-note', '例如「23 点 40 分 3 次」：从 23:40 起换上名单编队并进攻，舰队打完回港就继续派，打满 3 次后自动恢复原编队。计划从该小时的起始分钟生效到小时结束；同一小时只能配一行。起始分钟建议设在 40 分之后，防止和万吨货轮派遣冲突。'));
   /** 一行计划读取为 {hour, minute, times}；次数与分钟复用通用数值校验，拒绝空白和负数。 */
   scheduleEditor.root.readSetting = () => [...scheduleEditor.rows.children].map(row => ({
     hour: Number(row.querySelector('[data-schedule-hour]').value),
@@ -616,7 +616,8 @@ function worldBossFields(value, path) {
     for (const value of Array.from({ length: 24 }, (_, item) => item)) hour.appendChild(new Option(value + ' 点', String(value)));
     hour.value = String(plan.hour ?? 0);
     const minute = el('input'); minute.type = 'number'; minute.min = '0'; minute.max = '59'; minute.step = '1'; minute.value = String(plan.minute ?? 0);
-    minute.dataset.scheduleMinute = ''; minute.setAttribute('aria-label', '几分的进攻'); minute.title = '该小时第几分钟开始进攻；从这一分钟起生效到小时结束';
+    minute.dataset.scheduleMinute = ''; minute.setAttribute('aria-label', '几分的进攻');
+    minute.title = '该小时第几分钟开始进攻；从这一分钟起生效到小时结束。建议设在 40 分之后，防止和万吨货轮派遣冲突';
     const times = el('input'); times.type = 'number'; times.min = '1'; times.max = '99'; times.step = '1'; times.value = String(plan.times ?? 1);
     times.dataset.scheduleTimes = ''; times.setAttribute('aria-label', '进攻次数'); times.title = '该小时内最多进攻的次数；舰队打完回港后才派下一次';
     const remove = el('button', 'tiny', '移除'); remove.type = 'button'; remove.title = '移除此小时计划';
