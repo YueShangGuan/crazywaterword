@@ -258,6 +258,8 @@ export async function island(ctx, options) {
   // 免广告加速先于普通加速器执行，免费次数优先；同步快照后再生成加速器计划。
   await adSpeedUps(ctx, options, survey);
   const plan = planWorld(survey, { config: ctx.config, allowSpeedUp: options.speedUp, upgradePriority: options.upgradePriority });
+  // 升级未执行的原因必须落进本轮日志，否则「为什么升了别的建筑不升民居」无从排查。
+  if (options.upgrade && plan.upgradeReasons.length) skip(ctx, plan.upgradeReasons.join('；'), '建筑暂不能升级');
   const enabledKinds = { collectProduct: options.collect, gainFactory: options.factory.gain, finishUpgrade: options.finish, build: options.build, upgrade: options.upgrade, speedUpUpgrade: options.speedUp };
   const resolver = makeTypeResolver(ctx.config);
   for (const step of plan.actions) {
