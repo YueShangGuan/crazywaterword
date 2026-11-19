@@ -1084,6 +1084,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog = null }
       busy: session.busy,
       looping: session.loop.running,
       recovering: Boolean(session.recovery?.timer),
+      // 世界地图等自动轮询据此在高级自动化期间让路，避免每轮都被连接独占锁拒绝。
+      automation: automationStatus(session.id, session.player?.playerId).running,
     };
   }
 

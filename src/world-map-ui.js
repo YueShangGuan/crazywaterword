@@ -174,6 +174,8 @@ function maybeRefreshWorldMap(){
  if(!worldMapAutoRefresh||document.hidden||$('tab-overview').classList.contains('hidden'))return;
  if(!current||snapshot.paused||disconnected.has(current)){if(worldMapData)resetWorldMap();return;}
  if(worldMapOwner&&worldMapOwner!==current)resetWorldMap();
+ // 高级自动化独占游戏连接，概览读取会被服务端拒绝；地图保留旧数据，结束后下一轮自动恢复同步。
+ if(snapshot.automation){$('world-map-time').textContent='自动化执行中，暂停自动同步';return;}
  if(!worldMapLoading&&Date.now()-worldMapLastAttempt>=worldMapRefreshEvery*1000)void refreshWorldMap();
 }
 function updateWorldMapMotion(){
