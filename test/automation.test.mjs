@@ -5474,6 +5474,89 @@ test('city war: assembly permission denial is persisted and skipped after restar
   assert.match(restarted.results.find(result => result.status === 'skipped')?.reason ?? '', /今日已确认无设置集结城市权限/);
 });
 
+/** 驻守用例共用夹具：本盟（序号 7，guildId 555）拥有城市 5、6，两座均被敌盟（序号 9）宣战。 */
+function cityWarDefendFixture({ fleets, cities, declarations, gotoCityId = 0, handlers = {}, player = {} } = {}) {
+  const now = () => Date.parse('2026-10-29T20:45:00+08:00');
+  return moduleRun('world', {
+    cityWar: {
+      enabled: true, online: false, reattack: false,
+      fleets: [{ enabled: true, buildingId: '1舰队', roles: ['defend'], gotoCityId }],
+    },
+  }, null, {
+    now,
+    player: { guildId: 555, ...player },
+    states: {
+      GuildCityInfoRequest: { cities: [{ cityId: 5 }, { cityId: 6 }] },
+      WorldInfoRequest: { cities: cities ?? [{ id: 5, guildIdx: 7, attackFleetNum: 1 }, { id: 6, guildIdx: 7, attackFleetNum: 2 }], fleets: fleets ?? [] },
+      WarDeclarationRequest: { startTime: now() / 1000 - 1, endTime: now() / 1000 + 60, assembleCityId: 3, declarations: declarations ?? [
+        { cityId: 5, attackGuildIdx: 9, defenceGuildIdx: 7 }, { cityId: 6, attackGuildIdx: 9, defenceGuildIdx: 7 },
+      ] },
+      MyFleetsRequest: { fleets: [{ buildingId: '1舰队', state: protocol.FleetState.IDLE }] },
+      CityDefenceRequest: { fleets: [] },
+    },
+    handlers: {
+      SetAssembleCityRequest: async ({ cityId }, _response, client) => { client.emit('message', { name: 'SCAssembleCity', body: { cityId } }); return { cityId }; },
+      CityRecruitDefenceRequest: async (_body, _response, client) => { client.states.CityDefenceRequest.fleets.push({ name: '1舰队', guildIdx: 7 }); },
+      ...handlers,
+    },
+  });
+}
+
+test('city war: defend picks the declared city with the most inbound non-guild fleets plus arrived attackers', async () => {
+  const f = await cityWarDefendFixture({ fleets: [
+    // 城市 5：在途敌舰 2 支 + 已到达 1 = 3；城市 6：仅在途本盟援军（guildId 555）+ 已到达 2 = 2。
+    { buildingId: '9舰队', state: 2, targetCityId: 5, owner: { playerId: '777', guildId: 999 } },
+    { buildingId: '8舰队', state: 2, targetCityId: 5, owner: { playerId: '778', guildId: 999 } },
+    { buildingId: '7舰队', state: 2, targetCityId: 6, owner: { playerId: '779', guildId: 555 } },
+  ] });
+  assert.deepEqual(f.client.calls.filter(call => call.name === 'CityRecruitDefenceRequest').map(call => call.body), [{ cityId: 5 }]);
+  assert.match(f.ctx.results.find(result => result.label === '城战驻守 1舰队')?.reason ?? '', /在途 2 \+ 到达 1/);
+});
+
+test('city war: defend skips a captured city and recruits the next declared one', async () => {
+  // 城市 5 威胁更高但实时归属已变（guildIdx 9，已被抢占），必须改守下一座。
+  const f = await cityWarDefendFixture({ cities: [{ id: 5, guildIdx: 9, attackFleetNum: 9 }, { id: 6, guildIdx: 7, attackFleetNum: 1 }] });
+  assert.deepEqual(f.client.calls.filter(call => call.name === 'CityRecruitDefenceRequest').map(call => call.body), [{ cityId: 6 }]);
+});
+
+test('city war: defend honours an explicitly configured city over auto selection', async () => {
+  const f = await cityWarDefendFixture({ gotoCityId: 6 });
+  assert.deepEqual(f.client.calls.filter(call => call.name === 'CityRecruitDefenceRequest').map(call => call.body), [{ cityId: 6 }]);
+});
+
+test('city war: defend falls back to the assembly city when no own city is declared', async () => {
+  const f = await cityWarDefendFixture({ declarations: [{ cityId: 9, attackGuildIdx: 9, defenceGuildIdx: 8 }] });
+  assert.deepEqual(f.client.calls.filter(call => call.name === 'CityRecruitDefenceRequest').map(call => call.body), [{ cityId: 3 }]);
+});
+
+test('city war: defend recruits once per fleet and city per business day', async () => {
+  const f = await cityWarDefendFixture({});
+  assert.equal(f.client.calls.filter(call => call.name === 'CityRecruitDefenceRequest').length, 1);
+
+  const restarted = createContext({ ...f.args, initialPushes: f.ctx.pushes });
+  restarted.setModule('world');
+  try {
+    await restarted.refreshStock();
+    await HANDLERS.world(restarted, f.settings.modules.world);
+  } finally {
+    restarted.dispose();
+  }
+  // 募防成功一次后当天不再重复发送，且城市维度的驻守计数已入账本（默认夹具下城 6 到达敌军更多）。
+  assert.equal(f.client.calls.filter(call => call.name === 'CityRecruitDefenceRequest').length, 1);
+  assert.equal(restarted.count('cityWar.defend.6'), 1);
+  assert.equal(restarted.count('cityWar.defended.1舰队.6'), 1);
+});
+
+test('city war: an unverifiable recruit blocks only the module and leaves no pending lock', async () => {
+  const f = await cityWarDefendFixture({ handlers: { CityRecruitDefenceRequest: async () => { /* 守军列表不变，写入无法确认 */ } } });
+  assert.equal(f.client.calls.filter(call => call.name === 'CityRecruitDefenceRequest').length, 1);
+  const record = f.ctx.results.find(result => result.request === 'CityRecruitDefenceRequest');
+  assert.equal(record.status, 'skipped');
+  assert.match(record.reason ?? '', /结果未确认/);
+  // 零消耗动作不允许保留跨轮 pending，否则城战模块当天死锁。
+  assert.deepEqual(Object.keys(f.ctx.ledger.pending), []);
+});
+
 test('battle pass: item id marks a free reward as already claimed', () => {
   const state = { score: 100, activePay: false, got: [{ id: 1, freeGot: true, payGot: false }] };
   const rows = [{ rwdId: 1, reqScore: 100, freeReward: [['木材', 1]], payReward: [] }];

@@ -638,23 +638,34 @@ function isAssemblyPermissionDenied(error) {
 }
 
 /**
- * 从本联盟城市和世界地图交集解析当前账号的联盟序号。
+ * 从本联盟城市和世界地图交集解析当前账号的联盟序号，并带回战场快照。
  *
  * 宣战列表包含全服联盟的记录，只有与本联盟城市对应的唯一 guildIdx 才能证明本账号
- * 有进攻资格；缺失或冲突时宁可跳过，不能把别的联盟宣战目标当成自己的派遣目标。
+ * 有进攻或驻守资格；缺失或冲突时宁可跳过，不能把别的联盟宣战目标当成自己的派遣目标。
+ * 城陷瞬间本盟城市的实时归属会短暂混入敌方序号，此时用服务器在宣战记录里的
+ * defenceGuildIdx（守方就是本盟）做锚点消歧；两个信号冲突且无法唯一时返回 null。
+ * WorldInfoRequest 的城市与在途舰队一并返回，供驻守择城复用，避免同一轮重复查询。
  *
  * @param {import('./context.mjs').AutomationContext} ctx 当前自动化上下文。
- * @returns {Promise<string|null>} 已确认的本联盟序号；无法唯一确认时返回 null。
+ * @param {object[]} declarations 服务端宣战列表（WarDeclarationRequest）。
+ * @returns {Promise<{ guildIdx: string|null, cityIds: Set<string>, cities: object[], fleets: object[] }>}
+ *   guildIdx 为已确认的本联盟序号（无法唯一确认时为 null）。
  */
-async function cityWarOwnGuildIdx(ctx) {
-  const ownCityIds = new Set((await ctx.query('GuildCityInfoRequest')).cities?.map(city => idString(city.cityId)).filter(Boolean));
-  if (!ownCityIds.size) return null;
+async function cityWarOwnGuildInfo(ctx, declarations = []) {
+  const cityIds = new Set((await ctx.query('GuildCityInfoRequest')).cities?.map(city => idString(city.cityId)).filter(Boolean));
+  if (!cityIds.size) return { guildIdx: null, cityIds, cities: [], fleets: [] };
   // WorldInfoRequest 的 screenCenter 是协议必填字段；城战只需要城市归属，不依赖地图坐标。
-  const cities = (await ctx.query('WorldInfoRequest', { screenCenter: { x: 0, y: 0 } })).cities ?? [];
-  const guildIndexes = new Set(cities
-    .filter(city => ownCityIds.has(idString(city.id)) && city.guildIdx !== undefined && city.guildIdx !== null)
+  const world = await ctx.query('WorldInfoRequest', { screenCenter: { x: 0, y: 0 } });
+  const cities = world.cities ?? [];
+  const citySignals = new Set(cities
+    .filter(city => cityIds.has(idString(city.id)) && city.guildIdx !== undefined && city.guildIdx !== null)
     .map(city => idString(city.guildIdx)));
-  return guildIndexes.size === 1 ? [...guildIndexes][0] : null;
+  const declaredSignals = new Set((declarations ?? [])
+    .filter(declaration => cityIds.has(idString(declaration.cityId)) && declaration.defenceGuildIdx !== undefined && declaration.defenceGuildIdx !== null)
+    .map(declaration => idString(declaration.defenceGuildIdx)));
+  // 宣战锚点可用时只保留两个信号都认可的序号；锚点缺席时退回城市归属唯一性判定。
+  const confirmed = declaredSignals.size ? [...citySignals].filter(idx => declaredSignals.has(idx)) : [...citySignals];
+  return { guildIdx: confirmed.length === 1 ? confirmed[0] : null, cityIds, cities, fleets: world.fleets ?? [] };
 }
 
 // ---- 城战决策内核（移植自上游 city-war.mjs，纯函数 + 只读预检）----
@@ -787,23 +798,59 @@ async function cityWar(ctx, options) {
     }
   }
   const hasAttackRule = options.fleets.some(rule => rule.enabled && rule.roles?.includes('attack'));
-  const ownGuildIdx = hasAttackRule ? await cityWarOwnGuildIdx(ctx) : null;
+  const hasDefendRule = options.fleets.some(rule => rule.enabled && rule.roles?.includes('defend'));
+  const ownGuild = (hasAttackRule || hasDefendRule) ? await cityWarOwnGuildInfo(ctx, war.declarations ?? []) : null;
+  const ownGuildIdx = ownGuild?.guildIdx ?? null;
   if (hasAttackRule && ownGuildIdx === null) {
     // 只有本联盟发起的宣战允许进攻；无法归属时不发送会被服务器拒绝的派舰请求。
     skip(ctx, '无法确认己方联盟序号，跳过城战进攻派遣');
   }
   // 上游决策内核：fewestAllied 智能选城——本盟排队（attackFleetNum+priorityAtkFleetNum）少者优先。
-  let attackQueue = null;
-  if (hasAttackRule && ownGuildIdx !== null && (cityWarPrefs.targetPriority ?? 'fewestAllied') === 'fewestAllied') {
-    try {
-      const cities = (await ctx.query('WorldInfoRequest', { screenCenter: { x: 0, y: 0 } })).cities ?? [];
-      attackQueue = new Map(cities.map(city => [idString(city.id), Number(city.attackFleetNum ?? 0) + Number(city.priorityAtkFleetNum ?? 0)]));
-    } catch { /* 排队数据不可得时退回宣战顺序 */ }
-  }
+  const attackQueue = hasAttackRule && ownGuild && (cityWarPrefs.targetPriority ?? 'fewestAllied') === 'fewestAllied'
+    ? new Map(ownGuild.cities.map(city => [idString(city.id), Number(city.attackFleetNum ?? 0) + Number(city.priorityAtkFleetNum ?? 0)]))
+    : null;
   const attackCandidates = (declarations, reattack) => {
     const candidates = declarations.filter(declaration => idString(declaration.attackGuildIdx) === ownGuildIdx && (reattack || !ctx.count(`cityWar.${declaration.cityId}`)));
     if (attackQueue) candidates.sort((a, b) => (attackQueue.get(idString(a.cityId)) ?? Number.MAX_SAFE_INTEGER) - (attackQueue.get(idString(b.cityId)) ?? Number.MAX_SAFE_INTEGER));
     return candidates.map(declaration => declaration.cityId);
+  };
+  // 智能驻守：本盟被宣战的城中按「在途非本盟舰队 + 已到达敌军」合计选最告急的一座；
+  // 实时归属已非本盟（城陷）的城出局，自动落到下一座；无候选时退回集结城市保持旧行为。
+  const defendTarget = rule => {
+    if (Number.isSafeInteger(rule.gotoCityId) && rule.gotoCityId > 0) return { cityId: rule.gotoCityId, note: '手动指定' };
+    const fallback = amount(war.assembleCityId);
+    if (!ownGuild || ownGuildIdx === null) return { cityId: fallback, note: '无法确认本盟城市，退回集结城市' };
+    const declared = new Set((war.declarations ?? [])
+      .filter(declaration => idString(declaration.defenceGuildIdx) === ownGuildIdx)
+      .map(declaration => idString(declaration.cityId)));
+    // 在途敌军：state 2 且目标为受袭城、归属已知且非本盟（判定方式同 city-war.mjs 的在途统计）。
+    // 本方 guildId 取不到时无法区分敌我，宁可不计在途数，退化为只按已到达敌军排序。
+    const ownGuildId = exactAutomationId(ctx.player?.guildId);
+    const transit = new Map();
+    if (ownGuildId) for (const row of ownGuild.fleets) {
+      if (row.state !== 2 || (row.treasureLootUid ?? 0) > 0 || (row.chipWar?.rewardTs ?? 0) > 0) continue;
+      const target = idString(row.targetCityId);
+      if (!declared.has(target)) continue;
+      const guild = exactAutomationId(row.owner?.guildId);
+      if (!guild || guild === ownGuildId) continue;
+      transit.set(target, (transit.get(target) ?? 0) + 1);
+    }
+    const ranked = [...ownGuild.cityIds]
+      .filter(id => declared.has(id))
+      .map(id => {
+        const live = ownGuild.cities.find(city => idString(city.id) === id);
+        if (!live || idString(live.guildIdx) !== ownGuildIdx) return null;
+        const arrived = Number(live.attackFleetNum ?? 0) + Number(live.priorityAtkFleetNum ?? 0);
+        return {
+          cityId: Number(id), transit: transit.get(id) ?? 0, arrived,
+          threat: (transit.get(id) ?? 0) + arrived, fighting: Number(live.state ?? 0) === 2,
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.threat - a.threat || (b.fighting ? 1 : 0) - (a.fighting ? 1 : 0) || a.cityId - b.cityId);
+    return ranked.length
+      ? { cityId: ranked[0].cityId, note: `自动选择：在途 ${ranked[0].transit} + 到达 ${ranked[0].arrived}` }
+      : { cityId: fallback, note: '自动选择：无告急城，退回集结城市' };
   };
   for (const rule of options.fleets.filter(f => f.enabled)) {
     // fleetGate 补充：在途巨轮/芯片战舰队即便状态回 IDLE 也不可城战派遣（上游 fleetGate 检查项）。
@@ -812,17 +859,34 @@ async function cityWar(ctx, options) {
     // 已派出或维修中的前序舰队不能阻塞后续已配置舰队的城战派遣。
     if (!fleet) continue;
     for (const role of rule.roles ?? []) {
+      const defend = role === 'defend' ? defendTarget(rule) : null;
       const cityId = role === 'goto'
         ? rule.gotoCityId
         : role === 'defend'
-          ? war.assembleCityId
+          ? defend.cityId
           : role === 'attack' && ownGuildIdx !== null
             ? attackCandidates(war.declarations ?? [], options.reattack)[0]
             : null;
       if (!cityId) continue;
       if (role === 'defend') {
+        // 业务日去重：同一舰队对同一城市募防成功一次即可；重复发送会因守军列表不再变化而无法确认。
+        if (ctx.count(`cityWar.defended.${fleet.buildingId}.${cityId}`)) break;
         // 募防改变城市守军列表，不是派遣此舰队；确认必须读取城市防守状态。
-        await mutate(ctx, 'CityRecruitDefenceRequest', { cityId }, 'CityDefenceRequest', s => s.fleets, { stateBody: { cityId } });
+        // 该协议无专用回包，守军列表未变化的重复募防永远无法确认；募防零消耗，
+        // 结果未确认时与 dispatch 同策略只阻断城战模块，且不留跨轮 pending（否则当天死锁）。
+        const result = await mutate(ctx, 'CityRecruitDefenceRequest', { cityId }, 'CityDefenceRequest', s => s.fleets, { stateBody: { cityId }, continueAfterUncertain: true, lockOnUncertain: false });
+        ctx.record({
+          label: `城战驻守 ${fleet.buildingId}`,
+          status: result.status,
+          reason: succeeded(result)
+            ? `${result.status === 'planned' ? '已生成募防计划' : '已登记防守'} ${cityName(cityId)}（${defend.note}）`
+            : (result.reason ?? `募防 ${cityName(cityId)} 未确认（${defend.note}）`),
+        });
+        if (succeeded(result)) {
+          ctx.count(`cityWar.defend.${cityId}`, 1);
+          ctx.count(`cityWar.defended.${fleet.buildingId}.${cityId}`, 1);
+        }
+        break;
       } else {
         // 上游决策内核：行军汽油预算——估算行军费后保留 petrolReserve，不够不派。
         if (petrolReserve > 0) {
