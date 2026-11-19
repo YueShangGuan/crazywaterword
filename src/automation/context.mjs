@@ -123,6 +123,14 @@ export function createContext({ client, protocol, config, player, accountId, set
   }
   /** 写前落盘保证进程崩溃后仍能约束日额度。 */
   function persist() { if (!dryRun) writeJson(file, ledger); }
+  /** 加速器类花费旁路流水：逐行追加 JSONL 供事后核对，不进日账本；写失败只丢这一行，不影响业务动作。 */
+  function logItemSpend(entry) {
+    try {
+      const spendFile = path.join(accountDirectory(accountId), 'item-spends.jsonl');
+      fs.mkdirSync(path.dirname(spendFile), { recursive: true });
+      fs.appendFileSync(spendFile, `${JSON.stringify(entry)}\n`);
+    } catch { /* 流水只是旁路记录，失败静默。 */ }
+  }
   /** 统一结果状态供网页、CLI、循环及测试使用。 */
   function record(entry) {
     const row = { module: moduleId, at: new Date(now()).toISOString(), ...entry };
@@ -271,6 +279,17 @@ export function createContext({ client, protocol, config, player, accountId, set
     if (!protocol[name]) return record({ request: name, label, status: 'skipped', reason: '当前协议缺少请求' });
     if (!enough(expenses)) return record({ request: name, label, status: 'skipped', reason: '资源不足' });
     ruby = Math.max(ruby, expenses.filter(([id]) => id === 'RUBY').reduce((sum, [, num]) => sum + num, 0));
+    // 加速器类花费单独落流水：请求一发出且未被服务端明确拒绝就记一行；未确认与回放确认各成一行
+    // （后者数量记 0），事后才能核对「开关已关为何还在消耗」以及重复扣费。拒绝与跳过不落流水。
+    const speedCosts = expenses.filter(([id]) => String(id).includes('加速')).map(([id, num]) => ({ id, num }));
+    const speedStockBefore = new Map(speedCosts.map(({ id }) => [id, stock.get(id) ?? 0]));
+    const logSpeedSpend = (status, numOverride = null) => {
+      if (dryRun || !speedCosts.length) return;
+      const stamp = new Date(now()).toISOString();
+      for (const { id, num } of speedCosts) {
+        logItemSpend({ t: stamp, accountId, roleId, module: moduleId, request: name, item: id, num: numOverride ?? num, status, stockBefore: speedStockBefore.get(id) ?? 0, stockAfter: stock.get(id) ?? null, label, key });
+      }
+    };
     // 放弃跨轮幂等锁只对零消耗动作成立；有消耗时未知结果必须保留锁，否则会重复扣费。
     if (!lockOnUncertain && (ruby > 0 || expenses.length)) throw new Error('只有零消耗动作才能关闭未确认锁');
     // 使用当前生成器校验必填字段；多余字段会被 protobuf 静默丢弃，所以显式拒绝。
@@ -289,6 +308,7 @@ export function createContext({ client, protocol, config, player, accountId, set
       if (verified) {
         const pendingRuby = ledger.pending[key]?.ruby ?? ruby;
         settlePending(key);
+        logSpeedSpend('replay-verified', 0);
         return record({ request: name, label, status: 'success', verifiedByRead: true, ruby: pendingRuby });
       }
       // 有些互不依赖的权益可只跳过当前动作；默认仍隔离整个模块，避免改变既有写入保护边界。
@@ -327,6 +347,7 @@ export function createContext({ client, protocol, config, player, accountId, set
         // 战斗失败等属于已确认的业务结果，仍结算已发生消费，但不推进下一步。
         settle();
         try { await refreshStock(); } catch (error) { stop.aborted = true; record({ status: 'error', reason: `已确认失败，但库存刷新失败：${error.message}` }); }
+        logSpeedSpend('failed');
         return record({ request: name, label, status: 'failed', value, ruby });
       }
       // 部分协议会返回空的专用 Response；调用方显式要求时，仍要以业务状态读回确认写入。
@@ -338,6 +359,7 @@ export function createContext({ client, protocol, config, player, accountId, set
         // 业务回包已证明本次写入完成；后续读回失败不能再把同一动作当作未发送而永久拦截。
         settle();
         try { await refreshStock(); } catch (refreshError) { stop.aborted = true; record({ status: 'error', reason: `已确认操作，但库存刷新失败：${refreshError.message}` }); }
+        logSpeedSpend('failed');
         return record({ request: name, label, status: 'failed', reason: `已收到 ${expected}，但业务状态读回失败：${error.message}`, value, ruby });
       }
       if (error.prompt) {
@@ -357,6 +379,7 @@ export function createContext({ client, protocol, config, player, accountId, set
       if (verified) {
         settle();
         try { await refreshStock(); } catch (refreshError) { stop.aborted = true; record({ status: 'error', reason: `已确认操作，但库存刷新失败：${refreshError.message}` }); }
+        logSpeedSpend('success');
         return record({ request: name, label, status: 'success', verifiedByRead: true, ruby });
       }
       if (!lockOnUncertain) {
@@ -369,8 +392,11 @@ export function createContext({ client, protocol, config, player, accountId, set
         return record({ request: name, label, status: 'skipped', reason: `结果未确认，本轮不再重发（本动作无消耗）：${error.message}` });
       }
       uncertain.add(key);
-      if (!ledger.pending[key]) ledger.pending[key] = { token: randomUUID(), ruby, module: moduleId, date: businessDate(now()) };
+      // 零钻消耗（如加速器）不经过 reserve 落盘，beforeState 只能在这里随未确认记录一起保存，
+      // 否则跨轮回放永远拿不到写前快照，无法用 replayConfirm 证明旧写入已生效。
+      if (!ledger.pending[key]) ledger.pending[key] = { token: randomUUID(), ruby, module: moduleId, date: businessDate(now()), ...(typeof beforeState === 'string' ? { beforeState } : {}) };
       persist();
+      logSpeedSpend('uncertain');
       // 未确认记录已经落盘，即使继续本轮也会阻止该幂等键重发。
       if (continueAfterUncertain) {
         if (blockModuleOnUncertain) blockModule(error.message);
@@ -379,6 +405,7 @@ export function createContext({ client, protocol, config, player, accountId, set
     }
     settle();
     try { await refreshStock(); } catch (error) { stop.aborted = true; record({ status: 'error', reason: `已确认操作，但库存刷新失败：${error.message}` }); }
+    logSpeedSpend('success');
     return record({ request: name, label, status: 'success', value, ruby });
   }
   /** 通过服务端计数与本地日计数共同约束限制类玩法。 */

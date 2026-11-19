@@ -6525,3 +6525,65 @@ test('service: expired discount purchase locks survive releaseExpiredLocks', () 
   assert.ok(f.ctx.ledger.pending['DiscountShopBuyRequest:2026-10-28:{"id":4}'], '折扣购买由专用结算器按已花费结算，不作废');
   assert.equal(f.ctx.ledger.pending['FarmPlantRequest:{"landIdx":1}'], undefined, '其他跨日零消耗记录照常解除');
 });
+
+/** 加速器类花费流水：确认成功、未确认、回放确认逐行落 JSONL；拒绝与预览不落。 */
+test('accelerator spend log: confirmed, uncertain and replay-verified spends append JSONL lines', async () => {
+  const f = fixture({ states: { OnWaterRequest: { building: [{ buildingId: '1农田', farm: {} }] } } });
+  f.client.items.set('加速器', 100);
+  await f.ctx.refreshStock();
+  const logFile = path.join(accountDirectory(f.args.accountId), 'item-spends.jsonl');
+  const lines = () => (fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8').trim().split('\n').map(row => JSON.parse(row)) : []);
+
+  // 成功：无专用回包的加速请求按读回确认结算，流水记一行 success。
+  await f.ctx.action('FarmSpeedUpRequest', { buildingId: '1农田', param: { type: 2, useNum: 2 } }, { label: '加速农田', expenses: [['加速器', 2]], confirm: async () => true });
+  assert.equal(lines().length, 1);
+  const confirmed = lines()[0];
+  assert.equal(confirmed.status, 'success');
+  assert.equal(confirmed.item, '加速器');
+  assert.equal(confirmed.num, 2);
+  assert.equal(confirmed.module, 'battle');
+  assert.equal(confirmed.request, 'FarmSpeedUpRequest');
+  assert.equal(confirmed.stockBefore, 100);
+  assert.equal(confirmed.stockAfter, 100);
+
+  // 服务端明确拒绝：没有消耗，不落流水。
+  f.client.handlers.FarmSpeedUpRequest = async () => { throw Object.assign(new Error('full'), { prompt: {} }); };
+  await f.ctx.action('FarmSpeedUpRequest', { buildingId: '1农田', param: { type: 2, useNum: 1 } }, { expenses: [['加速器', 1]] });
+  assert.equal(lines().length, 1, '被拒绝的加速不消耗库存，也不进流水');
+  delete f.client.handlers.FarmSpeedUpRequest;
+
+  // 未确认：读回失败只能保留幂等锁，流水记 uncertain 留待后续核对。
+  const body = { buildingId: '1农田', param: { type: 2, useNum: 3 } };
+  const key = `FarmSpeedUpRequest:${JSON.stringify(body)}`;
+  await f.ctx.action('FarmSpeedUpRequest', body, { expenses: [['加速器', 3]], continueAfterUncertain: true, beforeState: '写前快照', confirm: async () => false });
+  assert.equal(lines().length, 2);
+  const uncertain = lines()[1];
+  assert.equal(uncertain.status, 'uncertain');
+  assert.equal(uncertain.num, 3);
+  assert.ok(uncertain.key);
+
+  // 回放确认：跨轮重建上下文并重读库存后，读回核验通过单独记一行、数量为 0，避免重复计数。
+  f.ctx.dispose();
+  f.ctx = createContext(f.args);
+  await f.ctx.refreshStock();
+  const replayRow = await f.ctx.action('FarmSpeedUpRequest', body, { expenses: [['加速器', 3]], beforeState: '写前快照', replayConfirm: async () => true });
+  assert.equal(replayRow.status, 'success');
+  assert.equal(lines().length, 3);
+  const replay = lines()[2];
+  assert.equal(replay.status, 'replay-verified');
+  assert.equal(replay.num, 0);
+  assert.equal(replay.key, uncertain.key);
+});
+
+/** 预览模式不发送写请求，也不产生加速器流水；纯材料消耗不进该流水。 */
+test('accelerator spend log: dry run and non-accelerator expenses stay out of the log', async () => {
+  const dry = fixture({ dryRun: true });
+  await dry.ctx.action('GainFactoryProduceRequest', { buildingId: '1工厂' }, { expenses: [['加速器', 4]] });
+  const dryFile = path.join(accountDirectory(dry.args.accountId), 'item-spends.jsonl');
+  assert.equal(fs.existsSync(dryFile), false, '预览不落加速器流水');
+
+  const f = fixture({});
+  await f.ctx.action('GainFactoryProduceRequest', { buildingId: '1工厂' }, { expenses: [['木材', 10]] });
+  const logFile = path.join(accountDirectory(f.args.accountId), 'item-spends.jsonl');
+  assert.equal(fs.existsSync(logFile), false, '非加速类材料不进该流水');
+});
